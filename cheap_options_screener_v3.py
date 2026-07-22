@@ -771,7 +771,7 @@ def print_trade_report(rank, r, tech, plan):
     oi       = int(r.get("oi",    0) or 0)
     opt_vol  = int(r.get("opt_vol",0) or 0)
     rvol     = r.get("RVOL",      0) or 0
-    earn_s   = (r.get("earnings") or "—")[:10]
+    earn_s   = str(r.get("earnings") or "—")[:10]
     sp_s     = (f"{r['spread_pct']*100:.1f}%"
                 if r.get("spread_pct") is not None else "N/A")
     iv_s     = f"{iv*100:.1f}%" if iv else "N/A"
