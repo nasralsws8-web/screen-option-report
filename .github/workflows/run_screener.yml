@@ -36,23 +36,3 @@ jobs:
           git diff --cached --quiet || git commit -m "📊 Auto update: $(date -u '+%Y-%m-%d %H:%M UTC')"
           git push
 
-      - name: Send email notification
-        if: success()
-        uses: dawidd6/action-send-mail@v3
-        with:
-          server_address: smtp.gmail.com
-          server_port: 465
-          username: ${{ secrets.GMAIL_USER }}
-          password: ${{ secrets.GMAIL_APP_PASSWORD }}
-          subject: "📊 Options Screener — النتائج جاهزة $(date '+%Y-%m-%d')"
-          to: nasralsws8@gmail.com
-          from: Options Screener Bot
-          body: |
-            السلام عليكم ناصر،
-
-            النتائج اليومية جاهزة الحين!
-
-            افتح Claude وقول: "حلل النتائج"
-
-            رابط الريبو:
-            https://github.com/nasralsws8-web/screen-option-report
