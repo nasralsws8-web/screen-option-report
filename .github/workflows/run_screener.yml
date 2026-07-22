@@ -1,0 +1,37 @@
+name: Options Screener Daily Run
+
+on:
+  schedule:
+    # كل يوم عمل الساعة 9:35 صباحاً بتوقيت نيويورك (14:35 UTC)
+    - cron: '35 14 * * 1-5'
+  workflow_dispatch:  # تشغيل يدوي من GitHub عند الحاجة
+
+permissions:
+  contents: write
+
+jobs:
+  run-screener:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run screener
+        run: python cheap_options_screener_v3.py
+
+      - name: Commit results to repo
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add options_v3_results.csv
+          git diff --cached --quiet || git commit -m "📊 Auto update: $(date -u '+%Y-%m-%d %H:%M UTC')"
+          git push

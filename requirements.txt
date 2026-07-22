@@ -1,0 +1,5 @@
+yfinance
+finvizfinance
+scipy
+pandas
+numpy
