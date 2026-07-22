@@ -40,21 +40,19 @@ from datetime import datetime, timedelta
 import numpy as np
 import pandas as pd
 import yfinance as yf
-import requests
 from scipy.stats import norm
 from finvizfinance.screener.technical import Technical
 
-# ── Session مع User-Agent لتجاوز حجب Yahoo Finance في GitHub Actions ──
-_YF_SESSION = requests.Session()
-_YF_SESSION.headers.update({
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/124.0.0.0 Safari/537.36"
-    ),
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.5",
-})
+# ── curl_cffi session يقلّد Chrome الحقيقي لتجاوز حجب Yahoo Finance ──
+try:
+    from curl_cffi import requests as _curl_requests
+    _YF_SESSION = _curl_requests.Session(impersonate="chrome")
+except ImportError:
+    import requests as _req
+    _YF_SESSION = _req.Session()
+    _YF_SESSION.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36"
+    })
 
 
 # ════════════════════════════════════════════════════════════════════════

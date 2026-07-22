@@ -3,3 +3,4 @@ finvizfinance
 scipy
 pandas
 numpy
+curl_cffi
