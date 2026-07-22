@@ -412,10 +412,15 @@ def fetch_options_data(ticker, stock_price):
         calls["_dist"] = abs(calls["strike"] - stock_price)
         atm_c = calls.loc[calls["_dist"].idxmin()]
 
-        bid = float(atm_c.get("bid") or 0)
-        ask = float(atm_c.get("ask") or 0)
+        bid  = float(atm_c.get("bid")       or 0)
+        ask  = float(atm_c.get("ask")       or 0)
+        last = float(atm_c.get("lastPrice") or 0)
         if ask == 0 and bid == 0:
-            out["error"] = "no_market"; return out
+            if last > 0:
+                bid = round(last * 0.97, 2)
+                ask = round(last * 1.03, 2)
+            else:
+                out["error"] = "no_market"; return out
 
         out["premium"]    = round((bid + ask) / 2, 2)
         out["iv"]         = round(float(atm_c.get("impliedVolatility") or 0), 4)
