@@ -2,8 +2,8 @@ name: Options Screener Daily Run
 
 on:
   schedule:
-    # كل يوم عمل الساعة 9:35 صباحاً بتوقيت نيويورك (14:35 UTC)
-    - cron: '35 14 * * 1-5'
+    # كل يوم عمل الساعة 3:00 مساءً بتوقيت الرياض = قبل فتح السوق بساعة ونص (12:00 UTC)
+    - cron: '0 12 * * 1-5'
   workflow_dispatch:  # تشغيل يدوي من GitHub عند الحاجة
 
 permissions:
