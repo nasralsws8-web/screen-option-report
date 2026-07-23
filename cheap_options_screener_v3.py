@@ -1076,10 +1076,23 @@ def main():
     print("═" * 95 + "\n")
 
     # ── Save CSV ──────────────────────────────────────────────────────────
+    recs, confs = [], []
+    for _, r in result_df.iterrows():
+        try:
+            hist = r.get("_hist")
+            tech = compute_technicals(hist, r.get("price_num", 0))
+            plan = compute_trade_plan(dict(r), tech)
+            recs.append(plan.get("recommendation", "AVOID"))
+            confs.append(plan.get("confidence", 0))
+        except Exception:
+            recs.append("AVOID"); confs.append(0)
+    result_df["recommendation"] = recs
+    result_df["confidence"]     = confs
+
     save_cols = ["Ticker","Price","premium","iv","oi","opt_vol","spread_pct",
                  "atr_pct","gap_pct","RVOL","pm_high","pm_low","pm_volume",
                  "expiry","direction","earnings","float_shares","avg_vol",
-                 "Score","Notes"]
+                 "Score","recommendation","confidence","Notes"]
     save_cols = [c for c in save_cols if c in result_df.columns]
     result_df[save_cols].to_csv("options_v3_results.csv", index=False)
     print("✅ Saved: options_v3_results.csv\n")
