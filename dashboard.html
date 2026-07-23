@@ -286,8 +286,26 @@ function renderCards(rows) {
   document.getElementById('cardsView').innerHTML = html || '<div class="loading">لا توجد نتائج بعد — شغّل الـ workflow من GitHub Actions</div>';
 }
 
+function fmt(v, prefix='$') {
+  const n = parseFloat(v);
+  return (n && n > 0) ? prefix + n.toFixed(2) : 'N/A';
+}
+function calcBreakEven(r) {
+  const strike = parseFloat(r.strike) || 0;
+  const prem   = parseFloat(r.premium) || 0;
+  if (!strike || !prem) return 'N/A';
+  const isCall = (r.direction||'').includes('CALL');
+  const isPut  = (r.direction||'').includes('PUT');
+  if (isCall) return '$' + (strike + prem).toFixed(2);
+  if (isPut)  return '$' + (strike - prem).toFixed(2);
+  return 'N/A';
+}
 function calcEntry(r) {
-  const price = parseFloat(r.Price || 0);
+  // استخدم entry_stock من الـ CSV إذا موجود
+  if (r.entry_stock && parseFloat(r.entry_stock) > 0)
+    return '$' + parseFloat(r.entry_stock).toFixed(2);
+  // وإلا احسب تقريبي من PM High + 5% of ATR
+  const price = parseFloat(r.Price || r.price_num || 0);
   const atr = (parseFloat(r.atr_pct) || 0) * price / 100;
   const isCall = (r.direction || '').includes('CALL');
   const isPut  = (r.direction || '').includes('PUT');
@@ -305,6 +323,8 @@ function buildCard(r) {
   const iv = parseFloat(r.iv) || 0;
   const spread = parseFloat(r.spread_pct) || 0;
   const spreadOk = spread < 0.08 ? 'green' : spread < 0.15 ? 'yellow' : 'red';
+  const strike = parseFloat(r.strike) || 0;
+  const entry = calcEntry(r);
   return `
   <div class="card ${recClass(rec)}">
     <div class="card-header">
@@ -318,15 +338,37 @@ function buildCard(r) {
         <div style="font-size:11px;color:#8b949e;margin-top:4px">Score: ${r.Score||0}</div>
       </div>
     </div>
-    <div style="display:flex;gap:8px;margin-bottom:8px">
+    <div style="display:flex;gap:8px;margin-bottom:6px">
       <div style="flex:1;background:#1a2535;border:1px solid #1f6feb;border-radius:6px;padding:8px 10px">
         <div style="font-size:10px;color:#8b949e">🎯 Strike</div>
-        <div style="font-size:15px;font-weight:700;color:#58a6ff">${parseFloat(r.strike||0) ? '$'+parseFloat(r.strike).toFixed(2) : 'N/A'}</div>
+        <div style="font-size:15px;font-weight:700;color:#58a6ff">${strike ? '$'+strike.toFixed(2) : 'N/A'}</div>
       </div>
       <div style="flex:1;background:#1a2a1a;border:1px solid #238636;border-radius:6px;padding:8px 10px">
-        <div style="font-size:10px;color:#8b949e">🚀 Entry ~</div>
-        <div style="font-size:15px;font-weight:700;color:#3fb950">${calcEntry(r)}</div>
+        <div style="font-size:10px;color:#8b949e">🚀 Entry</div>
+        <div style="font-size:15px;font-weight:700;color:#3fb950">${entry}</div>
       </div>
+    </div>
+    <div style="display:flex;gap:6px;margin-bottom:6px">
+      <div style="flex:1;background:#2a1a1a;border:1px solid #f85149;border-radius:6px;padding:6px 8px;text-align:center">
+        <div style="font-size:9px;color:#8b949e">🛑 Stop</div>
+        <div style="font-size:13px;font-weight:700;color:#f85149">${fmt(r.stop_stock)}</div>
+      </div>
+      <div style="flex:1;background:#1a2520;border:1px solid #3fb950;border-radius:6px;padding:6px 8px;text-align:center">
+        <div style="font-size:9px;color:#8b949e">🎯 TP1</div>
+        <div style="font-size:13px;font-weight:700;color:#3fb950">${fmt(r.tp1_stock)}</div>
+      </div>
+      <div style="flex:1;background:#1a2520;border:1px solid #3fb950;border-radius:6px;padding:6px 8px;text-align:center">
+        <div style="font-size:9px;color:#8b949e">🎯 TP2</div>
+        <div style="font-size:13px;font-weight:700;color:#3fb950">${fmt(r.tp2_stock)}</div>
+      </div>
+      <div style="flex:1;background:#1a2520;border:1px solid #3fb950;border-radius:6px;padding:6px 8px;text-align:center">
+        <div style="font-size:9px;color:#8b949e">🏆 TP3</div>
+        <div style="font-size:13px;font-weight:700;color:#58a6ff">${fmt(r.tp3_stock)}</div>
+      </div>
+    </div>
+    <div style="background:#21262d;border-radius:6px;padding:5px 10px;margin-bottom:6px;text-align:center;font-size:11px">
+      <span style="color:#8b949e">⚖️ Break Even: </span>
+      <span style="color:#e3b341;font-weight:700">${calcBreakEven(r)}</span>
     </div>
     <div class="card-grid">
       <div class="card-item">
@@ -359,7 +401,7 @@ function buildCard(r) {
       </div>
       <div class="card-item">
         <div class="card-item-label">ATR%</div>
-        <div class="card-item-value">${r.atr_pct ? (parseFloat(r.atr_pct)*100).toFixed(1)+'%' : 'N/A'}</div>
+        <div class="card-item-value">${r.atr_pct ? parseFloat(r.atr_pct).toFixed(1)+'%' : 'N/A'}</div>
       </div>
     </div>
     <div class="conf-bar"><div class="conf-fill" style="width:${conf}%;background:${confColor(conf)}"></div></div>
@@ -370,8 +412,8 @@ function buildCard(r) {
 function renderTable(rows) {
   const thead = document.querySelector('#mainTable thead');
   const tbody = document.querySelector('#mainTable tbody');
-  const cols = ['Ticker','Price','strike','Entry','premium','iv','oi','opt_vol','spread_pct','atr_pct','RVOL','pm_high','direction','Score','recommendation','confidence'];
-  const labels = ['Ticker','Price','Strike','Entry~','Premium','IV','OI','OptVol','Spread%','ATR%','RVOL','PM High','Direction','Score','Rec','Conf%'];
+  const cols = ['Ticker','Price','strike','Entry','stop_stock','tp1_stock','tp2_stock','tp3_stock','BreakEven','premium','iv','oi','opt_vol','spread_pct','atr_pct','RVOL','pm_high','direction','Score','recommendation','confidence'];
+  const labels = ['Ticker','Price','Strike','Entry','Stop 🛑','TP1 🎯','TP2 🎯','TP3 🏆','BreakEven ⚖️','Premium','IV','OI','OptVol','Spread%','ATR%','RVOL','PM High','Direction','Score','Rec','Conf%'];
 
   thead.innerHTML = '<tr>' + labels.map(l => `<th>${l}</th>`).join('') + '</tr>';
   tbody.innerHTML = rows.map(r => {
@@ -380,17 +422,25 @@ function renderTable(rows) {
     const iv = parseFloat(r.iv||0);
     const sp = parseFloat(r.spread_pct||0);
     const sc = parseInt(r.Score||0);
+    const stk = parseFloat(r.strike||0);
+    const entry = calcEntry(r);
+    const be = calcBreakEven(r);
     return `<tr>
       <td class="tbl-ticker">${r.Ticker}</td>
       <td>$${parseFloat(r.Price||0).toFixed(2)}</td>
-      <td style="color:#58a6ff;font-weight:700">${parseFloat(r.strike||0) ? '$'+parseFloat(r.strike).toFixed(2) : 'N/A'}</td>
-      <td style="color:#3fb950;font-weight:700">${calcEntry(r)}</td>
+      <td style="color:#58a6ff;font-weight:700">${stk ? '$'+stk.toFixed(2) : 'N/A'}</td>
+      <td style="color:#3fb950;font-weight:700">${entry}</td>
+      <td style="color:#f85149;font-weight:700">${fmt(r.stop_stock)}</td>
+      <td style="color:#3fb950">${fmt(r.tp1_stock)}</td>
+      <td style="color:#3fb950">${fmt(r.tp2_stock)}</td>
+      <td style="color:#58a6ff">${fmt(r.tp3_stock)}</td>
+      <td style="color:#e3b341;font-weight:700">${be}</td>
       <td>$${parseFloat(r.premium||0).toFixed(2)}</td>
       <td>${iv ? (iv*100).toFixed(1)+'%' : 'N/A'}</td>
       <td>${parseInt(r.oi||0).toLocaleString()}</td>
       <td>${parseInt(r.opt_vol||0).toLocaleString()}</td>
       <td class="${sp<0.08?'tbl-buy':sp<0.15?'tbl-wait':'tbl-avoid'}">${sp ? (sp*100).toFixed(1)+'%' : 'N/A'}</td>
-      <td>${r.atr_pct ? (parseFloat(r.atr_pct)*100).toFixed(1)+'%' : 'N/A'}</td>
+      <td>${r.atr_pct ? parseFloat(r.atr_pct).toFixed(1)+'%' : 'N/A'}</td>
       <td>${r.RVOL||'N/A'}</td>
       <td>${r.pm_high ? '$'+parseFloat(r.pm_high).toFixed(2) : 'N/A'}</td>
       <td class="${dirClass(r.direction)}">${(r.direction||'').replace('📈','↑').replace('📉','↓')}</td>
