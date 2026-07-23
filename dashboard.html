@@ -139,42 +139,77 @@ const CSV_URL = 'https://raw.githubusercontent.com/nasralsws8-web/screen-option-
 let autoTimer = null;
 let livePrices = {};  // تخزين الأسعار اللحظية
 
-// جلب أسعار لحظية من Yahoo Finance لمجموعة من الأسهم
+// تحديث بطاقة بالسعر الجديد
+function updatePriceCard(ticker, price, change, changePct) {
+  const el = document.getElementById('price-' + ticker);
+  const chEl = document.getElementById('change-' + ticker);
+  if (el) {
+    el.textContent = '$' + price.toFixed(2);
+    el.className = 'card-price ' + (change >= 0 ? 'price-up' : 'price-down');
+  }
+  if (chEl) {
+    const sign = change >= 0 ? '+' : '';
+    chEl.textContent = sign + changePct.toFixed(2) + '%';
+    chEl.className = 'change-badge ' + (change >= 0 ? 'change-up' : 'change-down');
+  }
+}
+
+// جلب أسعار لحظية — نجرب عدة مصادر
 async function fetchLivePrices(tickers) {
   if (!tickers.length) return;
-  const symbols = tickers.join(',');
-  const url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${symbols}&fields=regularMarketPrice,regularMarketChangePercent,regularMarketChange`;
+  let success = false;
+
+  // المصدر 1: Yahoo Finance (يشتغل أحياناً)
   try {
-    const resp = await fetch(url);
-    if (!resp.ok) return;
-    const data = await resp.json();
-    const quotes = data?.quoteResponse?.result || [];
-    quotes.forEach(q => {
-      livePrices[q.symbol] = {
-        price: q.regularMarketPrice,
-        change: q.regularMarketChange,
-        changePct: q.regularMarketChangePercent
-      };
-    });
-    document.getElementById('liveDot').style.display = 'inline-block';
-    // تحديث الأسعار في الكروت الموجودة
-    Object.keys(livePrices).forEach(ticker => {
-      const el = document.getElementById('price-' + ticker);
-      const chEl = document.getElementById('change-' + ticker);
-      if (el && livePrices[ticker]) {
-        const p = livePrices[ticker];
-        el.textContent = '$' + p.price.toFixed(2);
-        el.className = 'card-price ' + (p.change >= 0 ? 'price-up' : 'price-down');
-        if (chEl) {
-          const sign = p.change >= 0 ? '+' : '';
-          chEl.textContent = sign + p.changePct.toFixed(2) + '%';
-          chEl.className = 'change-badge ' + (p.change >= 0 ? 'change-up' : 'change-down');
-        }
+    const symbols = tickers.join(',');
+    const url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${symbols}&fields=regularMarketPrice,regularMarketChangePercent,regularMarketChange`;
+    const resp = await fetch(url, { headers: { 'Accept': 'application/json' } });
+    if (resp.ok) {
+      const data = await resp.json();
+      const quotes = data?.quoteResponse?.result || [];
+      if (quotes.length > 0) {
+        quotes.forEach(q => {
+          livePrices[q.symbol] = { price: q.regularMarketPrice, change: q.regularMarketChange, changePct: q.regularMarketChangePercent };
+          updatePriceCard(q.symbol, q.regularMarketPrice, q.regularMarketChange, q.regularMarketChangePercent);
+        });
+        success = true;
       }
-    });
+    }
+  } catch(e) {}
+
+  // المصدر 2: Stooq (مجاني بدون key)
+  if (!success) {
+    for (const ticker of tickers.slice(0, 20)) {
+      try {
+        const url = `https://stooq.com/q/l/?s=${ticker.toLowerCase()}.us&f=sd2t2ohlcv&h&e=json`;
+        const resp = await fetch(url);
+        if (resp.ok) {
+          const data = await resp.json();
+          const sym = data?.symbols?.[0];
+          if (sym && sym.close) {
+            const price = parseFloat(sym.close);
+            const open = parseFloat(sym.open);
+            const change = price - open;
+            const changePct = (change / open) * 100;
+            livePrices[ticker] = { price, change, changePct };
+            updatePriceCard(ticker, price, change, changePct);
+            success = true;
+          }
+        }
+      } catch(e) {}
+    }
+  }
+
+  if (success) {
+    document.getElementById('liveDot').style.display = 'inline-block';
     document.getElementById('lastUpdate').textContent = '🟢 لايف: ' + new Date().toLocaleTimeString('ar-SA');
-  } catch(e) {
-    console.warn('Yahoo live price error:', e);
+  } else {
+    document.getElementById('lastUpdate').textContent = '⚠️ الأسعار من آخر تشغيل (السوق مغلق أو CORS)';
+    // أزل "جاري التحديث" وأظهر السعر من CSV
+    tickers.forEach(ticker => {
+      const chEl = document.getElementById('change-' + ticker);
+      if (chEl && chEl.textContent === 'جاري التحديث...') { chEl.style.display = 'none'; }
+    });
   }
 }
 
