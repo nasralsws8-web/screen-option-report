@@ -1,10 +1,11 @@
-name: Options Screener Daily Run
+name: Options Screener Full Scan (Market Open)
 
 on:
   schedule:
-    # كل يوم عمل الساعة 3:00 مساءً بتوقيت الرياض = قبل فتح السوق بساعة ونص (12:00 UTC)
-    - cron: '0 12 * * 1-5'
-  workflow_dispatch:  # تشغيل يدوي من GitHub عند الحاجة
+    # مرة واحدة عند فتح السوق الامريكي
+    # 13:30 UTC = 9:30 AM ET = 4:30 مساء بتوقيت الرياض
+    - cron: '30 13 * * 1-5'
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -32,8 +33,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          git pull --rebase origin main
           git add options_v3_results.csv
-          git diff --cached --quiet || git commit -m "📊 Auto update: $(date -u '+%Y-%m-%d %H:%M UTC')"
-          git pull --rebase
+          git diff --cached --quiet || git commit -m "Auto update: $(date -u '+%Y-%m-%d %H:%M UTC')"
           git push
-
