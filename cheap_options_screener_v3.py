@@ -1079,7 +1079,7 @@ def main():
     print("═" * 95 + "\n")
 
     # ── Save CSV ──────────────────────────────────────────────────────────
-    recs, confs = [], []
+    recs, confs, entries, stops, tp1s, tp2s, tp3s = [], [], [], [], [], [], []
     for _, r in result_df.iterrows():
         try:
             hist = r.get("_hist")
@@ -1087,15 +1087,28 @@ def main():
             plan = compute_trade_plan(dict(r), tech)
             recs.append(plan.get("recommendation", "AVOID"))
             confs.append(plan.get("confidence", 0))
+            entries.append(plan.get("entry_stock"))
+            stops.append(plan.get("stop_stock"))
+            tp1s.append(plan.get("tp1_stock"))
+            tp2s.append(plan.get("tp2_stock"))
+            tp3s.append(plan.get("tp3_stock"))
         except Exception:
             recs.append("AVOID"); confs.append(0)
+            entries.append(None); stops.append(None)
+            tp1s.append(None); tp2s.append(None); tp3s.append(None)
     result_df["recommendation"] = recs
     result_df["confidence"]     = confs
+    result_df["entry_stock"]    = entries
+    result_df["stop_stock"]     = stops
+    result_df["tp1_stock"]      = tp1s
+    result_df["tp2_stock"]      = tp2s
+    result_df["tp3_stock"]      = tp3s
 
     save_cols = ["Ticker","Price","premium","strike","iv","oi","opt_vol","spread_pct",
                  "atr_pct","gap_pct","RVOL","pm_high","pm_low","pm_volume",
                  "expiry","direction","earnings","float_shares","avg_vol",
-                 "Score","recommendation","confidence","Notes"]
+                 "entry_stock","stop_stock","tp1_stock","tp2_stock","tp3_stock",
+        "Score","recommendation","confidence","Notes"]
     save_cols = [c for c in save_cols if c in result_df.columns]
     # فلتر نهائي: OI >= MIN_OI و Spread <= MAX_SPREAD_PCT
     filtered_df = result_df[
