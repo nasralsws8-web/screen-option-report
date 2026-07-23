@@ -95,6 +95,20 @@
 
   .auto-refresh { display: flex; align-items: center; gap: 8px; font-size: 12px; color: #8b949e; }
   .auto-refresh input { accent-color: #58a6ff; }
+  .btn-run { background: #6e40c9; color: #fff; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 6px; transition: background 0.2s; }
+  .btn-run:hover { background: #8957e5; }
+  .btn-run:disabled { background: #30363d; color: #8b949e; cursor: not-allowed; }
+  .btn-settings { background: #21262d; color: #8b949e; border: 1px solid #30363d; padding: 8px 12px; border-radius: 6px; cursor: pointer; font-size: 14px; }
+  .btn-settings:hover { color: #e6edf3; border-color: #58a6ff; }
+  .modal-overlay { display:none; position:fixed; top:0;left:0;right:0;bottom:0; background:rgba(0,0,0,0.7); z-index:1000; align-items:center; justify-content:center; }
+  .modal-overlay.open { display:flex; }
+  .modal { background:#161b22; border:1px solid #30363d; border-radius:12px; padding:24px; width:420px; max-width:90vw; }
+  .modal h3 { color:#e6edf3; margin-bottom:8px; }
+  .modal p { color:#8b949e; font-size:12px; margin-bottom:16px; line-height:1.5; }
+  .modal input { width:100%; background:#0d1117; border:1px solid #30363d; color:#e6edf3; padding:10px 12px; border-radius:6px; font-size:13px; margin-bottom:12px; font-family:monospace; }
+  .modal input:focus { outline:none; border-color:#58a6ff; }
+  .modal-btns { display:flex; gap:8px; justify-content:flex-end; }
+  .run-status { font-size:12px; color:#8b949e; margin-top:4px; text-align:center; }
 </style>
 </head>
 <body>
@@ -107,8 +121,24 @@
     </div>
     <div class="last-update" id="lastUpdate">—</div>
     <button class="btn" id="refreshBtn" onclick="loadData()">🔄 تحديث</button>
+    <button class="btn-run" id="runBtn" onclick="triggerAndWait()">⚡ تشغيل وانتظار</button>
+    <button class="btn-settings" onclick="openSettings()" title="إعدادات التوكن">⚙️</button>
   </div>
 </div>
+
+<!-- Modal إعدادات التوكن -->
+<div class="modal-overlay" id="settingsModal">
+  <div class="modal">
+    <h3>⚙️ إعدادات GitHub Token</h3>
+    <p>أدخل الـ GitHub Personal Access Token لتشغيل الـ workflow مباشرة من الداشبورد.<br>يُحفظ في متصفحك فقط ولا يُرفع لـ GitHub.</p>
+    <input type="password" id="tokenInput" placeholder="github_pat_..." />
+    <div class="modal-btns">
+      <button class="btn" style="background:#21262d;color:#8b949e" onclick="closeSettings()">إلغاء</button>
+      <button class="btn" onclick="saveToken()">💾 حفظ</button>
+    </div>
+  </div>
+</div>
+<div id="runStatus" class="run-status" style="display:none"></div>
 
 <div class="stats-bar" id="statsBar" style="display:none">
   <div class="stat total"><div class="stat-num" id="statTotal">0</div><div class="stat-label">إجمالي الفرص</div></div>
@@ -349,10 +379,6 @@ function buildCard(r) {
       </div>
     </div>
     <div style="display:flex;gap:6px;margin-bottom:6px">
-      <div style="flex:1;background:#2a1a1a;border:1px solid #f85149;border-radius:6px;padding:6px 8px;text-align:center">
-        <div style="font-size:9px;color:#8b949e">🛑 Stop</div>
-        <div style="font-size:13px;font-weight:700;color:#f85149">${fmt(r.stop_stock)}</div>
-      </div>
       <div style="flex:1;background:#1a2520;border:1px solid #3fb950;border-radius:6px;padding:6px 8px;text-align:center">
         <div style="font-size:9px;color:#8b949e">🎯 TP1</div>
         <div style="font-size:13px;font-weight:700;color:#3fb950">${fmt(r.tp1_stock)}</div>
@@ -364,6 +390,10 @@ function buildCard(r) {
       <div style="flex:1;background:#1a2520;border:1px solid #3fb950;border-radius:6px;padding:6px 8px;text-align:center">
         <div style="font-size:9px;color:#8b949e">🏆 TP3</div>
         <div style="font-size:13px;font-weight:700;color:#58a6ff">${fmt(r.tp3_stock)}</div>
+      </div>
+      <div style="flex:1;background:#2a1a1a;border:1px solid #f85149;border-radius:6px;padding:6px 8px;text-align:center">
+        <div style="font-size:9px;color:#8b949e">🛑 Stop</div>
+        <div style="font-size:13px;font-weight:700;color:#f85149">${fmt(r.stop_stock)}</div>
       </div>
     </div>
     <div style="background:#21262d;border-radius:6px;padding:5px 10px;margin-bottom:6px;text-align:center;font-size:11px">
@@ -515,6 +545,96 @@ document.getElementById('autoRefresh').addEventListener('change', function() {
   if (this.checked) { autoTimer = setInterval(loadData, 5*60*1000); }
   else { clearInterval(autoTimer); }
 });
+
+// ── Token Settings ──────────────────────────────────────────
+const OWNER = 'nasralsws8-web';
+const REPO  = 'screen-option-report';
+const WORKFLOW = 'run_screener.yml';
+
+function openSettings() {
+  const saved = localStorage.getItem('gh_token') || '';
+  document.getElementById('tokenInput').value = saved ? '•'.repeat(20) : '';
+  document.getElementById('settingsModal').classList.add('open');
+}
+function closeSettings() {
+  document.getElementById('settingsModal').classList.remove('open');
+}
+function saveToken() {
+  const val = document.getElementById('tokenInput').value.trim();
+  if (val && !val.startsWith('•')) {
+    localStorage.setItem('gh_token', val);
+    alert('✅ تم حفظ التوكن');
+  }
+  closeSettings();
+}
+
+// ── Trigger Workflow & Wait ──────────────────────────────────
+async function triggerAndWait() {
+  const token = localStorage.getItem('gh_token');
+  if (!token) { openSettings(); return; }
+
+  const btn = document.getElementById('runBtn');
+  const status = document.getElementById('runStatus');
+  btn.disabled = true;
+  status.style.display = 'block';
+
+  const API = `https://api.github.com/repos/${OWNER}/${REPO}`;
+  const headers = { 'Authorization': `Bearer ${token}`, 'Accept': 'application/vnd.github+json' };
+
+  try {
+    // 1) سجّل الوقت قبل التشغيل
+    const before = new Date().toISOString();
+    status.textContent = '⚡ جاري تشغيل الـ workflow...';
+
+    // 2) شغّل الـ workflow
+    const trigRes = await fetch(`${API}/actions/workflows/${WORKFLOW}/dispatches`, {
+      method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ref: 'main' })
+    });
+    if (trigRes.status !== 204) throw new Error(`خطأ في التشغيل: ${trigRes.status}`);
+
+    // 3) انتظر ثانيتين ثم ابدأ المراقبة
+    await new Promise(r => setTimeout(r, 2000));
+    status.textContent = '⏳ انتظر... الـ workflow يعمل الآن';
+
+    // 4) راقب كل 15 ثانية حتى ينتهي
+    let elapsed = 0;
+    const maxWait = 600; // 10 دقائق أقصى
+    while (elapsed < maxWait) {
+      await new Promise(r => setTimeout(r, 15000));
+      elapsed += 15;
+
+      const runsRes = await fetch(`${API}/actions/runs?event=workflow_dispatch&per_page=5`, { headers });
+      const runsData = await runsRes.json();
+      const run = (runsData.workflow_runs || []).find(r => new Date(r.created_at) >= new Date(before));
+
+      if (!run) { status.textContent = `⏳ بانتظار بدء الـ run... (${elapsed}ث)`; continue; }
+
+      const st = run.status;
+      const conc = run.conclusion;
+      status.textContent = `⏳ ${st === 'in_progress' ? 'يعمل' : st}... (${elapsed}ث)`;
+
+      if (st === 'completed') {
+        if (conc === 'success') {
+          status.textContent = '✅ اكتمل! جاري تحديث البيانات...';
+          await new Promise(r => setTimeout(r, 3000)); // انتظر GitHub Pages يتحدث
+          await loadData();
+          status.textContent = '✅ تم التحديث بنجاح!';
+        } else {
+          status.textContent = `❌ فشل الـ workflow: ${conc}`;
+        }
+        break;
+      }
+    }
+    if (elapsed >= maxWait) status.textContent = '⚠️ انتهت مهلة الانتظار';
+
+  } catch(e) {
+    status.textContent = '❌ خطأ: ' + e.message;
+  }
+
+  btn.disabled = false;
+  setTimeout(() => { status.style.display = 'none'; }, 10000);
+}
 
 loadData();
 </script>
