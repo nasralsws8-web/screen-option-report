@@ -61,6 +61,7 @@ except ImportError:
 TARGET_PREM_MIN  = 0.50    # أقل سعر عقد مقبول ($)
 TARGET_PREM_MAX  = 3.00    # أعلى سعر عقد مقبول ($)
 MIN_OI           = 500     # أقل Open Interest
+MAX_SPREAD_PCT = 15.0   # أقصى spread مقبول
 DTE_TARGET       = 7       # الهدف: 7 أيام للانتهاء
 DTE_WINDOW       = 8       # ±8 أيام حول الهدف
 MAX_STOCKS_DEEP  = 40      # كم سهم ندرس بعمق
