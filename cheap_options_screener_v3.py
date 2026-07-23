@@ -1096,7 +1096,13 @@ def main():
                  "expiry","direction","earnings","float_shares","avg_vol",
                  "Score","recommendation","confidence","Notes"]
     save_cols = [c for c in save_cols if c in result_df.columns]
-    result_df[save_cols].to_csv("options_v3_results.csv", index=False)
+    # فلتر نهائي: OI >= MIN_OI و Spread <= MAX_SPREAD_PCT
+    filtered_df = result_df[
+        (result_df["oi"].fillna(0)        >= MIN_OI) &
+        (result_df["spread_pct"].fillna(99) <= MAX_SPREAD_PCT)
+    ].copy()
+    filtered_df[save_cols].to_csv("options_v3_results.csv", index=False)
+    print(f"  (فلترة: {len(result_df)} → {len(filtered_df)} بعد حذف OI<{MIN_OI} و Spread>{MAX_SPREAD_PCT}%)")
     print("✅ Saved: options_v3_results.csv\n")
 
 
