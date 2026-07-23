@@ -286,6 +286,19 @@ function renderCards(rows) {
   document.getElementById('cardsView').innerHTML = html || '<div class="loading">لا توجد نتائج بعد — شغّل الـ workflow من GitHub Actions</div>';
 }
 
+function calcEntry(r) {
+  const price = parseFloat(r.Price || 0);
+  const atr = (parseFloat(r.atr_pct) || 0) * price / 100;
+  const isCall = (r.direction || '').includes('CALL');
+  const isPut  = (r.direction || '').includes('PUT');
+  const pmHigh = parseFloat(r.pm_high) || 0;
+  const pmLow  = parseFloat(r.pm_low)  || 0;
+  if (isCall && pmHigh > 0) return '$' + (pmHigh + atr * 0.05).toFixed(2);
+  if (isPut  && pmLow  > 0) return '$' + (pmLow  - atr * 0.05).toFixed(2);
+  if (price > 0 && atr > 0) return isCall ? '$'+(price+atr*0.5).toFixed(2) : isPut ? '$'+(price-atr*0.5).toFixed(2) : 'N/A';
+  return 'N/A';
+}
+
 function buildCard(r) {
   const rec = r.recommendation || 'AVOID';
   const conf = parseInt(r.confidence) || 0;
@@ -303,6 +316,16 @@ function buildCard(r) {
       <div style="text-align:left">
         <span class="rec-badge ${rec}">${rec}</span>
         <div style="font-size:11px;color:#8b949e;margin-top:4px">Score: ${r.Score||0}</div>
+      </div>
+    </div>
+    <div style="display:flex;gap:8px;margin-bottom:8px">
+      <div style="flex:1;background:#1a2535;border:1px solid #1f6feb;border-radius:6px;padding:8px 10px">
+        <div style="font-size:10px;color:#8b949e">🎯 Strike</div>
+        <div style="font-size:15px;font-weight:700;color:#58a6ff">${parseFloat(r.strike||0) ? '$'+parseFloat(r.strike).toFixed(2) : 'N/A'}</div>
+      </div>
+      <div style="flex:1;background:#1a2a1a;border:1px solid #238636;border-radius:6px;padding:8px 10px">
+        <div style="font-size:10px;color:#8b949e">🚀 Entry ~</div>
+        <div style="font-size:15px;font-weight:700;color:#3fb950">${calcEntry(r)}</div>
       </div>
     </div>
     <div class="card-grid">
@@ -347,8 +370,8 @@ function buildCard(r) {
 function renderTable(rows) {
   const thead = document.querySelector('#mainTable thead');
   const tbody = document.querySelector('#mainTable tbody');
-  const cols = ['Ticker','Price','premium','iv','oi','opt_vol','spread_pct','atr_pct','RVOL','pm_high','direction','Score','recommendation','confidence'];
-  const labels = ['Ticker','Price','Premium','IV','OI','OptVol','Spread%','ATR%','RVOL','PM High','Direction','Score','Rec','Conf%'];
+  const cols = ['Ticker','Price','strike','Entry','premium','iv','oi','opt_vol','spread_pct','atr_pct','RVOL','pm_high','direction','Score','recommendation','confidence'];
+  const labels = ['Ticker','Price','Strike','Entry~','Premium','IV','OI','OptVol','Spread%','ATR%','RVOL','PM High','Direction','Score','Rec','Conf%'];
 
   thead.innerHTML = '<tr>' + labels.map(l => `<th>${l}</th>`).join('') + '</tr>';
   tbody.innerHTML = rows.map(r => {
@@ -360,6 +383,8 @@ function renderTable(rows) {
     return `<tr>
       <td class="tbl-ticker">${r.Ticker}</td>
       <td>$${parseFloat(r.Price||0).toFixed(2)}</td>
+      <td style="color:#58a6ff;font-weight:700">${parseFloat(r.strike||0) ? '$'+parseFloat(r.strike).toFixed(2) : 'N/A'}</td>
+      <td style="color:#3fb950;font-weight:700">${calcEntry(r)}</td>
       <td>$${parseFloat(r.premium||0).toFixed(2)}</td>
       <td>${iv ? (iv*100).toFixed(1)+'%' : 'N/A'}</td>
       <td>${parseInt(r.oi||0).toLocaleString()}</td>
