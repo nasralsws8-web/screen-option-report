@@ -71,7 +71,8 @@ def main():
     result = pd.DataFrame(rows).sort_values("Score",ascending=False).reset_index(drop=True)
     cols = ["Ticker","Price","premium","strike","iv","oi","opt_vol","spread_pct",
             "atr_pct","gap_pct","RVOL","pm_high","pm_low","pm_volume","expiry",
-            "direction","earnings","float_shares","avg_vol","Score","recommendation","confidence","Notes"]
+            "direction","earnings","float_shares","avg_vol","entry_stock","stop_stock","tp1_stock","tp2_stock","tp3_stock",
+        "Score","recommendation","confidence","Notes"]
     result[[c for c in cols if c in result.columns]].to_csv(CSV_FILE, index=False)
     elapsed = (datetime.now()-start).seconds
     b = sum(1 for r in rows if r["recommendation"]=="BUY")
