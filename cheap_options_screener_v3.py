@@ -67,8 +67,8 @@ MAX_STOCKS_DEEP  = 80      # كم سهم ندرس بعمق
 DELAY_BETWEEN    = 0.30    # ثواني بين كل طلب yfinance
 
 RISK_FREE_RATE   = 0.053   # معدل الفائدة لـ Black-Scholes
-MIN_RR_TO_BUY    = 2.0     # أقل R:R لإعطاء BUY
-MIN_CONF_TO_BUY  = 65      # أقل Confidence% لإعطاء BUY
+MIN_RR_TO_BUY    = 1.3     # أقل R:R لإعطاء BUY
+MIN_CONF_TO_BUY  = 55      # أقل Confidence% لإعطاء BUY
 
 FINVIZ_FILTERS = {
     "Option/Short":   "Optionable",
@@ -725,7 +725,7 @@ def compute_trade_plan(r, tech):
 
     # ── Recommendation ────────────────────────────────────────────────────
     trend    = tech.get("trend", "")
-    best_rr  = plan["tp2_rr"] or 0
+    best_rr  = max(plan["tp1_rr"] or 0, plan["tp2_rr"] or 0, plan["tp3_rr"] or 0)
     conf     = plan["confidence"]
 
     # الاتجاه موافق للصفقة
@@ -743,7 +743,10 @@ def compute_trade_plan(r, tech):
         plan["recommendation"] = "BUY"
         plan["rec_note"]       = ("الاتجاه والزخم والسيولة مناسبة"
                                    if trend_ok else "اختراق قوي رغم الاتجاه المختلط")
-    elif conf >= 55 and best_rr >= 1.5:
+    elif conf >= MIN_CONF_TO_BUY and best_rr >= MIN_RR_TO_BUY:
+        plan["recommendation"] = "BUY"
+        plan["rec_note"]       = "زخم وسيولة مناسبة — راقب الاتجاه"
+    elif conf >= 45 and best_rr >= 1.0:
         plan["recommendation"] = "WAIT"
         plan["rec_note"]       = "انتظر تأكيد الاختراق"
     else:
