@@ -1089,7 +1089,7 @@ def main():
     result_df["recommendation"] = recs
     result_df["confidence"]     = confs
 
-    save_cols = ["Ticker","Price","premium","iv","oi","opt_vol","spread_pct",
+    save_cols = ["Ticker","Price","premium","strike","iv","oi","opt_vol","spread_pct",
                  "atr_pct","gap_pct","RVOL","pm_high","pm_low","pm_volume",
                  "expiry","direction","earnings","float_shares","avg_vol",
                  "Score","recommendation","confidence","Notes"]
