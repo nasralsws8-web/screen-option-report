@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Options Screener Dashboard</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0d1117; color: #e6edf3; min-height: 100vh; }
+
+  .header { background: #161b22; border-bottom: 1px solid #30363d; padding: 16px 24px; display: flex; align-items: center; justify-content: space-between; }
+  .header h1 { font-size: 20px; font-weight: 700; color: #58a6ff; }
+  .header-right { display: flex; align-items: center; gap: 12px; }
+  .last-update { font-size: 12px; color: #8b949e; }
+
+  .btn { background: #238636; color: #fff; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 6px; transition: background 0.2s; }
+  .btn:hover { background: #2ea043; }
+  .btn:disabled { background: #30363d; color: #8b949e; cursor: not-allowed; }
+  .btn.refreshing { background: #1f6feb; }
+
+  .stats-bar { display: flex; gap: 16px; padding: 16px 24px; background: #161b22; border-bottom: 1px solid #30363d; flex-wrap: wrap; }
+  .stat { background: #21262d; border: 1px solid #30363d; border-radius: 8px; padding: 12px 20px; text-align: center; min-width: 100px; }
+  .stat-num { font-size: 28px; font-weight: 700; }
+  .stat-label { font-size: 11px; color: #8b949e; margin-top: 2px; }
+  .stat.buy .stat-num { color: #3fb950; }
+  .stat.wait .stat-num { color: #e3b341; }
+  .stat.avoid .stat-num { color: #f85149; }
+  .stat.total .stat-num { color: #58a6ff; }
+
+  .container { padding: 20px 24px; }
+
+  .section-title { font-size: 16px; font-weight: 600; color: #e6edf3; margin: 20px 0 12px; display: flex; align-items: center; gap: 8px; }
+
+  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; margin-bottom: 24px; }
+  .card { background: #161b22; border: 1px solid #30363d; border-radius: 10px; padding: 16px; transition: border-color 0.2s; }
+  .card:hover { border-color: #58a6ff; }
+  .card.buy-card { border-left: 4px solid #3fb950; }
+  .card.wait-card { border-left: 4px solid #e3b341; }
+  .card.avoid-card { border-left: 4px solid #f85149; }
+
+  .card-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px; }
+  .ticker { font-size: 22px; font-weight: 700; color: #e6edf3; }
+  .rec-badge { padding: 4px 10px; border-radius: 20px; font-size: 11px; font-weight: 700; }
+  .rec-badge.BUY { background: #1a4731; color: #3fb950; }
+  .rec-badge.WAIT { background: #3d2d00; color: #e3b341; }
+  .rec-badge.AVOID { background: #3d1a1a; color: #f85149; }
+
+  .card-price { font-size: 18px; color: #58a6ff; margin-bottom: 8px; }
+  .card-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .card-item { background: #21262d; border-radius: 6px; padding: 6px 10px; }
+  .card-item-label { font-size: 10px; color: #8b949e; }
+  .card-item-value { font-size: 13px; font-weight: 600; color: #e6edf3; }
+  .card-item-value.green { color: #3fb950; }
+  .card-item-value.yellow { color: #e3b341; }
+  .card-item-value.red { color: #f85149; }
+
+  .direction-call { color: #3fb950; }
+  .direction-put { color: #f85149; }
+  .direction-neutral { color: #8b949e; }
+
+  .conf-bar { background: #21262d; border-radius: 4px; height: 4px; margin-top: 10px; overflow: hidden; }
+  .conf-fill { height: 100%; border-radius: 4px; transition: width 0.5s; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { background: #21262d; color: #8b949e; padding: 10px 12px; text-align: right; font-weight: 600; font-size: 11px; border-bottom: 1px solid #30363d; white-space: nowrap; }
+  td { padding: 10px 12px; border-bottom: 1px solid #21262d; white-space: nowrap; }
+  tr:hover td { background: #161b22; }
+  .tbl-ticker { font-weight: 700; color: #58a6ff; }
+  .tbl-buy { color: #3fb950; font-weight: 700; }
+  .tbl-wait { color: #e3b341; font-weight: 700; }
+  .tbl-avoid { color: #f85149; }
+
+  .score-badge { display: inline-block; background: #21262d; border-radius: 4px; padding: 2px 8px; font-size: 11px; font-weight: 700; }
+  .score-high { background: #1a4731; color: #3fb950; }
+  .score-mid { background: #3d2d00; color: #e3b341; }
+
+  .loading { text-align: center; padding: 60px; color: #8b949e; }
+  .spinner { display: inline-block; width: 32px; height: 32px; border: 3px solid #30363d; border-top-color: #58a6ff; border-radius: 50%; animation: spin 0.8s linear infinite; margin-bottom: 12px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .error-box { background: #3d1a1a; border: 1px solid #f85149; border-radius: 8px; padding: 16px; margin: 20px 0; color: #f85149; }
+
+  .tab-bar { display: flex; gap: 8px; margin-bottom: 16px; border-bottom: 1px solid #30363d; padding-bottom: 0; }
+  .tab { padding: 8px 16px; cursor: pointer; border-bottom: 2px solid transparent; color: #8b949e; font-size: 13px; font-weight: 600; margin-bottom: -1px; }
+  .tab.active { color: #58a6ff; border-bottom-color: #58a6ff; }
+  .tab:hover { color: #e6edf3; }
+
+  .auto-refresh { display: flex; align-items: center; gap: 8px; font-size: 12px; color: #8b949e; }
+  .auto-refresh input { accent-color: #58a6ff; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>📊 Options Screener — Live Dashboard</h1>
+  <div class="header-right">
+    <div class="auto-refresh">
+      <input type="checkbox" id="autoRefresh"> تحديث تلقائي كل 5 دقائق
+    </div>
+    <div class="last-update" id="lastUpdate">—</div>
+    <button class="btn" id="refreshBtn" onclick="loadData()">🔄 تحديث</button>
+  </div>
+</div>
+
+<div class="stats-bar" id="statsBar" style="display:none">
+  <div class="stat total"><div class="stat-num" id="statTotal">0</div><div class="stat-label">إجمالي الفرص</div></div>
+  <div class="stat buy"><div class="stat-num" id="statBuy">0</div><div class="stat-label">🟢 BUY</div></div>
+  <div class="stat wait"><div class="stat-num" id="statWait">0</div><div class="stat-label">🟡 WAIT</div></div>
+  <div class="stat avoid"><div class="stat-num" id="statAvoid">0</div><div class="stat-label">🔴 AVOID</div></div>
+</div>
+
+<div class="container">
+  <div id="loadingDiv" class="loading">
+    <div class="spinner"></div><br>جاري تحميل أحدث البيانات من GitHub...
+  </div>
+  <div id="errorDiv" style="display:none"></div>
+  <div id="mainContent" style="display:none">
+    <div class="tab-bar">
+      <div class="tab active" onclick="showTab('cards')">🃏 بطاقات</div>
+      <div class="tab" onclick="showTab('table')">📋 جدول</div>
+    </div>
+    <div id="cardsView"></div>
+    <div id="tableView" style="display:none">
+      <table id="mainTable"><thead></thead><tbody></tbody></table>
+    </div>
+  </div>
+</div>
+
+<script>
+const CSV_URL = 'https://raw.githubusercontent.com/nasralsws8-web/screen-option-report/main/options_v3_results.csv';
+let autoTimer = null;
+
+function parseCSV(text) {
+  const lines = text.trim().split('\n');
+  const headers = lines[0].split(',').map(h => h.trim().replace(/^"|"$/g,''));
+  return lines.slice(1).map(line => {
+    const vals = line.match(/(".*?"|[^,]+|(?<=,)(?=,)|^(?=,)|(?<=,)$)/g) || line.split(',');
+    const obj = {};
+    headers.forEach((h, i) => {
+      obj[h] = (vals[i] || '').replace(/^"|"$/g,'').trim();
+    });
+    return obj;
+  }).filter(r => r.Ticker);
+}
+
+function fmt(v, prefix='', suffix='', decimals=2) {
+  const n = parseFloat(v);
+  if (isNaN(n)) return v || 'N/A';
+  return prefix + n.toFixed(decimals) + suffix;
+}
+
+function scoreClass(s) {
+  const n = parseInt(s);
+  if (n >= 10) return 'score-high';
+  if (n >= 7) return 'score-mid';
+  return '';
+}
+
+function dirClass(d) {
+  if (!d) return '';
+  if (d.includes('CALL')) return 'direction-call';
+  if (d.includes('PUT')) return 'direction-put';
+  return 'direction-neutral';
+}
+
+function confColor(c) {
+  const n = parseInt(c);
+  if (n >= 65) return '#3fb950';
+  if (n >= 45) return '#e3b341';
+  return '#f85149';
+}
+
+function recClass(r) {
+  if (r === 'BUY') return 'buy-card';
+  if (r === 'WAIT') return 'wait-card';
+  return 'avoid-card';
+}
+
+function renderCards(rows) {
+  const buy = rows.filter(r => r.recommendation === 'BUY');
+  const wait = rows.filter(r => r.recommendation === 'WAIT');
+  const avoid = rows.filter(r => !['BUY','WAIT'].includes(r.recommendation));
+
+  let html = '';
+
+  if (buy.length) {
+    html += `<div class="section-title">🟢 BUY — ${buy.length} فرصة</div><div class="cards">`;
+    buy.forEach(r => html += buildCard(r));
+    html += '</div>';
+  }
+  if (wait.length) {
+    html += `<div class="section-title">🟡 WAIT — ${wait.length} فرصة</div><div class="cards">`;
+    wait.forEach(r => html += buildCard(r));
+    html += '</div>';
+  }
+  if (avoid.length) {
+    html += `<div class="section-title">🔴 AVOID — ${avoid.length}</div><div class="cards">`;
+    avoid.slice(0,6).forEach(r => html += buildCard(r));
+    if (avoid.length > 6) html += `<div style="color:#8b949e;padding:16px">...و ${avoid.length-6} آخرين</div>`;
+    html += '</div>';
+  }
+
+  document.getElementById('cardsView').innerHTML = html || '<div class="loading">لا توجد نتائج بعد — شغّل الـ workflow من GitHub Actions</div>';
+}
+
+function buildCard(r) {
+  const rec = r.recommendation || 'AVOID';
+  const conf = parseInt(r.confidence) || 0;
+  const iv = parseFloat(r.iv) || 0;
+  const spread = parseFloat(r.spread_pct) || 0;
+  const spreadOk = spread < 0.08 ? 'green' : spread < 0.15 ? 'yellow' : 'red';
+  return `
+  <div class="card ${recClass(rec)}">
+    <div class="card-header">
+      <div>
+        <div class="ticker">${r.Ticker}</div>
+        <div class="card-price">$${parseFloat(r.Price||0).toFixed(2)}</div>
+      </div>
+      <div style="text-align:left">
+        <span class="rec-badge ${rec}">${rec}</span>
+        <div style="font-size:11px;color:#8b949e;margin-top:4px">Score: ${r.Score||0}</div>
+      </div>
+    </div>
+    <div class="card-grid">
+      <div class="card-item">
+        <div class="card-item-label">Premium</div>
+        <div class="card-item-value">$${parseFloat(r.premium||0).toFixed(2)}</div>
+      </div>
+      <div class="card-item">
+        <div class="card-item-label">Expiry / DTE</div>
+        <div class="card-item-value">${r.expiry||'N/A'}</div>
+      </div>
+      <div class="card-item">
+        <div class="card-item-label">IV</div>
+        <div class="card-item-value">${iv ? (iv*100).toFixed(1)+'%' : 'N/A'}</div>
+      </div>
+      <div class="card-item">
+        <div class="card-item-label">OI</div>
+        <div class="card-item-value">${parseInt(r.oi||0).toLocaleString()}</div>
+      </div>
+      <div class="card-item">
+        <div class="card-item-label">Spread</div>
+        <div class="card-item-value ${spreadOk}">${spread ? (spread*100).toFixed(1)+'%' : 'N/A'}</div>
+      </div>
+      <div class="card-item">
+        <div class="card-item-label">Direction</div>
+        <div class="card-item-value ${dirClass(r.direction)}">${(r.direction||'N/A').replace('📈','').replace('📉','').trim()}</div>
+      </div>
+      <div class="card-item">
+        <div class="card-item-label">PM High</div>
+        <div class="card-item-value">${r.pm_high ? '$'+parseFloat(r.pm_high).toFixed(2) : 'N/A'}</div>
+      </div>
+      <div class="card-item">
+        <div class="card-item-label">ATR%</div>
+        <div class="card-item-value">${r.atr_pct ? (parseFloat(r.atr_pct)*100).toFixed(1)+'%' : 'N/A'}</div>
+      </div>
+    </div>
+    <div class="conf-bar"><div class="conf-fill" style="width:${conf}%;background:${confColor(conf)}"></div></div>
+    <div style="font-size:11px;color:#8b949e;margin-top:4px;text-align:center">Confidence: ${conf}%</div>
+  </div>`;
+}
+
+function renderTable(rows) {
+  const thead = document.querySelector('#mainTable thead');
+  const tbody = document.querySelector('#mainTable tbody');
+  const cols = ['Ticker','Price','premium','iv','oi','opt_vol','spread_pct','atr_pct','RVOL','pm_high','direction','Score','recommendation','confidence'];
+  const labels = ['Ticker','Price','Premium','IV','OI','OptVol','Spread%','ATR%','RVOL','PM High','Direction','Score','Rec','Conf%'];
+
+  thead.innerHTML = '<tr>' + labels.map(l => `<th>${l}</th>`).join('') + '</tr>';
+  tbody.innerHTML = rows.map(r => {
+    const rec = r.recommendation || 'AVOID';
+    const recCls = rec === 'BUY' ? 'tbl-buy' : rec === 'WAIT' ? 'tbl-wait' : 'tbl-avoid';
+    const iv = parseFloat(r.iv||0);
+    const sp = parseFloat(r.spread_pct||0);
+    const sc = parseInt(r.Score||0);
+    return `<tr>
+      <td class="tbl-ticker">${r.Ticker}</td>
+      <td>$${parseFloat(r.Price||0).toFixed(2)}</td>
+      <td>$${parseFloat(r.premium||0).toFixed(2)}</td>
+      <td>${iv ? (iv*100).toFixed(1)+'%' : 'N/A'}</td>
+      <td>${parseInt(r.oi||0).toLocaleString()}</td>
+      <td>${parseInt(r.opt_vol||0).toLocaleString()}</td>
+      <td class="${sp<0.08?'tbl-buy':sp<0.15?'tbl-wait':'tbl-avoid'}">${sp ? (sp*100).toFixed(1)+'%' : 'N/A'}</td>
+      <td>${r.atr_pct ? (parseFloat(r.atr_pct)*100).toFixed(1)+'%' : 'N/A'}</td>
+      <td>${r.RVOL||'N/A'}</td>
+      <td>${r.pm_high ? '$'+parseFloat(r.pm_high).toFixed(2) : 'N/A'}</td>
+      <td class="${dirClass(r.direction)}">${(r.direction||'').replace('📈','↑').replace('📉','↓')}</td>
+      <td><span class="score-badge ${scoreClass(sc)}">${sc}</span></td>
+      <td class="${recCls}">${rec}</td>
+      <td style="color:${confColor(r.confidence)}">${r.confidence||0}%</td>
+    </tr>`;
+  }).join('');
+}
+
+async function loadData() {
+  const btn = document.getElementById('refreshBtn');
+  btn.disabled = true;
+  btn.className = 'btn refreshing';
+  btn.textContent = '⏳ جاري التحميل...';
+  document.getElementById('loadingDiv').style.display = 'block';
+  document.getElementById('mainContent').style.display = 'none';
+  document.getElementById('errorDiv').style.display = 'none';
+  document.getElementById('statsBar').style.display = 'none';
+
+  try {
+    const url = CSV_URL + '?t=' + Date.now();
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const text = await resp.text();
+    if (!text.trim() || text.trim().split('\n').length < 2) {
+      throw new Error('الملف فاضي — شغّل الـ workflow من GitHub Actions أولاً');
+    }
+
+    const rows = parseCSV(text);
+    const buy = rows.filter(r => r.recommendation === 'BUY').length;
+    const wait = rows.filter(r => r.recommendation === 'WAIT').length;
+    const avoid = rows.filter(r => !['BUY','WAIT'].includes(r.recommendation)).length;
+
+    document.getElementById('statTotal').textContent = rows.length;
+    document.getElementById('statBuy').textContent = buy;
+    document.getElementById('statWait').textContent = wait;
+    document.getElementById('statAvoid').textContent = avoid;
+    document.getElementById('statsBar').style.display = 'flex';
+
+    renderCards(rows);
+    renderTable(rows);
+
+    document.getElementById('lastUpdate').textContent = 'آخر تحديث: ' + new Date().toLocaleTimeString('ar-SA');
+    document.getElementById('loadingDiv').style.display = 'none';
+    document.getElementById('mainContent').style.display = 'block';
+  } catch (err) {
+    document.getElementById('loadingDiv').style.display = 'none';
+    document.getElementById('errorDiv').style.display = 'block';
+    document.getElementById('errorDiv').innerHTML = `<div class="error-box">⚠️ ${err.message}</div>`;
+  }
+
+  btn.disabled = false;
+  btn.className = 'btn';
+  btn.textContent = '🔄 تحديث';
+}
+
+function showTab(tab) {
+  document.querySelectorAll('.tab').forEach((t,i) => t.classList.toggle('active', ['cards','table'][i] === tab));
+  document.getElementById('cardsView').style.display = tab === 'cards' ? 'block' : 'none';
+  document.getElementById('tableView').style.display = tab === 'table' ? 'block' : 'none';
+}
+
+document.getElementById('autoRefresh').addEventListener('change', function() {
+  if (this.checked) { autoTimer = setInterval(loadData, 5*60*1000); }
+  else { clearInterval(autoTimer); }
+});
+
+loadData();
+</script>
+</body>
+</html>
