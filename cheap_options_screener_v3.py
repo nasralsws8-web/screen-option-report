@@ -63,7 +63,7 @@ TARGET_PREM_MAX  = 3.00    # أعلى سعر عقد مقبول ($)
 MIN_OI           = 500     # أقل Open Interest
 DTE_TARGET       = 7       # الهدف: 7 أيام للانتهاء
 DTE_WINDOW       = 8       # ±8 أيام حول الهدف
-MAX_STOCKS_DEEP  = 80      # كم سهم ندرس بعمق
+MAX_STOCKS_DEEP  = 40      # كم سهم ندرس بعمق
 DELAY_BETWEEN    = 0.30    # ثواني بين كل طلب yfinance
 
 RISK_FREE_RATE   = 0.053   # معدل الفائدة لـ Black-Scholes
@@ -71,9 +71,11 @@ MIN_RR_TO_BUY    = 1.3     # أقل R:R لإعطاء BUY
 MIN_CONF_TO_BUY  = 55      # أقل Confidence% لإعطاء BUY
 
 FINVIZ_FILTERS = {
-    "Option/Short":   "Optionable",
-    "Average Volume": "Over 500K",
-    "Country":        "USA",
+    "Option/Short":    "Optionable",
+    "Average Volume":  "Over 1M",        # حجم يومي أعلى = spread أضيق
+    "Country":         "USA",
+    "Price":           "Over $5",        # تجنب penny stocks
+    "Relative Volume": "Over 1.5",       # نشاط عالي اليوم (RVOL > 1.5x)
 }
 
 
