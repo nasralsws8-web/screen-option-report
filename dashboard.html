@@ -12,6 +12,14 @@
   .header h1 { font-size: 20px; font-weight: 700; color: #58a6ff; }
   .header-right { display: flex; align-items: center; gap: 12px; }
   .last-update { font-size: 12px; color: #8b949e; }
+  .live-dot { display: inline-block; width: 8px; height: 8px; background: #3fb950; border-radius: 50%; margin-left: 4px; animation: pulse 1.5s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
+  .price-live { color: #3fb950 !important; }
+  .price-up { color: #3fb950 !important; }
+  .price-down { color: #f85149 !important; }
+  .change-badge { font-size: 11px; padding: 2px 6px; border-radius: 4px; margin-right: 4px; }
+  .change-up { background: #1a4731; color: #3fb950; }
+  .change-down { background: #3d1a1a; color: #f85149; }
 
   .btn { background: #238636; color: #fff; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 6px; transition: background 0.2s; }
   .btn:hover { background: #2ea043; }
@@ -92,7 +100,7 @@
 <body>
 
 <div class="header">
-  <h1>📊 Options Screener — Live Dashboard</h1>
+  <h1>📊 Options Screener — Live Dashboard <span class="live-dot" id="liveDot" style="display:none"></span></h1>
   <div class="header-right">
     <div class="auto-refresh">
       <input type="checkbox" id="autoRefresh"> تحديث تلقائي كل 5 دقائق
@@ -129,6 +137,46 @@
 <script>
 const CSV_URL = 'https://raw.githubusercontent.com/nasralsws8-web/screen-option-report/main/options_v3_results.csv';
 let autoTimer = null;
+let livePrices = {};  // تخزين الأسعار اللحظية
+
+// جلب أسعار لحظية من Yahoo Finance لمجموعة من الأسهم
+async function fetchLivePrices(tickers) {
+  if (!tickers.length) return;
+  const symbols = tickers.join(',');
+  const url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${symbols}&fields=regularMarketPrice,regularMarketChangePercent,regularMarketChange`;
+  try {
+    const resp = await fetch(url);
+    if (!resp.ok) return;
+    const data = await resp.json();
+    const quotes = data?.quoteResponse?.result || [];
+    quotes.forEach(q => {
+      livePrices[q.symbol] = {
+        price: q.regularMarketPrice,
+        change: q.regularMarketChange,
+        changePct: q.regularMarketChangePercent
+      };
+    });
+    document.getElementById('liveDot').style.display = 'inline-block';
+    // تحديث الأسعار في الكروت الموجودة
+    Object.keys(livePrices).forEach(ticker => {
+      const el = document.getElementById('price-' + ticker);
+      const chEl = document.getElementById('change-' + ticker);
+      if (el && livePrices[ticker]) {
+        const p = livePrices[ticker];
+        el.textContent = '$' + p.price.toFixed(2);
+        el.className = 'card-price ' + (p.change >= 0 ? 'price-up' : 'price-down');
+        if (chEl) {
+          const sign = p.change >= 0 ? '+' : '';
+          chEl.textContent = sign + p.changePct.toFixed(2) + '%';
+          chEl.className = 'change-badge ' + (p.change >= 0 ? 'change-up' : 'change-down');
+        }
+      }
+    });
+    document.getElementById('lastUpdate').textContent = '🟢 لايف: ' + new Date().toLocaleTimeString('ar-SA');
+  } catch(e) {
+    console.warn('Yahoo live price error:', e);
+  }
+}
 
 function parseCSV(text) {
   const lines = text.trim().split('\n');
@@ -214,7 +262,8 @@ function buildCard(r) {
     <div class="card-header">
       <div>
         <div class="ticker">${r.Ticker}</div>
-        <div class="card-price">$${parseFloat(r.Price||0).toFixed(2)}</div>
+        <div class="card-price price-live" id="price-${r.Ticker}">$${parseFloat(r.Price||0).toFixed(2)}</div>
+  <div style="font-size:11px;margin-bottom:4px"><span class="change-badge" id="change-${r.Ticker}">جاري التحديث...</span></div>
       </div>
       <div style="text-align:left">
         <span class="rec-badge ${rec}">${rec}</span>
@@ -328,6 +377,13 @@ async function loadData() {
     document.getElementById('lastUpdate').textContent = 'آخر تحديث: ' + new Date().toLocaleTimeString('ar-SA');
     document.getElementById('loadingDiv').style.display = 'none';
     document.getElementById('mainContent').style.display = 'block';
+
+    // جلب الأسعار اللحظية بعد عرض البيانات
+    const tickers = rows.map(r => r.Ticker).filter(Boolean);
+    fetchLivePrices(tickers);
+    // تحديث تلقائي للأسعار كل دقيقة
+    if (window._priceTimer) clearInterval(window._priceTimer);
+    window._priceTimer = setInterval(() => fetchLivePrices(tickers), 60000);
   } catch (err) {
     document.getElementById('loadingDiv').style.display = 'none';
     document.getElementById('errorDiv').style.display = 'block';
