@@ -17,6 +17,11 @@
   .price-live { color: #3fb950 !important; }
   .price-up { color: #3fb950 !important; }
   .price-down { color: #f85149 !important; }
+  @keyframes flashUp { 0%{background:#1a4731} 100%{background:transparent} }
+  @keyframes flashDown { 0%{background:#3d1a1a} 100%{background:transparent} }
+  .flash-up { animation: flashUp 0.6s ease-out; }
+  .flash-down { animation: flashDown 0.6s ease-out; }
+  .live-badge { font-size:11px; background:#1a4731; color:#3fb950; padding:3px 8px; border-radius:10px; font-weight:700; }
   .change-badge { font-size: 11px; padding: 2px 6px; border-radius: 4px; margin-right: 4px; }
   .change-up { background: #1a4731; color: #3fb950; }
   .change-down { background: #3d1a1a; color: #f85149; }
@@ -129,9 +134,12 @@
 <!-- Modal إعدادات التوكن -->
 <div class="modal-overlay" id="settingsModal">
   <div class="modal">
-    <h3>⚙️ إعدادات GitHub Token</h3>
-    <p>أدخل الـ GitHub Personal Access Token لتشغيل الـ workflow مباشرة من الداشبورد.<br>يُحفظ في متصفحك فقط ولا يُرفع لـ GitHub.</p>
+    <h3>⚙️ الإعدادات</h3>
+    <p style="margin-bottom:8px;color:#e3b341;font-size:12px">🔑 GitHub Token (لتشغيل الـ workflow)</p>
     <input type="password" id="tokenInput" placeholder="github_pat_..." />
+    <p style="margin-bottom:8px;color:#3fb950;font-size:12px">📡 Finnhub API Key (للأسعار اللحظية)</p>
+    <input type="text" id="finnhubInput" placeholder="xxxxxxxxxxxxxxxxxx" autocomplete="off" />
+    <p style="font-size:11px;color:#8b949e;margin-bottom:16px">يُحفظ في متصفحك فقط — لا يُرفع لأي مكان.</p>
     <div class="modal-btns">
       <button class="btn" style="background:#21262d;color:#8b949e" onclick="closeSettings()">إلغاء</button>
       <button class="btn" onclick="saveToken()">💾 حفظ</button>
@@ -167,79 +175,94 @@
 <script>
 const CSV_URL = 'https://raw.githubusercontent.com/nasralsws8-web/screen-option-report/main/options_v3_results.csv';
 let autoTimer = null;
-let livePrices = {};  // تخزين الأسعار اللحظية
+let livePrices = {};
+let finnhubWS = null;
+let currentTickers = [];
 
-// تحديث بطاقة بالسعر الجديد
-function updatePriceCard(ticker, price, change, changePct) {
-  const el = document.getElementById('price-' + ticker);
+// ── Finnhub WebSocket ────────────────────────────────────────
+function connectFinnhub(tickers) {
+  const key = localStorage.getItem('finnhub_key');
+  if (!key) {
+    // fallback إذا ما في key
+    setStatusOffline(tickers);
+    return;
+  }
+
+  currentTickers = tickers;
+  if (finnhubWS) { try { finnhubWS.close(); } catch(e){} }
+
+  finnhubWS = new WebSocket(`wss://ws.finnhub.io?token=${key}`);
+
+  finnhubWS.onopen = () => {
+    tickers.forEach(t => finnhubWS.send(JSON.stringify({type:'subscribe', symbol:t})));
+    document.getElementById('liveDot').style.display = 'inline-block';
+    document.getElementById('lastUpdate').innerHTML = '<span class="live-badge">● LIVE</span> Finnhub';
+    // إخفاء "جاري التحديث" من كل البطاقات
+    tickers.forEach(t => {
+      const ch = document.getElementById('change-' + t);
+      if (ch) ch.style.display = 'none';
+    });
+  };
+
+  finnhubWS.onmessage = (event) => {
+    const msg = JSON.parse(event.data);
+    if (msg.type !== 'trade') return;
+    msg.data.forEach(trade => {
+      const ticker = trade.s;
+      const price  = trade.p;
+      const prev   = livePrices[ticker];
+
+      // أول مرة نشوف السهم — سجّل كـ open
+      if (!prev) {
+        livePrices[ticker] = { price, open: price };
+        updatePriceCard(ticker, price, 0, 0);
+        return;
+      }
+
+      const open      = prev.open || price;
+      const change    = price - open;
+      const changePct = (change / open) * 100;
+      const isUp      = price >= prev.price;
+
+      livePrices[ticker] = { price, open, change, changePct };
+      updatePriceCard(ticker, price, change, changePct, isUp);
+    });
+    document.getElementById('lastUpdate').innerHTML =
+      '<span class="live-badge">● LIVE</span> ' + new Date().toLocaleTimeString('ar-SA');
+  };
+
+  finnhubWS.onerror = () => {};
+  finnhubWS.onclose = () => {
+    // إعادة الاتصال بعد 5 ثوانٍ تلقائياً
+    setTimeout(() => { if (localStorage.getItem('finnhub_key')) connectFinnhub(currentTickers); }, 5000);
+  };
+}
+
+function setStatusOffline(tickers) {
+  document.getElementById('lastUpdate').textContent = '⚠️ الأسعار من آخر تشغيل (السوق مغلق أو أدخل Finnhub Key)';
+  tickers.forEach(t => {
+    const ch = document.getElementById('change-' + t);
+    if (ch) ch.style.display = 'none';
+  });
+}
+
+// تحديث السعر في البطاقة مع flash
+function updatePriceCard(ticker, price, change, changePct, isUp) {
+  const el   = document.getElementById('price-' + ticker);
   const chEl = document.getElementById('change-' + ticker);
   if (el) {
     el.textContent = '$' + price.toFixed(2);
     el.className = 'card-price ' + (change >= 0 ? 'price-up' : 'price-down');
+    // Flash animation
+    el.classList.remove('flash-up','flash-down');
+    void el.offsetWidth; // reflow
+    el.classList.add(isUp ? 'flash-up' : 'flash-down');
   }
   if (chEl) {
     const sign = change >= 0 ? '+' : '';
     chEl.textContent = sign + changePct.toFixed(2) + '%';
     chEl.className = 'change-badge ' + (change >= 0 ? 'change-up' : 'change-down');
-  }
-}
-
-// جلب أسعار لحظية — نجرب عدة مصادر
-async function fetchLivePrices(tickers) {
-  if (!tickers.length) return;
-  let success = false;
-
-  // المصدر 1: Yahoo Finance (يشتغل أحياناً)
-  try {
-    const symbols = tickers.join(',');
-    const url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${symbols}&fields=regularMarketPrice,regularMarketChangePercent,regularMarketChange`;
-    const resp = await fetch(url, { headers: { 'Accept': 'application/json' } });
-    if (resp.ok) {
-      const data = await resp.json();
-      const quotes = data?.quoteResponse?.result || [];
-      if (quotes.length > 0) {
-        quotes.forEach(q => {
-          livePrices[q.symbol] = { price: q.regularMarketPrice, change: q.regularMarketChange, changePct: q.regularMarketChangePercent };
-          updatePriceCard(q.symbol, q.regularMarketPrice, q.regularMarketChange, q.regularMarketChangePercent);
-        });
-        success = true;
-      }
-    }
-  } catch(e) {}
-
-  // المصدر 2: Stooq (مجاني بدون key)
-  if (!success) {
-    for (const ticker of tickers.slice(0, 20)) {
-      try {
-        const url = `https://stooq.com/q/l/?s=${ticker.toLowerCase()}.us&f=sd2t2ohlcv&h&e=json`;
-        const resp = await fetch(url);
-        if (resp.ok) {
-          const data = await resp.json();
-          const sym = data?.symbols?.[0];
-          if (sym && sym.close) {
-            const price = parseFloat(sym.close);
-            const open = parseFloat(sym.open);
-            const change = price - open;
-            const changePct = (change / open) * 100;
-            livePrices[ticker] = { price, change, changePct };
-            updatePriceCard(ticker, price, change, changePct);
-            success = true;
-          }
-        }
-      } catch(e) {}
-    }
-  }
-
-  if (success) {
-    document.getElementById('liveDot').style.display = 'inline-block';
-    document.getElementById('lastUpdate').textContent = '🟢 لايف: ' + new Date().toLocaleTimeString('ar-SA');
-  } else {
-    document.getElementById('lastUpdate').textContent = '⚠️ الأسعار من آخر تشغيل (السوق مغلق أو CORS)';
-    // أزل "جاري التحديث" وأظهر السعر من CSV
-    tickers.forEach(ticker => {
-      const chEl = document.getElementById('change-' + ticker);
-      if (chEl && chEl.textContent === 'جاري التحديث...') { chEl.style.display = 'none'; }
-    });
+    chEl.style.display = 'inline-block';
   }
 }
 
@@ -518,12 +541,9 @@ async function loadData() {
     document.getElementById('loadingDiv').style.display = 'none';
     document.getElementById('mainContent').style.display = 'block';
 
-    // جلب الأسعار اللحظية بعد عرض البيانات
+    // اتصل بـ Finnhub WebSocket للأسعار اللحظية
     const tickers = rows.map(r => r.Ticker).filter(Boolean);
-    fetchLivePrices(tickers);
-    // تحديث تلقائي للأسعار كل دقيقة
-    if (window._priceTimer) clearInterval(window._priceTimer);
-    window._priceTimer = setInterval(() => fetchLivePrices(tickers), 60000);
+    connectFinnhub(tickers);
   } catch (err) {
     document.getElementById('loadingDiv').style.display = 'none';
     document.getElementById('errorDiv').style.display = 'block';
@@ -554,16 +574,23 @@ const WORKFLOW = 'run_screener.yml';
 function openSettings() {
   const saved = localStorage.getItem('gh_token') || '';
   document.getElementById('tokenInput').value = saved ? '•'.repeat(20) : '';
+  const fk = localStorage.getItem('finnhub_key') || '';
+  document.getElementById('finnhubInput').value = fk ? fk.slice(0,4) + '•'.repeat(fk.length-4) : '';
   document.getElementById('settingsModal').classList.add('open');
 }
 function closeSettings() {
   document.getElementById('settingsModal').classList.remove('open');
 }
 function saveToken() {
-  const val = document.getElementById('tokenInput').value.trim();
-  if (val && !val.startsWith('•')) {
-    localStorage.setItem('gh_token', val);
-    alert('✅ تم حفظ التوكن');
+  const ghVal = document.getElementById('tokenInput').value.trim();
+  if (ghVal && !ghVal.startsWith('•')) {
+    localStorage.setItem('gh_token', ghVal);
+  }
+  const fhVal = document.getElementById('finnhubInput').value.trim();
+  if (fhVal && !fhVal.includes('•')) {
+    localStorage.setItem('finnhub_key', fhVal);
+    // أعد الاتصال فوراً بعد حفظ الـ key
+    if (currentTickers.length) connectFinnhub(currentTickers);
   }
   closeSettings();
 }

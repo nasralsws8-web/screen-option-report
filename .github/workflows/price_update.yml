@@ -1,0 +1,38 @@
+name: Price Update (Every 5 min during market hours)
+
+on:
+  schedule:
+    # Mon-Fri 13:35 - 19:55 UTC (9:35 AM - 3:55 PM ET) every 5 minutes
+    - cron: '*/5 13-19 * * 1-5'
+    - cron: '0 20 * * 1-5'   # Final update at market close 4 PM ET
+
+permissions:
+  contents: write
+
+jobs:
+  update-prices:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run price update
+        run: python price_update.py
+
+      - name: Commit updated CSV
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add options_v3_results.csv
+          git diff --cached --quiet || git commit -m "Price update: $(date -u '+%Y-%m-%d %H:%M UTC')"
+          git pull --rebase origin main
+          git push
