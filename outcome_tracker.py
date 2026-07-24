@@ -27,12 +27,15 @@ OUTCOMES_COLS = [
 # 1) تحميل أو إنشاء outcomes.csv
 # ─────────────────────────────────────────────
 def load_outcomes():
+    STR_COLS = ["date", "ticker", "direction", "expiry", "entry_hit_date", "status"]
     if os.path.exists(OUTCOMES_FILE):
         df = pd.read_csv(OUTCOMES_FILE)
-        # تأكد من وجود كل الأعمدة
         for col in OUTCOMES_COLS:
             if col not in df.columns:
                 df[col] = None
+        for col in STR_COLS:
+            if col in df.columns:
+                df[col] = df[col].astype(object).where(df[col].notna(), None)
         return df
     else:
         return pd.DataFrame(columns=OUTCOMES_COLS)
@@ -83,7 +86,7 @@ def add_new_recommendations(outcomes_df):
             "tp3_stock":     float(r.get("tp3_stock") or 0),
             "expiry":        r.get("expiry", ""),
             "entry_hit":     False,
-            "entry_hit_date": None,
+            "entry_hit_date": "",
             "status":        "open",
             "result_pct":    None,
         }
