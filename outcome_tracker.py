@@ -138,6 +138,8 @@ def update_open_outcomes(outcomes_df):
             end   = (today + timedelta(days=1)).strftime("%Y-%m-%d")
             hist  = yf.download(ticker, start=start, end=end,
                                 interval="1d", progress=False, auto_adjust=True)
+            if isinstance(hist.columns, __import__("pandas").MultiIndex):
+                hist.columns = hist.columns.get_level_values(0)
         except Exception as e:
             print(f"⚠️  {ticker}: خطأ في جلب البيانات — {e}")
             continue
