@@ -164,10 +164,14 @@
     <div class="tab-bar">
       <div class="tab active" onclick="showTab('cards')">🃏 بطاقات</div>
       <div class="tab" onclick="showTab('table')">📋 جدول</div>
+      <div class="tab" onclick="showTab('history')">📊 السجل</div>
     </div>
     <div id="cardsView"></div>
     <div id="tableView" style="display:none">
       <table id="mainTable"><thead></thead><tbody></tbody></table>
+    </div>
+    <div id="historyView" style="display:none">
+      <div id="historyContent"><div class="loading"><div class="spinner"></div><br>جاري تحميل السجل...</div></div>
     </div>
   </div>
 </div>
@@ -556,9 +560,94 @@ async function loadData() {
 }
 
 function showTab(tab) {
-  document.querySelectorAll('.tab').forEach((t,i) => t.classList.toggle('active', ['cards','table'][i] === tab));
-  document.getElementById('cardsView').style.display = tab === 'cards' ? 'block' : 'none';
-  document.getElementById('tableView').style.display = tab === 'table' ? 'block' : 'none';
+  document.querySelectorAll('.tab').forEach((t,i) => t.classList.toggle('active', ['cards','table','history'][i] === tab));
+  document.getElementById('cardsView').style.display   = tab === 'cards'   ? 'block' : 'none';
+  document.getElementById('tableView').style.display   = tab === 'table'   ? 'block' : 'none';
+  document.getElementById('historyView').style.display = tab === 'history' ? 'block' : 'none';
+  if (tab === 'history') loadHistory();
+}
+
+// ── Outcome History ──────────────────────────────────────────
+const OUTCOMES_URL = 'https://raw.githubusercontent.com/nasralsws8-web/screen-option-report/main/outcomes.csv';
+let historyLoaded = false;
+
+async function loadHistory() {
+  if (historyLoaded) return;
+  const container = document.getElementById('historyContent');
+  try {
+    const resp = await fetch(OUTCOMES_URL + '?t=' + Date.now());
+    if (!resp.ok) throw new Error('ما تم تحميل السجل');
+    const text = await resp.text();
+    const rows = parseCSV(text).filter(r => r.ticker);
+
+    if (rows.length === 0) {
+      container.innerHTML = '<div style="text-align:center;padding:40px;color:#8b949e">السجل فارغ — سيتعبأ تلقائياً بعد أول تشغيل غداً</div>';
+      return;
+    }
+
+    // إحصائيات
+    const closed  = rows.filter(r => r.status !== 'open');
+    const wins    = closed.filter(r => ['tp1_hit','tp2_hit','tp3_hit'].includes(r.status));
+    const stops   = closed.filter(r => r.status === 'stop_hit');
+    const winRate = closed.length ? (wins.length / closed.length * 100).toFixed(1) : '—';
+    const avgWin  = wins.length  ? (wins.reduce((s,r)=>s+parseFloat(r.result_pct||0),0)/wins.length).toFixed(2)  : '—';
+    const avgLoss = stops.length ? (stops.reduce((s,r)=>s+parseFloat(r.result_pct||0),0)/stops.length).toFixed(2) : '—';
+
+    const statusLabel = {
+      'open':'🟡 مفتوح','tp1_hit':'✅ TP1','tp2_hit':'✅✅ TP2',
+      'tp3_hit':'🏆 TP3','stop_hit':'🛑 Stop','expired':'⏳ انتهى'
+    };
+    const statusColor = {
+      'open':'#e3b341','tp1_hit':'#3fb950','tp2_hit':'#3fb950',
+      'tp3_hit':'#58a6ff','stop_hit':'#f85149','expired':'#8b949e'
+    };
+
+    container.innerHTML = `
+      <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:20px">
+        <div class="stat total"><div class="stat-num">${rows.length}</div><div class="stat-label">إجمالي التوصيات</div></div>
+        <div class="stat buy"><div class="stat-num">${winRate}%</div><div class="stat-label">Win Rate</div></div>
+        <div class="stat buy"><div class="stat-num">${avgWin === '—' ? '—' : '+'+avgWin+'%'}</div><div class="stat-label">Avg Win</div></div>
+        <div class="stat avoid"><div class="stat-num">${avgLoss === '—' ? '—' : avgLoss+'%'}</div><div class="stat-label">Avg Loss</div></div>
+        <div class="stat wait"><div class="stat-num">${rows.filter(r=>r.status==='open').length}</div><div class="stat-label">🟡 مفتوحة</div></div>
+      </div>
+      <div style="overflow-x:auto">
+      <table style="width:100%;border-collapse:collapse;font-size:13px">
+        <thead><tr style="background:#21262d">
+          <th style="padding:10px;text-align:right;color:#8b949e">التاريخ</th>
+          <th style="padding:10px;text-align:right;color:#8b949e">السهم</th>
+          <th style="padding:10px;text-align:right;color:#8b949e">الاتجاه</th>
+          <th style="padding:10px;text-align:right;color:#8b949e">Entry</th>
+          <th style="padding:10px;text-align:right;color:#8b949e">TP1</th>
+          <th style="padding:10px;text-align:right;color:#8b949e">TP2</th>
+          <th style="padding:10px;text-align:right;color:#8b949e">Stop</th>
+          <th style="padding:10px;text-align:right;color:#8b949e">النتيجة</th>
+          <th style="padding:10px;text-align:right;color:#8b949e">الحالة</th>
+        </tr></thead>
+        <tbody>
+          ${rows.sort((a,b)=>b.date>a.date?1:-1).map(r=>{
+            const res = parseFloat(r.result_pct);
+            const resStr = isNaN(res) ? '—' : (res>=0?'+':'')+res.toFixed(2)+'%';
+            const resColor = isNaN(res)?'#8b949e':res>=0?'#3fb950':'#f85149';
+            const st = r.status || 'open';
+            return `<tr style="border-bottom:1px solid #21262d">
+              <td style="padding:10px;color:#8b949e">${r.date||'—'}</td>
+              <td style="padding:10px;font-weight:700;color:#58a6ff">${r.ticker}</td>
+              <td style="padding:10px;color:${(r.direction||'').includes('CALL')?'#3fb950':'#f85149'}">${(r.direction||'').replace('CALL','CALL ↑').replace('PUT','PUT ↓')}</td>
+              <td style="padding:10px">$${parseFloat(r.entry_stock||0).toFixed(2)}</td>
+              <td style="padding:10px;color:#3fb950">$${parseFloat(r.tp1_stock||0).toFixed(2)}</td>
+              <td style="padding:10px;color:#3fb950">$${parseFloat(r.tp2_stock||0).toFixed(2)}</td>
+              <td style="padding:10px;color:#f85149">$${parseFloat(r.stop_stock||0).toFixed(2)}</td>
+              <td style="padding:10px;font-weight:700;color:${resColor}">${resStr}</td>
+              <td style="padding:10px;font-weight:700;color:${statusColor[st]||'#8b949e'}">${statusLabel[st]||st}</td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table>
+      </div>`;
+    historyLoaded = true;
+  } catch(e) {
+    container.innerHTML = `<div class="error-box">⚠️ ${e.message}</div>`;
+  }
 }
 
 document.getElementById('autoRefresh').addEventListener('change', function() {
