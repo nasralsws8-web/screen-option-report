@@ -1,1 +1,2 @@
 Ticker,Price,premium,strike,iv,oi,opt_vol,spread_pct,atr_pct,gap_pct,RVOL,pm_high,pm_low,pm_volume,expiry,direction,earnings,float_shares,avg_vol,entry_stock,stop_stock,tp1_stock,tp2_stock,tp3_stock,Score,recommendation,confidence,Notes
+TSLL,7.89,0.38,8.0,0.0625,5416,7267.0,0.0513,14.32,0.0322,0.11,8.03,7.77,0,2026-07-31,CALL 📈,,,71943211,8.08,6.89,9.07,11.32,12.14,16,BUY,56,MegaCap +2 | OI>2K +3 | OptVol>1K +3 | Spread<8% +1 | Weekly✓ +2 | ATR%>5 +3 | NoEarnings? +1 | RSI oversold +1
