@@ -1,2 +1,2 @@
 Ticker,Price,premium,strike,iv,oi,opt_vol,spread_pct,atr_pct,gap_pct,RVOL,pm_high,pm_low,pm_volume,expiry,direction,earnings,float_shares,avg_vol,entry_stock,stop_stock,tp1_stock,tp2_stock,tp3_stock,Score,recommendation,confidence,Notes
-SOXS,48.15,8.08,48.0,0.0,511,288.0,0.0577,15.66,-0.0842,0.12,48.74,46.64,0,2026-07-31,CALL 📈,,,47265157,49.09,43.98,53.02,56.5,61.37,11,AVOID,41,MegaCap +2 | OI>500 +1 | OptVol>100 +1 | Spread<8% +1 | Weekly✓ +2 | ATR%>5 +3 | NoEarnings? +1
+SOXL,145.31,11.51,145.0,0.125,619,771.0,0.059,19.35,0.0793,0.08,149.67,144.16,0,2026-07-31,PUT  📉,,,60508703,142.92,170.23,138.0,95.74,68.43,13,WAIT,49,MegaCap +2 | OI>500 +1 | OptVol>500 +2 | Spread<8% +1 | Weekly✓ +2 | ATR%>5 +3 | NoEarnings? +1 | RSI oversold +1
