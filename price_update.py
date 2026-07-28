@@ -22,9 +22,11 @@ from cheap_options_screener_v3 import (
     compute_technicals,
     compute_trade_plan,
     parse_num,
+    effective_oi,
+    save_results_csv,
     DTE_TARGET, DTE_WINDOW,
     TARGET_PREM_MIN, TARGET_PREM_MAX,
-    MIN_OI, DELAY_BETWEEN,
+    MIN_OI, MAX_SPREAD_PCT, DELAY_BETWEEN,
 )
 
 CSV_FILE = "options_v3_results.csv"
@@ -184,7 +186,14 @@ def main():
         "entry_stock", "stop_stock", "tp1_stock", "tp2_stock", "tp3_stock"
     ]
     save_cols = [c for c in save_cols if c in result_df.columns]
-    result_df[save_cols].to_csv(CSV_FILE, index=False)
+    filtered_df = result_df[
+        (result_df.apply(lambda r: effective_oi(r.get("oi"), r.get("opt_vol")), axis=1) >= MIN_OI) &
+        (result_df["spread_pct"].fillna(99) <= MAX_SPREAD_PCT)
+    ].copy()
+    if save_results_csv(filtered_df[save_cols], CSV_FILE):
+        print(f"  Saved: {CSV_FILE}")
+    else:
+        print(f"  ⚠️  No rows passed filter — kept previous {CSV_FILE}")
 
     elapsed     = (datetime.now() - start).seconds
     buy_count   = sum(1 for r in rows if r["recommendation"] == "BUY")
@@ -194,7 +203,6 @@ def main():
     print(f"\n{'-'*65}")
     print(f"  Done: {len(rows)} tickers updated in {elapsed}s")
     print(f"  BUY: {buy_count}  |  WAIT: {wait_count}  |  AVOID: {avoid_count}")
-    print(f"  Saved: {CSV_FILE}")
     print(f"{'='*65}\n")
 
 

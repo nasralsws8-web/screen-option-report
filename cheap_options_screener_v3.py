@@ -34,6 +34,7 @@ logging.getLogger("yfinance").setLevel(logging.CRITICAL)
 logging.getLogger("urllib3").setLevel(logging.CRITICAL)
 
 import math
+import os
 import time
 from datetime import datetime, timedelta
 
@@ -61,7 +62,9 @@ except ImportError:
 TARGET_PREM_MIN  = 0.50    # أقل سعر عقد مقبول ($)
 TARGET_PREM_MAX  = 3.00    # أعلى سعر عقد مقبول ($)
 MIN_OI           = 500     # أقل Open Interest
-MAX_SPREAD_PCT = 15.0   # أقصى spread مقبول
+MAX_SPREAD_PCT = 0.15    # أقصى spread مقبول (15% كـ decimal)
+PM_STALE_PCT   = 0.05    # تجاهل pm_high/pm_low إذا ابتعدت عن السعر >5%
+ENTRY_MAX_DRIFT = 0.05   # Entry يجب أن يكون ضمن ±5% من السعر الحالي
 DTE_TARGET       = 7       # الهدف: 7 أيام للانتهاء
 DTE_WINDOW       = 8       # ±8 أيام حول الهدف
 MAX_STOCKS_DEEP  = 40      # كم سهم ندرس بعمق
@@ -146,6 +149,70 @@ def parse_num(v):
         return float(s.replace("%", "").replace("$", ""))
     except Exception:
         return 0.0
+
+
+def _safe_int(v):
+    if v is None:
+        return 0
+    try:
+        if pd.isna(v):
+            return 0
+    except (TypeError, ValueError):
+        pass
+    try:
+        return int(v)
+    except (ValueError, TypeError):
+        return 0
+
+
+def effective_oi(oi, opt_vol):
+    """Yahoo أحياناً يرجّع OI=0 — استخدم opt_vol كبديل مؤقت."""
+    oi = _safe_int(oi)
+    ov = _safe_int(opt_vol)
+    if oi >= MIN_OI:
+        return oi
+    if oi == 0 and ov >= MIN_OI:
+        return ov
+    return oi
+
+
+def pm_data_fresh(pm_val, price):
+    if not pm_val or not price or price <= 0:
+        return False
+    return abs(float(pm_val) - price) / price <= PM_STALE_PCT
+
+
+def trade_plan_is_valid(plan, price, is_call):
+    entry = plan.get("entry_stock")
+    stop  = plan.get("stop_stock")
+    tp1   = plan.get("tp1_stock")
+    if not all([entry, stop, tp1]) or price <= 0:
+        return False
+    entry, stop, tp1 = float(entry), float(stop), float(tp1)
+    if is_call:
+        if entry > price * (1 + ENTRY_MAX_DRIFT):
+            return False
+        return tp1 > entry > stop
+    if entry < price * (1 - ENTRY_MAX_DRIFT):
+        return False
+    return tp1 < entry < stop
+
+
+def save_results_csv(filtered_df, path="options_v3_results.csv"):
+    """لا تستبدل CSV صالح بملف فاضي عند فشل Yahoo."""
+    if filtered_df.empty:
+        if os.path.exists(path):
+            try:
+                prev = pd.read_csv(path)
+                if len(prev) > 0:
+                    print(f"  ⚠️  0 matches — keeping previous {path} ({len(prev)} rows)")
+                    return False
+            except Exception:
+                pass
+        print("  ⚠️  0 matches — no valid previous CSV to keep")
+        return False
+    filtered_df.to_csv(path, index=False)
+    return True
 
 
 def find_best_expiry(expirations, dte_target=7, window=8):
@@ -468,7 +535,8 @@ def score_stock(row):
     if avg_vol and avg_vol > 30e6: score += 2; notes.append("MegaCap +2")
     elif avg_vol and avg_vol > 10e6: score += 1; notes.append("LargeCap +1")
 
-    oi = row.get("oi", 0) or 0
+    oi = effective_oi(row.get("oi", 0), row.get("opt_vol", 0))
+    row["oi"] = oi
     if oi > 2000:      score += 3; notes.append("OI>2K +3")
     elif oi > 1000:    score += 2; notes.append("OI>1K +2")
     elif oi > MIN_OI:  score += 1; notes.append(f"OI>{MIN_OI} +1")
@@ -612,14 +680,16 @@ def compute_trade_plan(r, tech):
     yest_l  = tech.get("yesterday_low")  or price
 
     if is_call:
-        ref_high = pm_high if pm_high and pm_high > price * 0.98 else yest_h
+        use_pm   = pm_high and pm_data_fresh(pm_high, price) and pm_high > price * 0.98
+        ref_high = pm_high if use_pm else yest_h
         entry    = round(ref_high + atr * 0.05, 2)
-        src      = "Premarket" if pm_high and pm_high > yest_h else "أعلى أمس"
+        src      = "Premarket" if use_pm else "أعلى أمس"
         plan["entry_note"] = f"فوق {src} High ${ref_high:.2f}"
     else:
-        ref_low = pm_low if pm_low and pm_low < price * 1.02 else yest_l
+        use_pm  = pm_low and pm_data_fresh(pm_low, price) and pm_low < price * 1.02
+        ref_low = pm_low if use_pm else yest_l
         entry   = round(ref_low - atr * 0.05, 2)
-        src     = "Premarket" if pm_low and pm_low < yest_l else "أدنى أمس"
+        src     = "Premarket" if use_pm else "أدنى أمس"
         plan["entry_note"] = f"تحت {src} Low ${ref_low:.2f}"
 
     plan["entry_stock"] = entry
@@ -742,13 +812,16 @@ def compute_trade_plan(r, tech):
     if earn_risk:
         plan["recommendation"] = "AVOID"
         plan["rec_note"]       = "⚠️ Earnings قبل انتهاء العقد — خطر كبير"
+    elif not trade_plan_is_valid(plan, price, is_call):
+        plan["recommendation"] = "WAIT"
+        plan["rec_note"]       = "خطة الدخول غير متسقة مع السعر الحالي — انتظر"
     elif conf >= MIN_CONF_TO_BUY and best_rr >= MIN_RR_TO_BUY and (trend_ok or mixed_ok):
         plan["recommendation"] = "BUY"
         plan["rec_note"]       = ("الاتجاه والزخم والسيولة مناسبة"
                                    if trend_ok else "اختراق قوي رغم الاتجاه المختلط")
     elif conf >= MIN_CONF_TO_BUY and best_rr >= MIN_RR_TO_BUY:
-        plan["recommendation"] = "BUY"
-        plan["rec_note"]       = "زخم وسيولة مناسبة — راقب الاتجاه"
+        plan["recommendation"] = "WAIT"
+        plan["rec_note"]       = "زخم جيد — راقب تأكيد الاتجاه"
     elif conf >= 45 and best_rr >= 1.0:
         plan["recommendation"] = "WAIT"
         plan["rec_note"]       = "انتظر تأكيد الاختراق"
@@ -1112,12 +1185,14 @@ def main():
     save_cols = [c for c in save_cols if c in result_df.columns]
     # فلتر نهائي: OI >= MIN_OI و Spread <= MAX_SPREAD_PCT
     filtered_df = result_df[
-        (result_df["oi"].fillna(0)        >= MIN_OI) &
+        (result_df.apply(lambda r: effective_oi(r.get("oi"), r.get("opt_vol")), axis=1) >= MIN_OI) &
         (result_df["spread_pct"].fillna(99) <= MAX_SPREAD_PCT)
     ].copy()
-    filtered_df[save_cols].to_csv("options_v3_results.csv", index=False)
-    print(f"  (فلترة: {len(result_df)} → {len(filtered_df)} بعد حذف OI<{MIN_OI} و Spread>{MAX_SPREAD_PCT}%)")
-    print("✅ Saved: options_v3_results.csv\n")
+    if save_results_csv(filtered_df[save_cols]):
+        print(f"  (فلترة: {len(result_df)} → {len(filtered_df)} بعد OI≥{MIN_OI} و Spread≤{MAX_SPREAD_PCT*100:.0f}%)")
+        print("✅ Saved: options_v3_results.csv\n")
+    else:
+        print(f"  (فلترة: {len(result_df)} → {len(filtered_df)} — لم يُحفظ CSV فاضي)\n")
 
 
 if __name__ == "__main__":

@@ -23,6 +23,22 @@ OUTCOMES_COLS = [
 ]
 
 
+def is_call_direction(direction):
+    d = str(direction or "").upper()
+    if "PUT" in d:
+        return False
+    return True
+
+
+def move_pct(entry, target, is_call):
+    """نسبة ربح/خسارة موجّهة حسب اتجاه الصفقة."""
+    if entry <= 0:
+        return 0.0
+    if is_call:
+        return round((target - entry) / entry * 100, 2)
+    return round((entry - target) / entry * 100, 2)
+
+
 # ─────────────────────────────────────────────
 # 1) تحميل أو إنشاء outcomes.csv
 # ─────────────────────────────────────────────
@@ -37,8 +53,7 @@ def load_outcomes():
             if col in df.columns:
                 df[col] = df[col].astype(object).where(df[col].notna(), None)
         return df
-    else:
-        return pd.DataFrame(columns=OUTCOMES_COLS)
+    return pd.DataFrame(columns=OUTCOMES_COLS)
 
 
 # ─────────────────────────────────────────────
@@ -50,6 +65,10 @@ def add_new_recommendations(outcomes_df):
         return outcomes_df
 
     results = pd.read_csv(RESULTS_FILE)
+    if results.empty or "recommendation" not in results.columns:
+        print("⚠️  options_v3_results.csv فاضي — تخطي إضافة توصيات جديدة")
+        return outcomes_df
+
     buy_rows = results[results["recommendation"] == "BUY"].copy()
     today = datetime.now().strftime("%Y-%m-%d")
     added = 0
@@ -59,7 +78,6 @@ def add_new_recommendations(outcomes_df):
         if not ticker:
             continue
 
-        # تجنّب التكرار (نفس السهم في نفس اليوم)
         already = outcomes_df[
             (outcomes_df["ticker"] == ticker) &
             (outcomes_df["date"] == today)
@@ -67,7 +85,6 @@ def add_new_recommendations(outcomes_df):
         if not already.empty:
             continue
 
-        # تحقق من وجود entry_stock
         entry = float(r.get("entry_stock") or 0)
         if entry <= 0:
             continue
@@ -75,7 +92,7 @@ def add_new_recommendations(outcomes_df):
         new_row = {
             "date":          today,
             "ticker":        ticker,
-            "direction":     str(r.get("direction", "")).replace("📈","").replace("📉","").strip(),
+            "direction":     str(r.get("direction", "")).replace("📈", "").replace("📉", "").strip(),
             "score":         r.get("Score", 0),
             "confidence":    r.get("confidence", 0),
             "price_at_rec":  r.get("Price", 0),
@@ -117,28 +134,27 @@ def update_open_outcomes(outcomes_df):
         ticker     = str(row["ticker"]).strip()
         rec_date   = pd.to_datetime(row["date"]).date()
         entry      = float(row["entry_stock"] or 0)
-        stop       = float(row["stop_stock"]  or 0)
-        tp1        = float(row["tp1_stock"]   or 0)
-        tp2        = float(row["tp2_stock"]   or 0)
-        tp3        = float(row["tp3_stock"]   or 0)
+        stop       = float(row["stop_stock"] or 0)
+        tp1        = float(row["tp1_stock"] or 0)
+        tp2        = float(row["tp2_stock"] or 0)
+        tp3        = float(row["tp3_stock"] or 0)
         expiry_str = str(row.get("expiry", ""))
+        is_call    = is_call_direction(row.get("direction"))
 
         if not ticker or entry <= 0:
             continue
 
-        # تحديد تاريخ انتهاء الصفقة
         try:
             expiry_date = pd.to_datetime(expiry_str).date()
         except Exception:
             expiry_date = today + timedelta(days=7)
 
-        # جلب بيانات السعر منذ تاريخ التوصية
         try:
             start = rec_date.strftime("%Y-%m-%d")
             end   = (today + timedelta(days=1)).strftime("%Y-%m-%d")
             hist  = yf.download(ticker, start=start, end=end,
                                 interval="1d", progress=False, auto_adjust=True)
-            if isinstance(hist.columns, __import__("pandas").MultiIndex):
+            if isinstance(hist.columns, pd.MultiIndex):
                 hist.columns = hist.columns.get_level_values(0)
         except Exception as e:
             print(f"⚠️  {ticker}: خطأ في جلب البيانات — {e}")
@@ -147,43 +163,57 @@ def update_open_outcomes(outcomes_df):
         if hist.empty:
             continue
 
-        # ─── تحقق من الـ Entry ───────────────────
         entry_hit      = bool(row.get("entry_hit", False))
         entry_hit_date = row.get("entry_hit_date")
 
         if not entry_hit:
-            hit_days = hist[hist["High"] >= entry]
+            if is_call:
+                hit_days = hist[hist["High"] >= entry]
+            else:
+                hit_days = hist[hist["Low"] <= entry]
             if not hit_days.empty:
                 entry_hit      = True
                 entry_hit_date = hit_days.index[0].strftime("%Y-%m-%d")
                 outcomes_df.at[idx, "entry_hit"]      = True
                 outcomes_df.at[idx, "entry_hit_date"] = entry_hit_date
 
-        # ─── تحقق من TP / Stop (بعد الـ Entry فقط) ─
         if entry_hit and entry_hit_date:
             post = hist[hist.index >= pd.to_datetime(entry_hit_date)]
             if not post.empty:
                 max_high = float(post["High"].max())
                 min_low  = float(post["Low"].min())
 
-                if tp3 > 0 and max_high >= tp3:
-                    outcomes_df.at[idx, "status"]     = "tp3_hit"
-                    outcomes_df.at[idx, "result_pct"] = round((tp3 - entry) / entry * 100, 2)
-                elif tp2 > 0 and max_high >= tp2:
-                    outcomes_df.at[idx, "status"]     = "tp2_hit"
-                    outcomes_df.at[idx, "result_pct"] = round((tp2 - entry) / entry * 100, 2)
-                elif tp1 > 0 and max_high >= tp1:
-                    outcomes_df.at[idx, "status"]     = "tp1_hit"
-                    outcomes_df.at[idx, "result_pct"] = round((tp1 - entry) / entry * 100, 2)
-                elif stop > 0 and min_low <= stop:
-                    outcomes_df.at[idx, "status"]     = "stop_hit"
-                    outcomes_df.at[idx, "result_pct"] = round((stop - entry) / entry * 100, 2)
+                if is_call:
+                    if tp3 > 0 and max_high >= tp3:
+                        outcomes_df.at[idx, "status"]     = "tp3_hit"
+                        outcomes_df.at[idx, "result_pct"] = move_pct(entry, tp3, True)
+                    elif tp2 > 0 and max_high >= tp2:
+                        outcomes_df.at[idx, "status"]     = "tp2_hit"
+                        outcomes_df.at[idx, "result_pct"] = move_pct(entry, tp2, True)
+                    elif tp1 > 0 and max_high >= tp1:
+                        outcomes_df.at[idx, "status"]     = "tp1_hit"
+                        outcomes_df.at[idx, "result_pct"] = move_pct(entry, tp1, True)
+                    elif stop > 0 and min_low <= stop:
+                        outcomes_df.at[idx, "status"]     = "stop_hit"
+                        outcomes_df.at[idx, "result_pct"] = move_pct(entry, stop, True)
+                else:
+                    if tp3 > 0 and min_low <= tp3:
+                        outcomes_df.at[idx, "status"]     = "tp3_hit"
+                        outcomes_df.at[idx, "result_pct"] = move_pct(entry, tp3, False)
+                    elif tp2 > 0 and min_low <= tp2:
+                        outcomes_df.at[idx, "status"]     = "tp2_hit"
+                        outcomes_df.at[idx, "result_pct"] = move_pct(entry, tp2, False)
+                    elif tp1 > 0 and min_low <= tp1:
+                        outcomes_df.at[idx, "status"]     = "tp1_hit"
+                        outcomes_df.at[idx, "result_pct"] = move_pct(entry, tp1, False)
+                    elif stop > 0 and max_high >= stop:
+                        outcomes_df.at[idx, "status"]     = "stop_hit"
+                        outcomes_df.at[idx, "result_pct"] = move_pct(entry, stop, False)
 
-        # ─── انتهت مدة الـ option ────────────────
         if today > expiry_date and outcomes_df.at[idx, "status"] == "open":
             last_close = float(hist["Close"].iloc[-1])
             outcomes_df.at[idx, "status"]     = "expired"
-            outcomes_df.at[idx, "result_pct"] = round((last_close - entry) / entry * 100, 2)
+            outcomes_df.at[idx, "result_pct"] = move_pct(entry, last_close, is_call)
 
         print(f"  {ticker}: {outcomes_df.at[idx, 'status']}")
 
@@ -199,7 +229,7 @@ def print_summary(outcomes_df):
         print("\nلا توجد نتائج مغلقة بعد")
         return
 
-    wins  = closed[closed["status"].isin(["tp1_hit","tp2_hit","tp3_hit"])]
+    wins  = closed[closed["status"].isin(["tp1_hit", "tp2_hit", "tp3_hit"])]
     stops = closed[closed["status"] == "stop_hit"]
 
     win_rate = len(wins) / len(closed) * 100 if len(closed) > 0 else 0
@@ -209,13 +239,10 @@ def print_summary(outcomes_df):
     print(f"\n📊 ملخص النتائج:")
     print(f"   إجمالي مغلق : {len(closed)}")
     print(f"   Win Rate    : {win_rate:.1f}%")
-    print(f"   Avg Win     : +{avg_win:.2f}%")
-    print(f"   Avg Loss    : {avg_loss:.2f}%")
+    print(f"   Avg Win     : {avg_win:+.2f}%")
+    print(f"   Avg Loss    : {avg_loss:+.2f}%")
 
 
-# ─────────────────────────────────────────────
-# Main
-# ─────────────────────────────────────────────
 if __name__ == "__main__":
     print("🔍 جاري تحديث سجل النتائج...\n")
 
