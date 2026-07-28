@@ -114,6 +114,12 @@
   .modal input:focus { outline:none; border-color:#58a6ff; }
   .modal-btns { display:flex; gap:8px; justify-content:flex-end; }
   .run-status { font-size:12px; color:#8b949e; margin-top:4px; text-align:center; }
+  .live-status { margin: 8px 0 6px; padding: 8px 10px; border-radius: 8px; font-size: 12px; font-weight: 700; text-align: center; border: 1px solid #30363d; background: #21262d; color: #8b949e; }
+  .live-status.status-entry-wait { background: #3d2d00; color: #e3b341; border-color: #e3b341; }
+  .live-status.status-in-trade { background: #1a4731; color: #3fb950; border-color: #3fb950; }
+  .live-status.status-tp { background: #1a2a40; color: #58a6ff; border-color: #58a6ff; }
+  .live-status.status-stop { background: #3d1a1a; color: #f85149; border-color: #f85149; }
+  .live-dist { font-size: 10px; font-weight: 500; color: #8b949e; margin-top: 3px; }
 </style>
 </head>
 <body>
@@ -126,7 +132,7 @@
     </div>
     <div class="last-update" id="lastUpdate">—</div>
     <button class="btn" id="refreshBtn" onclick="loadData()">🔄 تحديث</button>
-    <button class="btn-run" id="runBtn" onclick="triggerAndWait()">⚡ تشغيل وانتظار</button>
+    <button class="btn-run" id="runBtn" onclick="triggerAndWait()" title="فحص Finviz + يدوي فوراً عبر GitHub Actions">⚡ تشغيل يدوي</button>
     <button class="btn-settings" onclick="openSettings()" title="إعدادات التوكن">⚙️</button>
   </div>
 </div>
@@ -135,7 +141,7 @@
 <div class="modal-overlay" id="settingsModal">
   <div class="modal">
     <h3>⚙️ الإعدادات</h3>
-    <p style="margin-bottom:8px;color:#e3b341;font-size:12px">🔑 GitHub Token (لتشغيل الـ workflow)</p>
+    <p style="margin-bottom:8px;color:#e3b341;font-size:12px">🔑 GitHub Token (للتشغيل اليدوي — زر ⚡ تشغيل يدوي)</p>
     <input type="password" id="tokenInput" placeholder="github_pat_..." />
     <p style="margin-bottom:8px;color:#3fb950;font-size:12px">📡 Finnhub API Key (للأسعار اللحظية)</p>
     <input type="text" id="finnhubInput" placeholder="xxxxxxxxxxxxxxxxxx" autocomplete="off" />
@@ -182,6 +188,7 @@ let autoTimer = null;
 let livePrices = {};
 let finnhubWS = null;
 let currentTickers = [];
+let tradePlans = {};  // خطة الصفقة لكل ticker — تربط Finnhub بـ Entry/Stop/TP
 
 // ── Finnhub WebSocket ────────────────────────────────────────
 function connectFinnhub(tickers) {
@@ -250,16 +257,15 @@ function setStatusOffline(tickers) {
   });
 }
 
-// تحديث السعر في البطاقة مع flash
+// تحديث السعر في البطاقة + حالة الصفقة vs Entry/Stop/TP
 function updatePriceCard(ticker, price, change, changePct, isUp) {
   const el   = document.getElementById('price-' + ticker);
   const chEl = document.getElementById('change-' + ticker);
   if (el) {
     el.textContent = '$' + price.toFixed(2);
     el.className = 'card-price ' + (change >= 0 ? 'price-up' : 'price-down');
-    // Flash animation
     el.classList.remove('flash-up','flash-down');
-    void el.offsetWidth; // reflow
+    void el.offsetWidth;
     el.classList.add(isUp ? 'flash-up' : 'flash-down');
   }
   if (chEl) {
@@ -268,6 +274,74 @@ function updatePriceCard(ticker, price, change, changePct, isUp) {
     chEl.className = 'change-badge ' + (change >= 0 ? 'change-up' : 'change-down');
     chEl.style.display = 'inline-block';
   }
+  updateLiveTradeStatus(ticker, price);
+}
+
+function planIsCall(plan) {
+  const d = (plan.direction || '').toUpperCase();
+  if (d.includes('PUT')) return false;
+  if (d.includes('CALL')) return true;
+  const entry = plan.entry, tp1 = plan.tp1, stop = plan.stop;
+  if (entry > 0 && tp1 > 0) return tp1 > entry;
+  if (entry > 0 && stop > 0) return stop < entry;
+  return true;
+}
+
+function evalLiveStatus(plan, price) {
+  const entry = plan.entry, stop = plan.stop;
+  const tp1 = plan.tp1, tp2 = plan.tp2, tp3 = plan.tp3;
+  const isCall = planIsCall(plan);
+  if (!entry || entry <= 0) return { cls: 'status-entry-wait', label: '⏳ بانتظار بيانات Entry', dist: '' };
+
+  if (isCall) {
+    if (stop > 0 && price <= stop) return { cls: 'status-stop', label: '🛑 Stop — السعر تحت الإيقاف', dist: '' };
+    if (tp3 > 0 && price >= tp3) return { cls: 'status-tp', label: '🏆 TP3 — الهدف الثالث', dist: '' };
+    if (tp2 > 0 && price >= tp2) return { cls: 'status-tp', label: '✅✅ TP2 — الهدف الثاني', dist: '' };
+    if (tp1 > 0 && price >= tp1) return { cls: 'status-tp', label: '✅ TP1 — الهدف الأول', dist: '' };
+    if (price >= entry) {
+      const toTp = tp1 > 0 ? ((tp1 - price) / price * 100).toFixed(1) : null;
+      return { cls: 'status-in-trade', label: '🟢 داخل الصفقة — Entry تحقق', dist: toTp ? `+${toTp}% إلى TP1` : '' };
+    }
+    const pct = ((entry - price) / price * 100).toFixed(1);
+    return { cls: 'status-entry-wait', label: '⏳ بانتظار Entry', dist: `${pct}% فوق السعر الحالي` };
+  }
+
+  // PUT
+  if (stop > 0 && price >= stop) return { cls: 'status-stop', label: '🛑 Stop — السعر فوق الإيقاف', dist: '' };
+  if (tp3 > 0 && price <= tp3) return { cls: 'status-tp', label: '🏆 TP3 — الهدف الثالث', dist: '' };
+  if (tp2 > 0 && price <= tp2) return { cls: 'status-tp', label: '✅✅ TP2 — الهدف الثاني', dist: '' };
+  if (tp1 > 0 && price <= tp1) return { cls: 'status-tp', label: '✅ TP1 — الهدف الأول', dist: '' };
+  if (price <= entry) {
+    const toTp = tp1 > 0 ? ((price - tp1) / price * 100).toFixed(1) : null;
+    return { cls: 'status-in-trade', label: '🟢 داخل الصفقة — Entry تحقق', dist: toTp ? `${toTp}% إلى TP1` : '' };
+  }
+  const pct = ((price - entry) / price * 100).toFixed(1);
+  return { cls: 'status-entry-wait', label: '⏳ بانتظار Entry', dist: `${pct}% تحت السعر الحالي` };
+}
+
+function updateLiveTradeStatus(ticker, price) {
+  const plan = tradePlans[ticker];
+  const box  = document.getElementById('live-status-' + ticker);
+  if (!plan || !box || !price || price <= 0) return;
+  const st = evalLiveStatus(plan, price);
+  box.className = 'live-status ' + st.cls;
+  box.innerHTML = st.label + (st.dist ? `<div class="live-dist">${st.dist}</div>` : '');
+}
+
+function registerTradePlans(rows) {
+  tradePlans = {};
+  rows.forEach(r => {
+    const entry = parseFloat(r.entry_stock) || 0;
+    tradePlans[r.Ticker] = {
+      direction: r.direction || '',
+      entry: entry,
+      stop: parseFloat(r.stop_stock) || 0,
+      tp1: parseFloat(r.tp1_stock) || 0,
+      tp2: parseFloat(r.tp2_stock) || 0,
+      tp3: parseFloat(r.tp3_stock) || 0,
+      rec: r.recommendation || 'AVOID',
+    };
+  });
 }
 
 function parseCSV(text) {
@@ -390,6 +464,10 @@ function buildCard(r) {
         <span class="rec-badge ${rec}">${rec}</span>
         <div style="font-size:11px;color:#8b949e;margin-top:4px">Score: ${r.Score||0}</div>
       </div>
+    </div>
+    <div class="live-status status-entry-wait" id="live-status-${r.Ticker}">
+      ⏳ ربط السعر اللحظي...
+      <div class="live-dist">Finnhub → Entry / Stop / TP</div>
     </div>
     <div style="display:flex;gap:8px;margin-bottom:6px">
       <div style="flex:1;background:#1a2535;border:1px solid #1f6feb;border-radius:6px;padding:8px 10px">
@@ -524,6 +602,7 @@ async function loadData() {
     }
 
     const rows = parseCSV(text);
+    registerTradePlans(rows);
     const buy = rows.filter(r => r.recommendation === 'BUY').length;
     const wait = rows.filter(r => r.recommendation === 'WAIT').length;
     const avoid = rows.filter(r => !['BUY','WAIT'].includes(r.recommendation)).length;
@@ -541,9 +620,14 @@ async function loadData() {
     document.getElementById('loadingDiv').style.display = 'none';
     document.getElementById('mainContent').style.display = 'block';
 
-    // اتصل بـ Finnhub WebSocket للأسعار اللحظية
+    // اتصل بـ Finnhub — يحدّث السعر + حالة Entry/Stop/TP
     const tickers = rows.map(r => r.Ticker).filter(Boolean);
     connectFinnhub(tickers);
+    // إذا ما في Finnhub — استخدم سعر CSV كبداية
+    rows.forEach(r => {
+      const p = parseFloat(String(r.Price || '').replace('$', '')) || 0;
+      if (p > 0) updateLiveTradeStatus(r.Ticker, p);
+    });
   } catch (err) {
     document.getElementById('loadingDiv').style.display = 'none';
     document.getElementById('errorDiv').style.display = 'block';
@@ -652,9 +736,10 @@ document.getElementById('autoRefresh').addEventListener('change', function() {
 });
 
 // ── Token Settings ──────────────────────────────────────────
+// workflow_dispatch — نفس فحص Finviz + manual_tickers.txt (price_update كل 5 دقائق)
 const OWNER = 'nasralsws8-web';
 const REPO  = 'screen-option-report';
-const WORKFLOW = 'run_screener.yml';
+const WORKFLOW = 'price_update.yml';
 
 function openSettings() {
   const saved = localStorage.getItem('gh_token') || '';
@@ -680,7 +765,7 @@ function saveToken() {
   closeSettings();
 }
 
-// ── Trigger Workflow & Wait ──────────────────────────────────
+// ── تشغيل يدوي: workflow_dispatch + انتظار + تحديث CSV ─────
 async function triggerAndWait() {
   const token = localStorage.getItem('gh_token');
   if (!token) { openSettings(); return; }
@@ -694,20 +779,20 @@ async function triggerAndWait() {
   const headers = { 'Authorization': `Bearer ${token}`, 'Accept': 'application/vnd.github+json' };
 
   try {
-    // 1) سجّل الوقت قبل التشغيل
     const before = new Date().toISOString();
-    status.textContent = '⚡ جاري تشغيل الـ workflow...';
+    status.textContent = '⚡ تشغيل يدوي — Finviz + القائمة اليدوية...';
 
-    // 2) شغّل الـ workflow
     const trigRes = await fetch(`${API}/actions/workflows/${WORKFLOW}/dispatches`, {
       method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' },
       body: JSON.stringify({ ref: 'main' })
     });
+    if (trigRes.status === 401 || trigRes.status === 403) {
+      throw new Error('Token غير صالح أو بدون صلاحية workflow — راجع ⚙️');
+    }
     if (trigRes.status !== 204) throw new Error(`خطأ في التشغيل: ${trigRes.status}`);
 
-    // 3) انتظر ثانيتين ثم ابدأ المراقبة
     await new Promise(r => setTimeout(r, 2000));
-    status.textContent = '⏳ انتظر... الـ workflow يعمل الآن';
+    status.textContent = '⏳ الفحص يعمل على GitHub (~2–5 دقائق)...';
 
     // 4) راقب كل 15 ثانية حتى ينتهي
     let elapsed = 0;
@@ -728,10 +813,10 @@ async function triggerAndWait() {
 
       if (st === 'completed') {
         if (conc === 'success') {
-          status.textContent = '✅ اكتمل! جاري تحديث البيانات...';
-          await new Promise(r => setTimeout(r, 3000)); // انتظر GitHub Pages يتحدث
+          status.textContent = '✅ اكتمل الفحص اليدوي! جاري تحديث البيانات...';
+          await new Promise(r => setTimeout(r, 3000));
           await loadData();
-          status.textContent = '✅ تم التحديث بنجاح!';
+          status.textContent = '✅ تم — النتائج محدّثة';
         } else {
           status.textContent = `❌ فشل الـ workflow: ${conc}`;
         }
