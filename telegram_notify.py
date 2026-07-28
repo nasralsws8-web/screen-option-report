@@ -84,6 +84,7 @@ def create_card(row) -> bytes:
     direction = str(row.get("direction",   "")).replace("📈","").replace("📉","").strip().upper()
     entry     = row.get("entry_stock",     "N/A")
     stop_v    = row.get("stop_stock",      "N/A")
+    strike    = row.get("strike",          row.get("Strike", "N/A"))
     tp1       = row.get("tp1_stock",       "N/A")
     tp2       = row.get("tp2_stock",       "N/A")
     tp3       = row.get("tp3_stock",       "N/A")
@@ -95,7 +96,7 @@ def create_card(row) -> bytes:
 
     dir_label = "CALL  📈" if direction == "CALL" else "PUT  📉"
 
-    W, H  = 540, 640
+    W, H  = 540, 700
     PAD   = 24
     R     = 14
 
@@ -132,6 +133,12 @@ def create_card(row) -> bytes:
     draw.text((PAD+half+24,    y+8),  "Stop Loss", font=FONTS["sm"], fill=LGRAY)
     draw.text((PAD+half+24,    y+28), fmt(stop_v), font=FONTS["lg"], fill=RED)
     y += 74
+
+    # strike
+    draw.rounded_rectangle([PAD, y, W-PAD, y+48], radius=8, fill=DGRAY)
+    draw.text((PAD+14, y+8),  "Strike Price", font=FONTS["sm"], fill=LGRAY)
+    draw.text((PAD+14, y+26), fmt(strike),    font=FONTS["md"], fill=BLUE)
+    y += 64
 
     # divider + targets
     draw.line([PAD, y, W-PAD, y], fill=BORDER, width=1)
