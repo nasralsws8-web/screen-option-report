@@ -321,7 +321,8 @@ function evalLiveStatus(plan, price) {
 
 function effectiveLiveRec(plan, st) {
   if (plan.rec === 'AVOID' || st.cls === 'status-stop') return plan.rec;
-  if (st.inTrade && plan.conf >= 45 && (plan.rec === 'WAIT' || plan.rec === 'BUY')) return 'BUY';
+  const rr = parseFloat(plan.rr) || 0;
+  if (st.inTrade && plan.conf >= 45 && rr >= 1.0 && (plan.rec === 'WAIT' || plan.rec === 'BUY')) return 'BUY';
   return plan.rec;
 }
 
@@ -379,6 +380,7 @@ function registerTradePlans(rows) {
       tp3: parseFloat(r.tp3_stock) || 0,
       rec: r.recommendation || 'AVOID',
       conf: parseInt(r.confidence) || 0,
+      rr: parseFloat(r.tp1_rr) || 0,
     };
   });
 }

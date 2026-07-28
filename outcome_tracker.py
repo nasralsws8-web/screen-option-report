@@ -135,6 +135,13 @@ def add_new_recommendations(outcomes_df):
         if not ticker:
             continue
 
+        open_same = outcomes_df[
+            (outcomes_df["ticker"] == ticker) &
+            (outcomes_df["status"] == "open")
+        ]
+        if not open_same.empty:
+            continue
+
         already = outcomes_df[
             (outcomes_df["ticker"] == ticker) &
             (outcomes_df["date"] == today)

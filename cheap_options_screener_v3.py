@@ -239,20 +239,29 @@ def filter_results_df(df):
     return df[mask].copy()
 
 
+def row_passes_watchlist_filters(r):
+    """فلتر مخفّف للـ watchlist — لا يُحفظ spread/OI ضعيف جداً."""
+    price = float(r.get("price_num") or parse_price_num(r.get("Price")) or 0)
+    prem  = float(r.get("premium") or 0)
+    sp    = float(r.get("spread_pct") if r.get("spread_pct") is not None else 99)
+    oi    = effective_oi(r.get("oi"), r.get("opt_vol"))
+    if price <= 0 or price > MAX_STOCK_PRICE:
+        return False
+    if prem < TARGET_PREM_MIN or prem > TARGET_PREM_MAX:
+        return False
+    if sp > MAX_SPREAD_PCT * 1.5:
+        return False
+    if oi < 100:
+        return False
+    return True
+
+
 def dashboard_fallback_df(df, max_rows=10):
     """أفضل المرشّحين للـ Dashboard عندما الفلتر الصارم يمنع الكل."""
     if df is None or df.empty:
         return df
     work = df.copy()
-    prices = work.apply(
-        lambda r: float(r.get("price_num") or parse_price_num(r.get("Price")) or 0),
-        axis=1,
-    )
-    work = work[
-        (work["premium"].fillna(0) > 0)
-        & (prices > 0)
-        & (prices <= MAX_STOCK_PRICE)
-    ].copy()
+    work = work[work.apply(row_passes_watchlist_filters, axis=1)].copy()
     if work.empty:
         return work
     wait_buy = work[work["recommendation"].isin(["BUY", "WAIT"])]
@@ -461,6 +470,68 @@ def compute_technicals(hist, current_price):
 #  OPTIONS DATA  (Yahoo Finance – مجاني)
 # ════════════════════════════════════════════════════════════════════════
 
+def _atm_row(chain_df, stock_price):
+    if chain_df is None or chain_df.empty:
+        return None
+    work = chain_df.copy()
+    work["_dist"] = abs(work["strike"] - stock_price)
+    return work.loc[work["_dist"].idxmin()]
+
+
+def _leg_from_atm(atm_row):
+    if atm_row is None:
+        return None
+    bid  = float(atm_row.get("bid") or 0)
+    ask  = float(atm_row.get("ask") or 0)
+    last = float(atm_row.get("lastPrice") or 0)
+    if ask == 0 and bid == 0:
+        if last > 0:
+            bid = round(last * 0.97, 2)
+            ask = round(last * 1.03, 2)
+        else:
+            return None
+    return {
+        "premium":    round((bid + ask) / 2, 2),
+        "iv":         round(float(atm_row.get("impliedVolatility") or 0), 4),
+        "oi":         int(atm_row.get("openInterest") or 0),
+        "opt_vol":    int(atm_row.get("volume") or 0),
+        "spread_pct": round((ask - bid) / ask, 4) if ask > 0 else None,
+        "strike":     float(atm_row.get("strike") or 0),
+    }
+
+
+def _apply_leg_fields(target, leg):
+    if not leg:
+        return False
+    target["premium"]    = leg["premium"]
+    target["iv"]         = leg["iv"]
+    target["oi"]         = leg["oi"]
+    target["opt_vol"]    = leg["opt_vol"]
+    target["spread_pct"] = leg["spread_pct"]
+    target["strike"]     = leg["strike"]
+    return True
+
+
+def resolve_is_call(r, tech=None):
+    direction_raw = str(r.get("direction", "")).upper()
+    if "CALL" in direction_raw:
+        return True
+    if "PUT" in direction_raw:
+        return False
+    tech = tech or {}
+    rsi_early   = float(tech.get("rsi", r.get("rsi", 50)) or 50)
+    above_ema20 = tech.get("above_ema20", False)
+    above_vwap  = tech.get("above_vwap", False)
+    bull_signals = sum([above_ema20, above_vwap, rsi_early > 50])
+    return bull_signals >= 2
+
+
+def apply_option_leg(row, is_call):
+    leg = row.get("leg_call" if is_call else "leg_put")
+    if leg:
+        _apply_leg_fields(row, leg)
+
+
 def get_earnings_date(yt_ticker):
     try:
         cal = yt_ticker.calendar
@@ -545,37 +616,23 @@ def fetch_options_data(ticker, stock_price):
         if calls.empty:
             out["error"] = "empty_chain"; return out
 
-        calls["_dist"] = abs(calls["strike"] - stock_price)
-        atm_c = calls.loc[calls["_dist"].idxmin()]
+        leg_call = _leg_from_atm(_atm_row(calls, stock_price))
+        if not leg_call:
+            out["error"] = "no_market"; return out
 
-        bid  = float(atm_c.get("bid")       or 0)
-        ask  = float(atm_c.get("ask")       or 0)
-        last = float(atm_c.get("lastPrice") or 0)
-        if ask == 0 and bid == 0:
-            if last > 0:
-                bid = round(last * 0.97, 2)
-                ask = round(last * 1.03, 2)
-            else:
-                out["error"] = "no_market"; return out
-
-        out["premium"]    = round((bid + ask) / 2, 2)
-        out["iv"]         = round(float(atm_c.get("impliedVolatility") or 0), 4)
-        out["oi"]         = int(atm_c.get("openInterest") or 0)
-        out["opt_vol"]    = int(atm_c.get("volume") or 0)
-        out["spread_pct"] = round((ask - bid) / ask, 4) if ask > 0 else None
-        out["strike"]     = float(atm_c.get("strike") or 0)
+        leg_put = _leg_from_atm(_atm_row(puts, stock_price)) if not puts.empty else None
+        out["leg_call"] = leg_call
+        out["leg_put"]  = leg_put or leg_call
+        _apply_leg_fields(out, leg_call)
 
         # إشارة الاتجاه: Call OI مقابل Put OI
-        if not puts.empty:
-            puts["_dist"] = abs(puts["strike"] - stock_price)
-            atm_p = puts.loc[puts["_dist"].idxmin()]
-            poi   = int(atm_p.get("openInterest") or 0)
-            coi   = out["oi"]
-            if coi > 0 and poi > 0:
-                ratio = coi / poi
-                out["direction"] = ("CALL 📈" if ratio > 1.4
-                                    else "PUT  📉" if ratio < 0.7
-                                    else "NEUTRAL")
+        if leg_put and leg_call["oi"] > 0 and leg_put["oi"] > 0:
+            ratio = leg_call["oi"] / leg_put["oi"]
+            out["direction"] = ("CALL 📈" if ratio > 1.4
+                                else "PUT  📉" if ratio < 0.7
+                                else "NEUTRAL")
+            if "PUT" in out["direction"]:
+                _apply_leg_fields(out, leg_put)
 
     except Exception as e:
         out["error"] = str(e)[:60]
@@ -712,20 +769,7 @@ def compute_trade_plan(r, tech):
         "confidence": 0, "probability": 0, "stars": 0,
     }
 
-    # إصلاح 1: NEUTRAL يُحلّ باستخدام المؤشرات الفنية بدل افتراض PUT
-    direction_raw = str(r.get("direction", "")).upper()
-    if "CALL" in direction_raw:
-        is_call = True
-    elif "PUT" in direction_raw:
-        is_call = False
-    else:
-        # NEUTRAL → نقرر بناءً على EMA20 + RSI + VWAP
-        rsi_early   = float(tech.get("rsi", 50) or 50)
-        above_ema20 = tech.get("above_ema20", False)
-        above_vwap  = tech.get("above_vwap",  False)
-        bull_signals = sum([above_ema20, above_vwap, rsi_early > 50])
-        is_call = bull_signals >= 2
-
+    is_call  = resolve_is_call(r, tech)
     price    = float(r.get("price_num", 0) or 0)
     strike   = float(r.get("strike",    0) or price)
     iv_raw   = float(r.get("iv", 0) or 0)
@@ -1086,7 +1130,7 @@ SAVE_COLS = [
     "Ticker", "Price", "premium", "strike", "iv", "oi", "opt_vol", "spread_pct",
     "atr_pct", "gap_pct", "RVOL", "pm_high", "pm_low", "pm_volume",
     "expiry", "direction", "earnings", "float_shares", "avg_vol",
-    "entry_stock", "stop_stock", "tp1_stock", "tp2_stock", "tp3_stock",
+    "entry_stock", "stop_stock", "tp1_stock", "tp2_stock", "tp3_stock", "tp1_rr",
     "Score", "recommendation", "confidence", "Notes",
 ]
 
@@ -1268,15 +1312,19 @@ def process_candidates(candidates_df, show_progress=True):
             "pm_low":       opts["pm_low"],
             "pm_last":      opts["pm_last"],
             "pm_volume":    opts["pm_volume"],
+            "leg_call":     opts.get("leg_call"),
+            "leg_put":      opts.get("leg_put"),
             "_error":       opts["error"],
             "_source":      s.get("_source", ""),
         }
+
+        tech = compute_technicals(hist, price_num)
+        apply_option_leg(row, resolve_is_call(row, tech))
 
         score, notes = score_stock(row)
         row["Score"] = score
         row["Notes"] = " | ".join(notes)
 
-        tech = compute_technicals(hist, price_num)
         try:
             plan = compute_trade_plan(row, tech)
         except Exception as e:
@@ -1291,6 +1339,7 @@ def process_candidates(candidates_df, show_progress=True):
         row["tp1_stock"]      = plan.get("tp1_stock")
         row["tp2_stock"]      = plan.get("tp2_stock")
         row["tp3_stock"]      = plan.get("tp3_stock")
+        row["tp1_rr"]         = plan.get("tp1_rr")
 
         if show_progress:
             stk_s   = f"${row['strike']:.2f}" if row["strike"]  else "   N/A"

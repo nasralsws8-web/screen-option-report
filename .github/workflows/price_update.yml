@@ -1,9 +1,9 @@
-name: Price Update (Every 5 min during market hours)
+name: Price Update (Every 15 min during market hours)
 
 on:
   schedule:
-    # Mon-Fri 13:35 - 19:55 UTC (9:35 AM - 3:55 PM ET) every 5 minutes
-    - cron: '*/5 13-19 * * 1-5'
+    # Mon-Fri 13:30 - 19:45 UTC (9:30 AM - 3:45 PM ET) every 15 minutes
+    - cron: '*/15 13-19 * * 1-5'
     - cron: '0 20 * * 1-5'   # Final update at market close 4 PM ET
   workflow_dispatch:
 
