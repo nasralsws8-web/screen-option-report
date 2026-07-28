@@ -1,2 +1,2 @@
 Ticker,Price,premium,strike,iv,oi,opt_vol,spread_pct,atr_pct,gap_pct,RVOL,pm_high,pm_low,pm_volume,expiry,direction,earnings,float_shares,avg_vol,entry_stock,stop_stock,tp1_stock,tp2_stock,tp3_stock,Score,recommendation,confidence,Notes
-NOWL,5.07,0.57,5.0,1.0781,2938,50.0,0.0833,11.05,0.0231,0.35,5.03,4.76,0,2026-08-21,CALL 📈,,,21823272,5.06,4.6,5.46,5.74,6.13,9,WAIT,45,LargeCap +1 | OI>2K +3 | Spread>8% -1 | Prem✓ +2 | ATR%>5 +3 | NoEarnings? +1
+NOWL,5.05,0.57,5.0,1.0938,2938,66.0,0.0833,11.09,0.0231,0.37,5.03,4.76,0,2026-08-21,CALL 📈,,,21823272,5.06,4.6,5.44,5.72,6.11,9,WAIT,45,LargeCap +1 | OI>2K +3 | Spread>8% -1 | Prem✓ +2 | ATR%>5 +3 | NoEarnings? +1
