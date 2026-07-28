@@ -190,6 +190,8 @@ let livePrices = {};
 let finnhubWS = null;
 let currentTickers = [];
 let tradePlans = {};  // خطة الصفقة لكل ticker — تربط Finnhub بـ Entry/Stop/TP
+let outcomeRows = []; // صفوف السجل — للتحديث الحي
+let outcomeOpenTickers = [];
 
 // ── Finnhub WebSocket ────────────────────────────────────────
 function connectFinnhub(tickers) {
@@ -276,6 +278,7 @@ function updatePriceCard(ticker, price, change, changePct, isUp) {
     chEl.style.display = 'inline-block';
   }
   updateLiveTradeStatus(ticker, price);
+  updateHistoryLiveCell(ticker, price);
 }
 
 function planIsCall(plan) {
@@ -395,7 +398,7 @@ function parseCSV(text) {
       obj[h] = (vals[i] || '').replace(/^"|"$/g,'').trim();
     });
     return obj;
-  }).filter(r => r.Ticker);
+  }).filter(r => r.Ticker || r.ticker);
 }
 
 function fmt(v, prefix='$', suffix='', decimals=2) {
@@ -624,6 +627,7 @@ function renderTable(rows) {
 }
 
 async function loadData() {
+  await prefetchOutcomes();
   const btn = document.getElementById('refreshBtn');
   btn.disabled = true;
   btn.className = 'btn refreshing';
@@ -660,9 +664,14 @@ async function loadData() {
     document.getElementById('lastUpdate').textContent = 'آخر تحديث: ' + new Date().toLocaleTimeString('ar-SA');
     document.getElementById('loadingDiv').style.display = 'none';
     document.getElementById('mainContent').style.display = 'block';
+    historyLoaded = false;
+    if (document.getElementById('historyView').style.display !== 'none') loadHistory(true);
 
-    // اتصل بـ Finnhub — يحدّث السعر + حالة Entry/Stop/TP
-    const tickers = rows.map(r => r.Ticker).filter(Boolean);
+    // اتصل بـ Finnhub — مسح اليوم + صفقات السجل المفتوحة
+    const tickers = [...new Set([
+      ...rows.map(r => r.Ticker).filter(Boolean),
+      ...outcomeOpenTickers,
+    ])];
     connectFinnhub(tickers);
     // إذا ما في Finnhub — استخدم سعر CSV كبداية
     rows.forEach(r => {
@@ -685,28 +694,94 @@ function showTab(tab) {
   document.getElementById('cardsView').style.display   = tab === 'cards'   ? 'block' : 'none';
   document.getElementById('tableView').style.display   = tab === 'table'   ? 'block' : 'none';
   document.getElementById('historyView').style.display = tab === 'history' ? 'block' : 'none';
-  if (tab === 'history') loadHistory();
+  if (tab === 'history') loadHistory(true);
 }
 
 // ── Outcome History ──────────────────────────────────────────
 const OUTCOMES_URL = 'https://raw.githubusercontent.com/nasralsws8-web/screen-option-report/main/outcomes.csv';
 let historyLoaded = false;
 
-async function loadHistory() {
-  if (historyLoaded) return;
+function outcomeToPlan(r) {
+  return {
+    direction: r.direction || '',
+    entry: parseFloat(String(r.entry_stock || '').replace('$', '')) || 0,
+    stop: parseFloat(r.stop_stock) || 0,
+    tp1: parseFloat(r.tp1_stock) || 0,
+    tp2: parseFloat(r.tp2_stock) || 0,
+    tp3: parseFloat(r.tp3_stock) || 0,
+    rec: 'WAIT',
+    conf: parseInt(r.confidence) || 0,
+  };
+}
+
+function movePctFromEntry(entry, price, isCall) {
+  if (!entry || !price) return null;
+  return isCall ? ((price - entry) / entry * 100) : ((entry - price) / entry * 100);
+}
+
+function historyRowKey(r) {
+  return `${r.date}-${r.ticker}`;
+}
+
+function updateHistoryLiveCell(ticker, price) {
+  outcomeRows.filter(r => r.ticker === ticker && r.status === 'open').forEach(r => {
+    const key = historyRowKey(r);
+    const priceEl = document.getElementById('hist-price-' + key);
+    const liveEl  = document.getElementById('hist-live-' + key);
+    const moveEl  = document.getElementById('hist-move-' + key);
+    if (!priceEl || !liveEl) return;
+    const plan = outcomeToPlan(r);
+    const st = evalLiveStatus(plan, price);
+    const isCall = planIsCall(plan);
+    const move = movePctFromEntry(plan.entry, price, isCall);
+    priceEl.textContent = '$' + price.toFixed(2);
+    priceEl.style.color = '#3fb950';
+    liveEl.textContent = st.label + (st.dist ? ' · ' + st.dist : '');
+    liveEl.style.color = st.cls === 'status-stop' ? '#f85149'
+      : st.cls === 'status-tp' ? '#58a6ff'
+      : st.cls === 'status-in-trade' ? '#3fb950' : '#e3b341';
+    if (moveEl && move !== null) {
+      moveEl.textContent = (move >= 0 ? '+' : '') + move.toFixed(1) + '%';
+      moveEl.style.color = move >= 0 ? '#3fb950' : '#f85149';
+    }
+  });
+}
+
+async function fetchFinnhubQuotes(tickers) {
+  const key = localStorage.getItem('finnhub_key');
+  if (!key || !tickers.length) return;
+  await Promise.all(tickers.map(async (t) => {
+    try {
+      const resp = await fetch(`https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(t)}&token=${key}`);
+      if (!resp.ok) return;
+      const q = await resp.json();
+      if (q.c && q.c > 0) {
+        livePrices[t] = livePrices[t] || { price: q.c, open: q.c };
+        livePrices[t].price = q.c;
+        updateHistoryLiveCell(t, q.c);
+      }
+    } catch (e) { /* ignore */ }
+  }));
+}
+
+async function loadHistory(force) {
+  if (historyLoaded && !force) return;
   const container = document.getElementById('historyContent');
+  container.innerHTML = '<div class="loading"><div class="spinner"></div><br>جاري تحميل السجل...</div>';
   try {
     const resp = await fetch(OUTCOMES_URL + '?t=' + Date.now());
     if (!resp.ok) throw new Error('ما تم تحميل السجل');
     const text = await resp.text();
     const rows = parseCSV(text).filter(r => r.ticker);
+    outcomeRows = rows;
+    outcomeOpenTickers = rows.filter(r => r.status === 'open').map(r => r.ticker);
 
     if (rows.length === 0) {
-      container.innerHTML = '<div style="text-align:center;padding:40px;color:#8b949e">السجل فارغ — سيتعبأ تلقائياً بعد أول تشغيل غداً</div>';
+      container.innerHTML = '<div style="text-align:center;padding:40px;color:#8b949e">السجل فارغ — سيتعبأ تلقائياً بعد أول BUY</div>';
+      historyLoaded = true;
       return;
     }
 
-    // إحصائيات
     const closed  = rows.filter(r => r.status !== 'open');
     const wins    = closed.filter(r => ['tp1_hit','tp2_hit','tp3_hit'].includes(r.status));
     const stops   = closed.filter(r => r.status === 'stop_hit');
@@ -723,7 +798,12 @@ async function loadHistory() {
       'tp3_hit':'#58a6ff','stop_hit':'#f85149','expired':'#8b949e'
     };
 
+    const finnhubHint = localStorage.getItem('finnhub_key')
+      ? 'الأسعار الحية من Finnhub'
+      : '⚙️ أضف Finnhub Key للأسعار الحية — حالياً آخر سعر مسجّل';
+
     container.innerHTML = `
+      <p style="font-size:12px;color:#8b949e;margin-bottom:12px">${finnhubHint} · يتحدث عند فتح التبويب أو 🔄 تحديث</p>
       <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:20px">
         <div class="stat total"><div class="stat-num">${rows.length}</div><div class="stat-label">إجمالي التوصيات</div></div>
         <div class="stat buy"><div class="stat-num">${winRate}%</div><div class="stat-label">Win Rate</div></div>
@@ -737,37 +817,65 @@ async function loadHistory() {
           <th style="padding:10px;text-align:right;color:#8b949e">التاريخ</th>
           <th style="padding:10px;text-align:right;color:#8b949e">السهم</th>
           <th style="padding:10px;text-align:right;color:#8b949e">الاتجاه</th>
+          <th style="padding:10px;text-align:right;color:#8b949e">ثقة</th>
           <th style="padding:10px;text-align:right;color:#8b949e">Entry</th>
+          <th style="padding:10px;text-align:right;color:#8b949e">السعر الحالي</th>
+          <th style="padding:10px;text-align:right;color:#8b949e">vs Entry</th>
           <th style="padding:10px;text-align:right;color:#8b949e">TP1</th>
-          <th style="padding:10px;text-align:right;color:#8b949e">TP2</th>
           <th style="padding:10px;text-align:right;color:#8b949e">Stop</th>
           <th style="padding:10px;text-align:right;color:#8b949e">النتيجة</th>
-          <th style="padding:10px;text-align:right;color:#8b949e">الحالة</th>
+          <th style="padding:10px;text-align:right;color:#8b949e">سجل CSV</th>
+          <th style="padding:10px;text-align:right;color:#8b949e">الحالة الحية</th>
         </tr></thead>
         <tbody>
           ${rows.sort((a,b)=>b.date>a.date?1:-1).map(r=>{
+            const key = historyRowKey(r);
             const res = parseFloat(r.result_pct);
             const resStr = isNaN(res) ? '—' : (res>=0?'+':'')+res.toFixed(2)+'%';
             const resColor = isNaN(res)?'#8b949e':res>=0?'#3fb950':'#f85149';
             const st = r.status || 'open';
+            const isOpen = st === 'open';
+            const entryHit = String(r.entry_hit).toLowerCase() === 'true';
+            const fallbackPrice = parseFloat(String(r.price_at_rec || '').replace('$', '')) || 0;
+            const liveP = livePrices[r.ticker]?.price || fallbackPrice;
+            const plan = outcomeToPlan(r);
+            const liveSt = isOpen && liveP > 0 ? evalLiveStatus(plan, liveP) : null;
+            const isCall = planIsCall(plan);
+            const move = isOpen && liveP > 0 ? movePctFromEntry(plan.entry, liveP, isCall) : null;
+            const moveStr = move === null ? '—' : (move >= 0 ? '+' : '') + move.toFixed(1) + '%';
+            const moveColor = move === null ? '#8b949e' : move >= 0 ? '#3fb950' : '#f85149';
+            const dir = (r.direction || '').toUpperCase();
+            const dirColor = dir.includes('CALL') ? '#3fb950' : dir.includes('PUT') ? '#f85149' : '#8b949e';
+            const dirLabel = dir.includes('CALL') ? 'CALL ↑' : dir.includes('PUT') ? 'PUT ↓' : 'NEUTRAL';
             return `<tr style="border-bottom:1px solid #21262d">
               <td style="padding:10px;color:#8b949e">${r.date||'—'}</td>
               <td style="padding:10px;font-weight:700;color:#58a6ff">${r.ticker}</td>
-              <td style="padding:10px;color:${(r.direction||'').includes('CALL')?'#3fb950':'#f85149'}">${(r.direction||'').replace('CALL','CALL ↑').replace('PUT','PUT ↓')}</td>
-              <td style="padding:10px">$${parseFloat(r.entry_stock||0).toFixed(2)}</td>
+              <td style="padding:10px;color:${dirColor}">${dirLabel}</td>
+              <td style="padding:10px;color:${confColor(r.confidence)}">${r.confidence||0}%</td>
+              <td style="padding:10px">$${parseFloat(r.entry_stock||0).toFixed(2)}${entryHit ? ' ✓' : ''}</td>
+              <td id="hist-price-${key}" style="padding:10px;color:${isOpen ? '#58a6ff' : '#8b949e'}">${liveP > 0 ? '$'+liveP.toFixed(2) : '—'}</td>
+              <td id="hist-move-${key}" style="padding:10px;font-weight:700;color:${moveColor}">${moveStr}</td>
               <td style="padding:10px;color:#3fb950">$${parseFloat(r.tp1_stock||0).toFixed(2)}</td>
-              <td style="padding:10px;color:#3fb950">$${parseFloat(r.tp2_stock||0).toFixed(2)}</td>
               <td style="padding:10px;color:#f85149">$${parseFloat(r.stop_stock||0).toFixed(2)}</td>
               <td style="padding:10px;font-weight:700;color:${resColor}">${resStr}</td>
               <td style="padding:10px;font-weight:700;color:${statusColor[st]||'#8b949e'}">${statusLabel[st]||st}</td>
+              <td id="hist-live-${key}" style="padding:10px;font-size:12px;color:${liveSt ? (liveSt.cls==='status-stop'?'#f85149':liveSt.cls==='status-tp'?'#58a6ff':liveSt.cls==='status-in-trade'?'#3fb950':'#e3b341') : '#8b949e'}">${liveSt ? liveSt.label + (liveSt.dist ? ' · '+liveSt.dist : '') : (isOpen ? 'بانتظار سعر…' : '—')}</td>
             </tr>`;
           }).join('')}
         </tbody>
       </table>
       </div>`;
+
     historyLoaded = true;
+    const allTickers = [...new Set([
+      ...currentTickers,
+      ...outcomeOpenTickers,
+    ])];
+    if (allTickers.length) connectFinnhub(allTickers);
+    await fetchFinnhubQuotes(outcomeOpenTickers);
   } catch(e) {
     container.innerHTML = `<div class="error-box">⚠️ ${e.message}</div>`;
+    historyLoaded = false;
   }
 }
 
@@ -872,6 +980,16 @@ async function triggerAndWait() {
 
   btn.disabled = false;
   setTimeout(() => { status.style.display = 'none'; }, 10000);
+}
+
+async function prefetchOutcomes() {
+  try {
+    const resp = await fetch(OUTCOMES_URL + '?t=' + Date.now());
+    if (!resp.ok) return;
+    const rows = parseCSV(await resp.text()).filter(r => r.ticker);
+    outcomeRows = rows;
+    outcomeOpenTickers = rows.filter(r => r.status === 'open').map(r => r.ticker);
+  } catch (e) { /* ignore */ }
 }
 
 loadData();
