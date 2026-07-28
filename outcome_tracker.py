@@ -23,6 +23,14 @@ OUTCOMES_COLS = [
 ]
 
 
+def valid_target(price):
+    """رفض أهداف سالبة أو صفر (مثل SNXX tp3=-3.78)."""
+    try:
+        return float(price) > 0
+    except (TypeError, ValueError):
+        return False
+
+
 def resolve_is_call(direction, entry, tp1, stop):
     """CALL/PUT/NEUTRAL — NEUTRAL يُستنتج من entry/tp1/stop."""
     d = str(direction or "").upper()
@@ -202,7 +210,8 @@ def update_open_outcomes(outcomes_df):
 
         try:
             start = rec_date.strftime("%Y-%m-%d")
-            end   = (today + timedelta(days=1)).strftime("%Y-%m-%d")
+            # +2 أيام لضمان اكتمال شمعة اليوم بعد إغلاق السوق
+            end   = (today + timedelta(days=2)).strftime("%Y-%m-%d")
             hist  = yf.download(ticker, start=start, end=end,
                                 interval="1d", progress=False, auto_adjust=True)
             if isinstance(hist.columns, pd.MultiIndex):
@@ -235,29 +244,29 @@ def update_open_outcomes(outcomes_df):
                 min_low  = float(post["Low"].min())
 
                 if is_call:
-                    if tp3 > 0 and max_high >= tp3:
+                    if valid_target(tp3) and max_high >= tp3:
                         outcomes_df.at[idx, "status"]     = "tp3_hit"
                         outcomes_df.at[idx, "result_pct"] = move_pct(entry, tp3, True)
-                    elif tp2 > 0 and max_high >= tp2:
+                    elif valid_target(tp2) and max_high >= tp2:
                         outcomes_df.at[idx, "status"]     = "tp2_hit"
                         outcomes_df.at[idx, "result_pct"] = move_pct(entry, tp2, True)
-                    elif tp1 > 0 and max_high >= tp1:
+                    elif valid_target(tp1) and max_high >= tp1:
                         outcomes_df.at[idx, "status"]     = "tp1_hit"
                         outcomes_df.at[idx, "result_pct"] = move_pct(entry, tp1, True)
-                    elif stop > 0 and min_low <= stop:
+                    elif valid_target(stop) and min_low <= stop:
                         outcomes_df.at[idx, "status"]     = "stop_hit"
                         outcomes_df.at[idx, "result_pct"] = move_pct(entry, stop, True)
                 else:
-                    if tp3 > 0 and min_low <= tp3:
+                    if valid_target(tp3) and min_low <= tp3:
                         outcomes_df.at[idx, "status"]     = "tp3_hit"
                         outcomes_df.at[idx, "result_pct"] = move_pct(entry, tp3, False)
-                    elif tp2 > 0 and min_low <= tp2:
+                    elif valid_target(tp2) and min_low <= tp2:
                         outcomes_df.at[idx, "status"]     = "tp2_hit"
                         outcomes_df.at[idx, "result_pct"] = move_pct(entry, tp2, False)
-                    elif tp1 > 0 and min_low <= tp1:
+                    elif valid_target(tp1) and min_low <= tp1:
                         outcomes_df.at[idx, "status"]     = "tp1_hit"
                         outcomes_df.at[idx, "result_pct"] = move_pct(entry, tp1, False)
-                    elif stop > 0 and max_high >= stop:
+                    elif valid_target(stop) and max_high >= stop:
                         outcomes_df.at[idx, "status"]     = "stop_hit"
                         outcomes_df.at[idx, "result_pct"] = move_pct(entry, stop, False)
 
@@ -295,11 +304,16 @@ def print_summary(outcomes_df):
 
 
 if __name__ == "__main__":
-    print("🔍 جاري تحديث سجل النتائج...\n")
+    eod = os.environ.get("EOD_RUN", "").lower() in ("1", "true", "yes")
+    label = "EOD — بعد إغلاق السوق" if eod else "تحديث سجل النتائج"
+    print(f"🔍 {label}\n")
 
     outcomes = load_outcomes()
     outcomes = recalculate_all_outcomes(outcomes)
-    outcomes = add_new_recommendations(outcomes)
+    if not eod:
+        outcomes = add_new_recommendations(outcomes)
+    else:
+        print("  (EOD: تحديث النتائج فقط — بدون إضافة BUY جديدة)")
     outcomes = update_open_outcomes(outcomes)
     outcomes.to_csv(OUTCOMES_FILE, index=False)
     print_summary(outcomes)
