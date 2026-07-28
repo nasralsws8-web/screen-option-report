@@ -65,6 +65,8 @@ MIN_OI           = 500     # أقل Open Interest
 MAX_SPREAD_PCT = 0.15    # أقصى spread مقبول (15% كـ decimal)
 PM_STALE_PCT   = 0.05    # تجاهل pm_high/pm_low إذا ابتعدت عن السعر >5%
 ENTRY_MAX_DRIFT = 0.05   # Entry يجب أن يكون ضمن ±5% من السعر الحالي
+MAX_STOCK_PRICE = 500.0  # رفض أسعار Yahoo الشاذة (مثل SNDK $1183)
+MIN_IV_DISPLAY  = 0.01   # IV أقل من 1% تُعامل كبيانات ناقصة
 DTE_TARGET       = 7       # الهدف: 7 أيام للانتهاء
 DTE_WINDOW       = 8       # ±8 أيام حول الهدف
 MAX_STOCKS_DEEP  = 40      # كم سهم ندرس بعمق
@@ -196,6 +198,40 @@ def trade_plan_is_valid(plan, price, is_call):
     if entry < price * (1 - ENTRY_MAX_DRIFT):
         return False
     return tp1 < entry < stop
+
+
+def parse_price_num(val):
+    if val is None:
+        return 0.0
+    if isinstance(val, (int, float)):
+        return float(val)
+    return parse_num(str(val).replace("$", ""))
+
+
+def row_passes_save_filters(r):
+    """فلترة نهائية موحّدة: OI · spread · premium · سعر منطقي."""
+    price = float(r.get("price_num") or parse_price_num(r.get("Price")) or 0)
+    prem  = float(r.get("premium") or 0)
+    sp    = float(r.get("spread_pct") if r.get("spread_pct") is not None else 99)
+    oi    = effective_oi(r.get("oi"), r.get("opt_vol"))
+    strike = float(r.get("strike") or 0)
+
+    if price <= 0 or price > MAX_STOCK_PRICE:
+        return False
+    if prem < TARGET_PREM_MIN or prem > TARGET_PREM_MAX:
+        return False
+    if oi < MIN_OI or sp > MAX_SPREAD_PCT:
+        return False
+    if strike > 0 and price > 0 and abs(strike - price) / price > 0.40:
+        return False
+    return True
+
+
+def filter_results_df(df):
+    if df is None or df.empty:
+        return df
+    mask = df.apply(row_passes_save_filters, axis=1)
+    return df[mask].copy()
 
 
 def save_results_csv(filtered_df, path="options_v3_results.csv"):
@@ -424,6 +460,7 @@ def fetch_options_data(ticker, stock_price):
         # Premarket
         "pm_high": None, "pm_low": None,
         "pm_last": None, "pm_volume": None,
+        "today_vol_yf": None,
     }
     try:
         yt   = yf.Ticker(ticker, session=_YF_SESSION)
@@ -433,6 +470,8 @@ def fetch_options_data(ticker, stock_price):
                                or info.get("averageDailyVolume10Day"))
         out["float_shares"] = info.get("floatShares")
         out["earnings"]     = get_earnings_date(yt)
+        out["today_vol_yf"] = int(info.get("volume")
+                                  or info.get("regularMarketVolume") or 0)
 
         # 60 يوم يومي للمؤشرات الفنية
         try:
@@ -524,9 +563,14 @@ def score_stock(row):
     score = 0
     notes = []
 
-    today_vol = row.get("today_vol", 0) or 0
-    avg_vol   = row.get("avg_vol",   0) or 0
-    rvol      = (today_vol / avg_vol) if avg_vol > 0 else 0
+    today_vol = float(row.get("today_vol", 0) or 0)
+    avg_vol   = float(row.get("avg_vol", 0) or 0)
+    opt_vol   = float(row.get("opt_vol", 0) or 0)
+    if today_vol <= 0 and opt_vol > 0 and avg_vol > 0:
+        # Finviz volume أحياناً 0 — قدّر من حجم العقود
+        today_vol = min(opt_vol * 100.0, avg_vol * 3.0)
+        row["today_vol"] = today_vol
+    rvol = (today_vol / avg_vol) if avg_vol > 0 else 0
     row["RVOL"] = round(rvol, 2)
     if rvol > 2.0:     score += 3; notes.append("RVOL>2 +3")
     elif rvol > 1.5:   score += 2; notes.append("RVOL>1.5 +2")
@@ -657,14 +701,18 @@ def compute_trade_plan(r, tech):
 
     price    = float(r.get("price_num", 0) or 0)
     strike   = float(r.get("strike",    0) or price)
-    iv       = float(r.get("iv",      0.4) or 0.4)
+    iv_raw   = float(r.get("iv", 0) or 0)
+    iv_estimated = iv_raw < MIN_IV_DISPLAY
+    iv       = iv_raw if not iv_estimated else 0.4
     dte      = int(r.get("dte_num",     7) or 7)
     premium  = float(r.get("premium",   0) or 0)
     atr      = float(tech.get("atr14") or (price * 0.025))
     opt_type = "call" if is_call else "put"
 
-    if price == 0 or premium == 0 or iv == 0:
+    if price == 0 or premium == 0:
         return plan
+    if iv_estimated:
+        plan["rec_note"] = "IV من Yahoo ناقص — R:R تقديري"
 
     T_entry = max(dte / 365, 1 / 365)
     T_half  = max((dte / 2) / 365, 1 / 365)
@@ -1046,15 +1094,21 @@ def main():
 
         opts = fetch_options_data(ticker, price_num)
 
+        hist = opts.get("hist")
+        tech_early = compute_technicals(hist, price_num) if hist is not None and len(hist) >= 5 else {}
+        today_vol = float(s.get("Today_Vol", 0) or 0)
+        if today_vol <= 0:
+            today_vol = float(opts.get("today_vol_yf") or 0)
+
         row = {
             "Ticker":       ticker,
             "Price":        s.get("Price", ""),
             "price_num":    price_num,
-            "rsi":          s.get("RSI", 50),
+            "rsi":          tech_early.get("rsi", s.get("RSI", 50)),
             "atr":          s.get("ATR", 0),
             "atr_pct":      s.get("ATR_Pct", 0),
             "gap_pct":      s.get("Gap_Num", 0),
-            "today_vol":    s.get("Today_Vol", 0),
+            "today_vol":    today_vol,
             "avg_vol":      opts["avg_vol"],
             "float_shares": opts["float_shares"],
             "earnings":     opts["earnings"],
@@ -1104,16 +1158,11 @@ def main():
                    .sort_values("Score", ascending=False)
                    .reset_index(drop=True))
 
-    in_range = result_df[
-        (result_df["premium"].notna()) &
-        (result_df["premium"] >= TARGET_PREM_MIN) &
-        (result_df["premium"] <= TARGET_PREM_MAX) &
-        (result_df["oi"].fillna(0) >= MIN_OI)
-    ].copy()
+    in_range = filter_results_df(result_df)
 
     # ── Summary Table ─────────────────────────────────────────────────────
     print("═" * 95)
-    print(f"  💰 {len(in_range)} matches  │  Premium ${TARGET_PREM_MIN}–${TARGET_PREM_MAX}  │  OI ≥ {MIN_OI}")
+    print(f"  💰 {len(in_range)} matches  │  Premium ${TARGET_PREM_MIN}–${TARGET_PREM_MAX}  │  OI ≥ {MIN_OI}  │  Price ≤ ${MAX_STOCK_PRICE:.0f}")
     print("═" * 95)
 
     if not in_range.empty:
@@ -1183,13 +1232,10 @@ def main():
                  "entry_stock","stop_stock","tp1_stock","tp2_stock","tp3_stock",
         "Score","recommendation","confidence","Notes"]
     save_cols = [c for c in save_cols if c in result_df.columns]
-    # فلتر نهائي: OI >= MIN_OI و Spread <= MAX_SPREAD_PCT
-    filtered_df = result_df[
-        (result_df.apply(lambda r: effective_oi(r.get("oi"), r.get("opt_vol")), axis=1) >= MIN_OI) &
-        (result_df["spread_pct"].fillna(99) <= MAX_SPREAD_PCT)
-    ].copy()
+    # فلتر نهائي موحّد
+    filtered_df = filter_results_df(result_df)
     if save_results_csv(filtered_df[save_cols]):
-        print(f"  (فلترة: {len(result_df)} → {len(filtered_df)} بعد OI≥{MIN_OI} و Spread≤{MAX_SPREAD_PCT*100:.0f}%)")
+        print(f"  (فلترة: {len(result_df)} → {len(filtered_df)} بعد premium/OI/spread/price)")
         print("✅ Saved: options_v3_results.csv\n")
     else:
         print(f"  (فلترة: {len(result_df)} → {len(filtered_df)} — لم يُحفظ CSV فاضي)\n")

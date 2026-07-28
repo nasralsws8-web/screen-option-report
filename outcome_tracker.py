@@ -23,11 +23,60 @@ OUTCOMES_COLS = [
 ]
 
 
-def is_call_direction(direction):
+def resolve_is_call(direction, entry, tp1, stop):
+    """CALL/PUT/NEUTRAL — NEUTRAL يُستنتج من entry/tp1/stop."""
     d = str(direction or "").upper()
     if "PUT" in d:
         return False
+    if "CALL" in d:
+        return True
+    entry = float(entry or 0)
+    tp1   = float(tp1 or 0)
+    stop  = float(stop or 0)
+    if entry > 0 and tp1 > 0:
+        if tp1 > entry:
+            return True
+        if tp1 < entry:
+            return False
+    if entry > 0 and stop > 0:
+        return stop < entry
     return True
+
+
+def recalculate_result_pct(row):
+    entry = float(row.get("entry_stock") or 0)
+    if entry <= 0:
+        return row.get("result_pct")
+    is_call = resolve_is_call(
+        row.get("direction"), entry,
+        row.get("tp1_stock"), row.get("stop_stock"),
+    )
+    status = str(row.get("status") or "")
+    targets = {
+        "tp1_hit":  float(row.get("tp1_stock") or 0),
+        "tp2_hit":  float(row.get("tp2_stock") or 0),
+        "tp3_hit":  float(row.get("tp3_stock") or 0),
+        "stop_hit": float(row.get("stop_stock") or 0),
+    }
+    tgt = targets.get(status, 0)
+    if tgt > 0:
+        return move_pct(entry, tgt, is_call)
+    return row.get("result_pct")
+
+
+def recalculate_all_outcomes(outcomes_df):
+    fixed = 0
+    for idx, row in outcomes_df.iterrows():
+        if row.get("status") == "open":
+            continue
+        old = row.get("result_pct")
+        new = recalculate_result_pct(row)
+        if new is not None and old != new:
+            outcomes_df.at[idx, "result_pct"] = new
+            fixed += 1
+    if fixed:
+        print(f"✅ أعيد حساب result_pct لـ {fixed} صف تاريخي")
+    return outcomes_df
 
 
 def move_pct(entry, target, is_call):
@@ -139,7 +188,9 @@ def update_open_outcomes(outcomes_df):
         tp2        = float(row["tp2_stock"] or 0)
         tp3        = float(row["tp3_stock"] or 0)
         expiry_str = str(row.get("expiry", ""))
-        is_call    = is_call_direction(row.get("direction"))
+        is_call    = resolve_is_call(
+            row.get("direction"), entry, tp1, stop
+        )
 
         if not ticker or entry <= 0:
             continue
@@ -247,6 +298,7 @@ if __name__ == "__main__":
     print("🔍 جاري تحديث سجل النتائج...\n")
 
     outcomes = load_outcomes()
+    outcomes = recalculate_all_outcomes(outcomes)
     outcomes = add_new_recommendations(outcomes)
     outcomes = update_open_outcomes(outcomes)
     outcomes.to_csv(OUTCOMES_FILE, index=False)

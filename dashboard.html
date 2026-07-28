@@ -283,9 +283,9 @@ function parseCSV(text) {
   }).filter(r => r.Ticker);
 }
 
-function fmt(v, prefix='', suffix='', decimals=2) {
+function fmt(v, prefix='$', suffix='', decimals=2) {
   const n = parseFloat(v);
-  if (isNaN(n)) return v || 'N/A';
+  if (isNaN(n) || n <= 0) return 'N/A';
   return prefix + n.toFixed(decimals) + suffix;
 }
 
@@ -343,10 +343,6 @@ function renderCards(rows) {
   document.getElementById('cardsView').innerHTML = html || '<div class="loading">لا توجد نتائج بعد — شغّل الـ workflow من GitHub Actions</div>';
 }
 
-function fmt(v, prefix='$') {
-  const n = parseFloat(v);
-  return (n && n > 0) ? prefix + n.toFixed(2) : 'N/A';
-}
 function calcBreakEven(r) {
   const strike = parseFloat(r.strike) || 0;
   const prem   = parseFloat(r.premium) || 0;

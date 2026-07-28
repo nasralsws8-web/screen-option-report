@@ -22,8 +22,8 @@ from cheap_options_screener_v3 import (
     compute_technicals,
     compute_trade_plan,
     parse_num,
-    effective_oi,
     save_results_csv,
+    filter_results_df,
     DTE_TARGET, DTE_WINDOW,
     TARGET_PREM_MIN, TARGET_PREM_MAX,
     MIN_OI, MAX_SPREAD_PCT, DELAY_BETWEEN,
@@ -101,22 +101,26 @@ def main():
                 print(f"   {ticker:<8}  -- no price")
                 continue
 
-        # بيانات الأوبشن الجديدة
         opts = fetch_options_data(ticker, price_num)
 
-        # استرجع بيانات ثانوية من الـ CSV القديم
+        if today_vol <= 0:
+            today_vol = int(opts.get("today_vol_yf") or 0)
+
         old         = df[df["Ticker"] == ticker]
         atr_pct_old = float(old["atr_pct"].values[0]) if not old.empty and "atr_pct" in old.columns else 0
         gap_pct_old = float(old["gap_pct"].values[0]) if not old.empty and "gap_pct" in old.columns else 0
         avg_vol_old = float(old["avg_vol"].values[0]) if not old.empty and "avg_vol" in old.columns else 0
+        rsi_old     = float(old["rsi"].values[0]) if not old.empty and "rsi" in old.columns else 50
 
         hist    = opts.get("hist")
         atr_pct = compute_atr_pct(hist, price_num) or atr_pct_old
+        tech_early = compute_technicals(hist, price_num) if hist is not None and not hist.empty else {}
 
         row = {
             "Ticker":       ticker,
             "Price":        f"${price_num:.2f}",
             "price_num":    price_num,
+            "rsi":          tech_early.get("rsi", rsi_old),
             "atr_pct":      atr_pct,
             "gap_pct":      gap_pct_old,
             "today_vol":    today_vol,
@@ -186,12 +190,9 @@ def main():
         "entry_stock", "stop_stock", "tp1_stock", "tp2_stock", "tp3_stock"
     ]
     save_cols = [c for c in save_cols if c in result_df.columns]
-    filtered_df = result_df[
-        (result_df.apply(lambda r: effective_oi(r.get("oi"), r.get("opt_vol")), axis=1) >= MIN_OI) &
-        (result_df["spread_pct"].fillna(99) <= MAX_SPREAD_PCT)
-    ].copy()
+    filtered_df = filter_results_df(result_df)
     if save_results_csv(filtered_df[save_cols], CSV_FILE):
-        print(f"  Saved: {CSV_FILE}")
+        print(f"  Saved: {CSV_FILE} ({len(result_df)} → {len(filtered_df)} rows)")
     else:
         print(f"  ⚠️  No rows passed filter — kept previous {CSV_FILE}")
 
