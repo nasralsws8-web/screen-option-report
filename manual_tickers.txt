@@ -1,0 +1,10 @@
+# قائمة يدوية — سهم واحد في كل سطر
+# تُدمج مع Finviz في كل run تلقائي (SCREENER_SOURCE=both)
+# عدّل هذه القائمة حسب ما تريد متابعته
+
+SQQQ
+SOXL
+TSLA
+NVDA
+AMD
+SMCI

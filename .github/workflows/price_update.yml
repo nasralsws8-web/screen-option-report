@@ -5,6 +5,11 @@ on:
     # Mon-Fri 13:35 - 19:55 UTC (9:35 AM - 3:55 PM ET) every 5 minutes
     - cron: '*/5 13-19 * * 1-5'
     - cron: '0 20 * * 1-5'   # Final update at market close 4 PM ET
+  workflow_dispatch:
+
+concurrency:
+  group: screener-update
+  cancel-in-progress: true
 
 permissions:
   contents: write
@@ -12,6 +17,7 @@ permissions:
 jobs:
   update-prices:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
       - name: Checkout repo
@@ -25,7 +31,9 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run price update
+      - name: Run market scan (Finviz + manual)
+        env:
+          SCREENER_SOURCE: both
         run: python price_update.py
 
       - name: Run outcome tracker

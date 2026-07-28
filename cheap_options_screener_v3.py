@@ -71,6 +71,9 @@ DTE_TARGET       = 7       # الهدف: 7 أيام للانتهاء
 DTE_WINDOW       = 8       # ±8 أيام حول الهدف
 MAX_STOCKS_DEEP  = 40      # كم سهم ندرس بعمق
 DELAY_BETWEEN    = 0.30    # ثواني بين كل طلب yfinance
+MANUAL_TICKERS_FILE = "manual_tickers.txt"
+# finviz | manual | both  (both = Finviz + قائمة يدوية، مع fallback)
+DEFAULT_SCREENER_SOURCE = "both"
 
 RISK_FREE_RATE   = 0.053   # معدل الفائدة لـ Black-Scholes
 MIN_RR_TO_BUY    = 1.3     # أقل R:R لإعطاء BUY
@@ -91,6 +94,8 @@ FINVIZ_FILTERS = {
 
 def bs_price(S, K, T, r, sigma, opt):
     """تسعير الأوبشن بـ Black-Scholes. opt = 'call' أو 'put'"""
+    if S <= 0 or K <= 0:
+        return 0.0
     if T <= 0:
         return max(S - K, 0) if opt == "call" else max(K - S, 0)
     if sigma <= 0:
@@ -232,6 +237,28 @@ def filter_results_df(df):
         return df
     mask = df.apply(row_passes_save_filters, axis=1)
     return df[mask].copy()
+
+
+def dashboard_fallback_df(df, max_rows=10):
+    """أفضل المرشّحين للـ Dashboard عندما الفلتر الصارم يمنع الكل."""
+    if df is None or df.empty:
+        return df
+    work = df.copy()
+    prices = work.apply(
+        lambda r: float(r.get("price_num") or parse_price_num(r.get("Price")) or 0),
+        axis=1,
+    )
+    work = work[
+        (work["premium"].fillna(0) > 0)
+        & (prices > 0)
+        & (prices <= MAX_STOCK_PRICE)
+    ].copy()
+    if work.empty:
+        return work
+    wait_buy = work[work["recommendation"].isin(["BUY", "WAIT"])]
+    if not wait_buy.empty:
+        return wait_buy.sort_values("Score", ascending=False).head(max_rows)
+    return work.sort_values("Score", ascending=False).head(max_rows)
 
 
 def save_results_csv(filtered_df, path="options_v3_results.csv"):
@@ -1043,31 +1070,42 @@ def print_trade_report(rank, r, tech, plan):
 
 
 # ════════════════════════════════════════════════════════════════════════
-#  MAIN
+#  CANDIDATE SOURCES — Finviz + قائمة يدوية
 # ════════════════════════════════════════════════════════════════════════
 
-def main():
-    start_time = datetime.now()
-    print(f"\n{'═'*74}")
-    print(f"  🔍 OPTIONS TRADING ASSISTANT v3  (100% Free Data)")
-    print(f"  {start_time.strftime('%Y-%m-%d %H:%M')}")
-    print(f"  Premium ${TARGET_PREM_MIN}–${TARGET_PREM_MAX}  │  Min OI: {MIN_OI}  │  DTE ~{DTE_TARGET}d")
-    print(f"  Premarket · EMA · VWAP · RSI · ATR · Black-Scholes Greeks")
-    print(f"{'═'*74}\n")
+SAVE_COLS = [
+    "Ticker", "Price", "premium", "strike", "iv", "oi", "opt_vol", "spread_pct",
+    "atr_pct", "gap_pct", "RVOL", "pm_high", "pm_low", "pm_volume",
+    "expiry", "direction", "earnings", "float_shares", "avg_vol",
+    "entry_stock", "stop_stock", "tp1_stock", "tp2_stock", "tp3_stock",
+    "Score", "recommendation", "confidence", "Notes",
+]
 
-    # ── Stage 1: Finviz ──────────────────────────────────────────────────
-    print("⏳ Stage 1: Finviz Technical screener...")
-    try:
-        ft = Technical()
-        ft.set_filter(filters_dict=FINVIZ_FILTERS)
-        df = ft.screener_view()
-    except Exception as e:
-        print(f"  ✗ Finviz error: {e}"); return
 
+def get_screener_source():
+    return os.environ.get("SCREENER_SOURCE", DEFAULT_SCREENER_SOURCE).strip().lower()
+
+
+def load_manual_tickers(path=MANUAL_TICKERS_FILE):
+    """قراءة manual_tickers.txt — سهم واحد في كل سطر، # للتعليق."""
+    if not os.path.exists(path):
+        return []
+    tickers = []
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            tickers.append(fix_ticker(line.split()[0].upper()))
+    return list(dict.fromkeys(tickers))
+
+
+def fetch_finviz_candidates():
+    ft = Technical()
+    ft.set_filter(filters_dict=FINVIZ_FILTERS)
+    df = ft.screener_view()
     if df is None or len(df) == 0:
-        print("  No stocks returned. Check connection."); return
-
-    print(f"  ✓ {len(df)} stocks from Finviz\n")
+        return pd.DataFrame()
 
     df["Ticker"]     = df["Ticker"].apply(fix_ticker)
     df["Price_Num"]  = df["Price"].apply(parse_num)
@@ -1077,23 +1115,117 @@ def main():
                     if row["Price_Num"] > 0 else 0.0, axis=1)
     df["Gap_Num"]    = df["Gap"].apply(parse_num) if "Gap" in df.columns else 0.0
     df["_FastScore"] = df["ATR_Pct"] * (df["Today_Vol"] / 1e6)
-    df = df.sort_values("_FastScore", ascending=False).reset_index(drop=True)
-    candidates = df.head(MAX_STOCKS_DEEP).copy()
-    print(f"  Top {len(candidates)} candidates selected.\n")
+    df["_source"]    = "finviz"
+    return (df.sort_values("_FastScore", ascending=False)
+              .reset_index(drop=True))
 
-    # ── Stage 2: yfinance (Options + Premarket + Technical) ───────────────
-    print("⏳ Stage 2: Options + Premarket + Technical data...")
-    print(f"   {'Ticker':<8} {'Price':>8}  {'Strike':>8}  {'Premium':>8}  "
-          f"{'OI':>7}  {'Spread':>7}  {'PM_High':>9}  Score")
-    print(f"   {'─'*80}")
 
+def fetch_manual_candidates(tickers):
     rows = []
-    for _, s in candidates.iterrows():
+    for ticker in tickers:
+        try:
+            yt = yf.Ticker(ticker, session=_YF_SESSION)
+            info = yt.info or {}
+            price_num = float(
+                info.get("currentPrice")
+                or info.get("regularMarketPrice")
+                or info.get("previousClose")
+                or 0
+            )
+            if price_num <= 0:
+                print(f"  ⚠ manual {ticker}: no price")
+                continue
+
+            hist = yt.history(period="60d", auto_adjust=True)
+            if isinstance(hist.columns, pd.MultiIndex):
+                hist.columns = hist.columns.get_level_values(0)
+            tech = compute_technicals(hist, price_num) if hist is not None and len(hist) >= 5 else {}
+
+            today_vol = int(info.get("volume") or info.get("regularMarketVolume") or 0)
+            atr = float(tech.get("atr14") or price_num * 0.025)
+            atr_pct = round(atr / price_num * 100, 2) if price_num > 0 else 0.0
+            prev_close = float(info.get("previousClose") or price_num)
+            gap_pct = round((price_num - prev_close) / prev_close * 100, 4) if prev_close > 0 else 0.0
+
+            rows.append({
+                "Ticker":     ticker,
+                "Price":      f"${price_num:.2f}",
+                "Price_Num":  price_num,
+                "Today_Vol":  today_vol,
+                "ATR_Pct":    atr_pct,
+                "Gap_Num":    gap_pct,
+                "RSI":        tech.get("rsi", 50),
+                "ATR":        atr,
+                "_FastScore": atr_pct * (today_vol / 1e6),
+                "_source":    "manual",
+            })
+        except Exception as e:
+            print(f"  ⚠ manual {ticker}: {e}")
+    return pd.DataFrame(rows)
+
+
+def fetch_candidates(source=None):
+    """
+    جلب المرشّحين من Finviz و/أو manual_tickers.txt.
+    both: Finviz أولاً + يدوي، مع fallback لليدوي إذا Finviz فشل.
+    """
+    source = (source or get_screener_source()).lower()
+    print(f"  Source mode: {source}")
+
+    finviz_df = pd.DataFrame()
+    manual_df = pd.DataFrame()
+    manual_tickers = load_manual_tickers()
+
+    if source in ("finviz", "both"):
+        print("⏳ Stage 1a: Finviz Technical screener...")
+        try:
+            finviz_df = fetch_finviz_candidates()
+            print(f"  ✓ Finviz: {len(finviz_df)} stocks")
+        except Exception as e:
+            print(f"  ✗ Finviz error: {e}")
+
+    if source in ("manual", "both"):
+        if manual_tickers:
+            print(f"⏳ Stage 1b: Manual watchlist ({len(manual_tickers)} tickers)...")
+            manual_df = fetch_manual_candidates(manual_tickers)
+            print(f"  ✓ Manual: {len(manual_df)} stocks")
+        elif source == "manual":
+            print("  ✗ manual_tickers.txt فارغ أو غير موجود")
+
+    parts = [df for df in (finviz_df, manual_df) if not df.empty]
+    if not parts:
+        if source in ("finviz", "both") and manual_tickers:
+            print("  ↪ Finviz فارغ — fallback إلى القائمة اليدوية")
+            return fetch_candidates("manual")
+        return pd.DataFrame()
+
+    combined = pd.concat(parts, ignore_index=True)
+    combined = combined.drop_duplicates(subset=["Ticker"], keep="first")
+    if "_FastScore" in combined.columns:
+        combined = combined.sort_values("_FastScore", ascending=False, na_position="last")
+    candidates = combined.head(MAX_STOCKS_DEEP).reset_index(drop=True)
+
+    src_counts = candidates.get("_source", pd.Series(dtype=str)).value_counts().to_dict()
+    print(f"  → {len(candidates)} candidates ({src_counts})\n")
+    return candidates
+
+
+def process_candidates(candidates_df, show_progress=True):
+    """Stage 2: Yahoo options + scoring + trade plan لكل مرشّح."""
+    rows = []
+    if show_progress:
+        print("⏳ Stage 2: Options + Premarket + Technical data...")
+        print(f"   {'Ticker':<8} {'Price':>8}  {'Strike':>8}  {'Premium':>8}  "
+              f"{'OI':>7}  {'Spread':>7}  {'PM_High':>9}  Score")
+        print(f"   {'─'*80}")
+
+    for _, s in candidates_df.iterrows():
         ticker    = s["Ticker"]
-        price_num = s["Price_Num"]
+        price_num = float(s.get("Price_Num") or parse_price_num(s.get("Price")) or 0)
+        if price_num <= 0:
+            continue
 
         opts = fetch_options_data(ticker, price_num)
-
         hist = opts.get("hist")
         tech_early = compute_technicals(hist, price_num) if hist is not None and len(hist) >= 5 else {}
         today_vol = float(s.get("Today_Vol", 0) or 0)
@@ -1102,7 +1234,7 @@ def main():
 
         row = {
             "Ticker":       ticker,
-            "Price":        s.get("Price", ""),
+            "Price":        s.get("Price", f"${price_num:.2f}"),
             "price_num":    price_num,
             "rsi":          tech_early.get("rsi", s.get("RSI", 50)),
             "atr":          s.get("ATR", 0),
@@ -1122,41 +1254,108 @@ def main():
             "direction":    opts["direction"],
             "strike":       opts["strike"],
             "dte_num":      opts["dte_num"],
-            "_hist":        opts["hist"],
-            # Premarket
+            "_hist":        hist,
             "pm_high":      opts["pm_high"],
             "pm_low":       opts["pm_low"],
             "pm_last":      opts["pm_last"],
             "pm_volume":    opts["pm_volume"],
             "_error":       opts["error"],
+            "_source":      s.get("_source", ""),
         }
 
         score, notes = score_stock(row)
         row["Score"] = score
         row["Notes"] = " | ".join(notes)
-        # earn_before_expiry مُحدَّث داخل score_stock — نحتفظ به للتقرير
-        # (score_stock يضع row["earn_before_expiry"] = True/False)
 
-        stk_s   = f"${row['strike']:.2f}" if row["strike"]  else "   N/A"
-        prem_s  = f"${row['premium']:.2f}" if row["premium"] is not None else "   N/A"
-        oi_s    = f"{row['oi']:,}"          if row["oi"]     is not None else "  N/A"
-        sp_s    = f"{row['spread_pct']*100:.1f}%" if row["spread_pct"] is not None else "  N/A"
-        pm_s    = f"${row['pm_high']:.2f}" if row["pm_high"] else "   N/A"
-        err_s   = f"  ⚠ {row['_error']}"  if row["_error"] else ""
+        tech = compute_technicals(hist, price_num)
+        try:
+            plan = compute_trade_plan(row, tech)
+        except Exception as e:
+            row["_error"] = (row.get("_error") or "") + f" plan:{e}"
+            plan = {"recommendation": "AVOID", "confidence": 0,
+                    "entry_stock": None, "stop_stock": None,
+                    "tp1_stock": None, "tp2_stock": None, "tp3_stock": None}
+        row["recommendation"] = plan.get("recommendation", "AVOID")
+        row["confidence"]     = plan.get("confidence", 0)
+        row["entry_stock"]    = plan.get("entry_stock")
+        row["stop_stock"]     = plan.get("stop_stock")
+        row["tp1_stock"]      = plan.get("tp1_stock")
+        row["tp2_stock"]      = plan.get("tp2_stock")
+        row["tp3_stock"]      = plan.get("tp3_stock")
 
-        print(f"   {ticker:<8} {str(s.get('Price',''))[:8]:>8}  {stk_s:>8}  "
-              f"{prem_s:>8}  {oi_s:>7}  {sp_s:>7}  {pm_s:>9}  {score:>4}{err_s}")
+        if show_progress:
+            stk_s   = f"${row['strike']:.2f}" if row["strike"]  else "   N/A"
+            prem_s  = f"${row['premium']:.2f}" if row["premium"] is not None else "   N/A"
+            oi_s    = f"{row['oi']:,}"          if row["oi"]     is not None else "  N/A"
+            sp_s    = f"{row['spread_pct']*100:.1f}%" if row["spread_pct"] is not None else "  N/A"
+            pm_s    = f"${row['pm_high']:.2f}" if row["pm_high"] else "   N/A"
+            err_s   = f"  ⚠ {row['_error']}"  if row["_error"] else ""
+            print(f"   {ticker:<8} {str(row.get('Price',''))[:8]:>8}  {stk_s:>8}  "
+                  f"{prem_s:>8}  {oi_s:>7}  {sp_s:>7}  {pm_s:>9}  {score:>4}{err_s}")
 
         rows.append(row)
         time.sleep(DELAY_BETWEEN)
 
+    if not rows:
+        return pd.DataFrame()
+    return (pd.DataFrame(rows)
+              .sort_values("Score", ascending=False)
+              .reset_index(drop=True))
+
+
+def save_screen_results(result_df, path="options_v3_results.csv"):
+    save_cols = [c for c in SAVE_COLS if c in result_df.columns]
+    strict = filter_results_df(result_df)
+    watchlist = dashboard_fallback_df(result_df, max_rows=15)
+
+    parts = []
+    if not strict.empty:
+        parts.append(strict)
+    if not watchlist.empty:
+        have = set(strict["Ticker"]) if not strict.empty else set()
+        extra = watchlist[~watchlist["Ticker"].isin(have)]
+        if not extra.empty:
+            parts.append(extra)
+
+    if parts:
+        combined = pd.concat(parts, ignore_index=True).drop_duplicates(subset=["Ticker"], keep="first")
+    else:
+        combined = pd.DataFrame()
+
+    used_fallback = not watchlist.empty and (
+        strict.empty or len(combined) > len(strict)
+    )
+    if used_fallback:
+        print(f"  ↪ dashboard: {len(strict)} strict + {len(combined) - len(strict)} WAIT/BUY watchlist")
+
+    ok = save_results_csv(combined[save_cols] if not combined.empty else combined, path)
+    return ok, combined, len(result_df), used_fallback
+
+
+# ════════════════════════════════════════════════════════════════════════
+#  MAIN
+# ════════════════════════════════════════════════════════════════════════
+
+def main():
+    start_time = datetime.now()
+    print(f"\n{'═'*74}")
+    print(f"  🔍 OPTIONS TRADING ASSISTANT v3  (100% Free Data)")
+    print(f"  {start_time.strftime('%Y-%m-%d %H:%M')}")
+    print(f"  Premium ${TARGET_PREM_MIN}–${TARGET_PREM_MAX}  │  Min OI: {MIN_OI}  │  DTE ~{DTE_TARGET}d")
+    print(f"  Source: {get_screener_source()} (Finviz + manual_tickers.txt)")
+    print(f"  Premarket · EMA · VWAP · RSI · ATR · Black-Scholes Greeks")
+    print(f"{'═'*74}\n")
+
+    candidates = fetch_candidates()
+    if candidates.empty:
+        print("  No candidates from Finviz or manual list."); return
+
+    result_df = process_candidates(candidates)
+    if result_df.empty:
+        print("  No option data returned."); return
+
     elapsed = (datetime.now() - start_time).seconds
     print(f"\n  ✓ Done in {elapsed}s\n")
-
-    # ── Build Results ─────────────────────────────────────────────────────
-    result_df = (pd.DataFrame(rows)
-                   .sort_values("Score", ascending=False)
-                   .reset_index(drop=True))
 
     in_range = filter_results_df(result_df)
 
@@ -1201,44 +1400,12 @@ def main():
     print("═" * 95 + "\n")
 
     # ── Save CSV ──────────────────────────────────────────────────────────
-    recs, confs, entries, stops, tp1s, tp2s, tp3s = [], [], [], [], [], [], []
-    for _, r in result_df.iterrows():
-        try:
-            hist = r.get("_hist")
-            tech = compute_technicals(hist, r.get("price_num", 0))
-            plan = compute_trade_plan(dict(r), tech)
-            recs.append(plan.get("recommendation", "AVOID"))
-            confs.append(plan.get("confidence", 0))
-            entries.append(plan.get("entry_stock"))
-            stops.append(plan.get("stop_stock"))
-            tp1s.append(plan.get("tp1_stock"))
-            tp2s.append(plan.get("tp2_stock"))
-            tp3s.append(plan.get("tp3_stock"))
-        except Exception:
-            recs.append("AVOID"); confs.append(0)
-            entries.append(None); stops.append(None)
-            tp1s.append(None); tp2s.append(None); tp3s.append(None)
-    result_df["recommendation"] = recs
-    result_df["confidence"]     = confs
-    result_df["entry_stock"]    = entries
-    result_df["stop_stock"]     = stops
-    result_df["tp1_stock"]      = tp1s
-    result_df["tp2_stock"]      = tp2s
-    result_df["tp3_stock"]      = tp3s
-
-    save_cols = ["Ticker","Price","premium","strike","iv","oi","opt_vol","spread_pct",
-                 "atr_pct","gap_pct","RVOL","pm_high","pm_low","pm_volume",
-                 "expiry","direction","earnings","float_shares","avg_vol",
-                 "entry_stock","stop_stock","tp1_stock","tp2_stock","tp3_stock",
-        "Score","recommendation","confidence","Notes"]
-    save_cols = [c for c in save_cols if c in result_df.columns]
-    # فلتر نهائي موحّد
-    filtered_df = filter_results_df(result_df)
-    if save_results_csv(filtered_df[save_cols]):
-        print(f"  (فلترة: {len(result_df)} → {len(filtered_df)} بعد premium/OI/spread/price)")
+    ok, filtered_df, total, _fb = save_screen_results(result_df)
+    if ok:
+        print(f"  (فلترة: {total} → {len(filtered_df)} بعد premium/OI/spread/price)")
         print("✅ Saved: options_v3_results.csv\n")
     else:
-        print(f"  (فلترة: {len(result_df)} → {len(filtered_df)} — لم يُحفظ CSV فاضي)\n")
+        print(f"  (فلترة: {total} → {len(filtered_df)} — لم يُحفظ CSV فاضي)\n")
 
 
 if __name__ == "__main__":
