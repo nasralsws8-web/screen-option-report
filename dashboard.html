@@ -55,6 +55,7 @@
   .ticker { font-size: 22px; font-weight: 700; color: #e6edf3; }
   .rec-badge { padding: 4px 10px; border-radius: 20px; font-size: 11px; font-weight: 700; }
   .rec-badge.BUY { background: #1a4731; color: #3fb950; }
+  .rec-badge.BUY.live { box-shadow: 0 0 0 2px #3fb950; }
   .rec-badge.WAIT { background: #3d2d00; color: #e3b341; }
   .rec-badge.AVOID { background: #3d1a1a; color: #f85149; }
 
@@ -291,32 +292,56 @@ function evalLiveStatus(plan, price) {
   const entry = plan.entry, stop = plan.stop;
   const tp1 = plan.tp1, tp2 = plan.tp2, tp3 = plan.tp3;
   const isCall = planIsCall(plan);
-  if (!entry || entry <= 0) return { cls: 'status-entry-wait', label: '⏳ بانتظار بيانات Entry', dist: '' };
+  if (!entry || entry <= 0) return { cls: 'status-entry-wait', label: '⏳ بانتظار بيانات Entry', dist: '', inTrade: false };
 
   if (isCall) {
-    if (stop > 0 && price <= stop) return { cls: 'status-stop', label: '🛑 Stop — السعر تحت الإيقاف', dist: '' };
-    if (tp3 > 0 && price >= tp3) return { cls: 'status-tp', label: '🏆 TP3 — الهدف الثالث', dist: '' };
-    if (tp2 > 0 && price >= tp2) return { cls: 'status-tp', label: '✅✅ TP2 — الهدف الثاني', dist: '' };
-    if (tp1 > 0 && price >= tp1) return { cls: 'status-tp', label: '✅ TP1 — الهدف الأول', dist: '' };
+    if (stop > 0 && price <= stop) return { cls: 'status-stop', label: '🛑 Stop — السعر تحت الإيقاف', dist: '', inTrade: false };
+    if (tp3 > 0 && price >= tp3) return { cls: 'status-tp', label: '🏆 TP3 — الهدف الثالث', dist: '', inTrade: true };
+    if (tp2 > 0 && price >= tp2) return { cls: 'status-tp', label: '✅✅ TP2 — الهدف الثاني', dist: '', inTrade: true };
+    if (tp1 > 0 && price >= tp1) return { cls: 'status-tp', label: '✅ TP1 — الهدف الأول', dist: '', inTrade: true };
     if (price >= entry) {
       const toTp = tp1 > 0 ? ((tp1 - price) / price * 100).toFixed(1) : null;
-      return { cls: 'status-in-trade', label: '🟢 داخل الصفقة — Entry تحقق', dist: toTp ? `+${toTp}% إلى TP1` : '' };
+      return { cls: 'status-in-trade', label: '🟢 داخل الصفقة — Entry تحقق', dist: toTp ? `+${toTp}% إلى TP1` : '', inTrade: true };
     }
     const pct = ((entry - price) / price * 100).toFixed(1);
-    return { cls: 'status-entry-wait', label: '⏳ بانتظار Entry', dist: `${pct}% فوق السعر الحالي` };
+    return { cls: 'status-entry-wait', label: '⏳ بانتظار Entry', dist: `${pct}% فوق السعر الحالي`, inTrade: false };
   }
 
-  // PUT
-  if (stop > 0 && price >= stop) return { cls: 'status-stop', label: '🛑 Stop — السعر فوق الإيقاف', dist: '' };
-  if (tp3 > 0 && price <= tp3) return { cls: 'status-tp', label: '🏆 TP3 — الهدف الثالث', dist: '' };
-  if (tp2 > 0 && price <= tp2) return { cls: 'status-tp', label: '✅✅ TP2 — الهدف الثاني', dist: '' };
-  if (tp1 > 0 && price <= tp1) return { cls: 'status-tp', label: '✅ TP1 — الهدف الأول', dist: '' };
+  if (stop > 0 && price >= stop) return { cls: 'status-stop', label: '🛑 Stop — السعر فوق الإيقاف', dist: '', inTrade: false };
+  if (tp3 > 0 && price <= tp3) return { cls: 'status-tp', label: '🏆 TP3 — الهدف الثالث', dist: '', inTrade: true };
+  if (tp2 > 0 && price <= tp2) return { cls: 'status-tp', label: '✅✅ TP2 — الهدف الثاني', dist: '', inTrade: true };
+  if (tp1 > 0 && price <= tp1) return { cls: 'status-tp', label: '✅ TP1 — الهدف الأول', dist: '', inTrade: true };
   if (price <= entry) {
     const toTp = tp1 > 0 ? ((price - tp1) / price * 100).toFixed(1) : null;
-    return { cls: 'status-in-trade', label: '🟢 داخل الصفقة — Entry تحقق', dist: toTp ? `${toTp}% إلى TP1` : '' };
+    return { cls: 'status-in-trade', label: '🟢 داخل الصفقة — Entry تحقق', dist: toTp ? `${toTp}% إلى TP1` : '', inTrade: true };
   }
   const pct = ((price - entry) / price * 100).toFixed(1);
-  return { cls: 'status-entry-wait', label: '⏳ بانتظار Entry', dist: `${pct}% تحت السعر الحالي` };
+  return { cls: 'status-entry-wait', label: '⏳ بانتظار Entry', dist: `${pct}% تحت السعر الحالي`, inTrade: false };
+}
+
+function effectiveLiveRec(plan, st) {
+  if (plan.rec === 'AVOID' || st.cls === 'status-stop') return plan.rec;
+  if (st.inTrade && plan.conf >= 45 && (plan.rec === 'WAIT' || plan.rec === 'BUY')) return 'BUY';
+  return plan.rec;
+}
+
+function refreshLiveStats() {
+  let buy = 0, wait = 0, avoid = 0;
+  Object.keys(tradePlans).forEach(t => {
+    const plan = tradePlans[t];
+    const lp = livePrices[t];
+    const price = lp ? lp.price : 0;
+    if (!price) {
+      if (plan.rec === 'BUY') buy++; else if (plan.rec === 'WAIT') wait++; else avoid++;
+      return;
+    }
+    const st = evalLiveStatus(plan, price);
+    const eff = effectiveLiveRec(plan, st);
+    if (eff === 'BUY') buy++; else if (eff === 'WAIT') wait++; else avoid++;
+  });
+  document.getElementById('statBuy').textContent = buy;
+  document.getElementById('statWait').textContent = wait;
+  document.getElementById('statAvoid').textContent = avoid;
 }
 
 function updateLiveTradeStatus(ticker, price) {
@@ -326,6 +351,19 @@ function updateLiveTradeStatus(ticker, price) {
   const st = evalLiveStatus(plan, price);
   box.className = 'live-status ' + st.cls;
   box.innerHTML = st.label + (st.dist ? `<div class="live-dist">${st.dist}</div>` : '');
+
+  const eff = effectiveLiveRec(plan, st);
+  const badge = document.getElementById('rec-badge-' + ticker);
+  const card  = document.getElementById('card-' + ticker);
+  if (badge) {
+    const promoted = eff === 'BUY' && plan.rec === 'WAIT';
+    badge.className = 'rec-badge ' + eff + (promoted ? ' live' : '');
+    badge.textContent = promoted ? 'BUY ⚡' : eff;
+  }
+  if (card) {
+    card.className = 'card ' + (eff === 'BUY' ? 'buy-card' : eff === 'WAIT' ? 'wait-card' : 'avoid-card');
+  }
+  refreshLiveStats();
 }
 
 function registerTradePlans(rows) {
@@ -340,6 +378,7 @@ function registerTradePlans(rows) {
       tp2: parseFloat(r.tp2_stock) || 0,
       tp3: parseFloat(r.tp3_stock) || 0,
       rec: r.recommendation || 'AVOID',
+      conf: parseInt(r.confidence) || 0,
     };
   });
 }
@@ -453,7 +492,7 @@ function buildCard(r) {
   const strike = parseFloat(r.strike) || 0;
   const entry = calcEntry(r);
   return `
-  <div class="card ${recClass(rec)}">
+  <div class="card ${recClass(rec)}" id="card-${r.Ticker}">
     <div class="card-header">
       <div>
         <div class="ticker">${r.Ticker}</div>
@@ -461,7 +500,7 @@ function buildCard(r) {
   <div style="font-size:11px;margin-bottom:4px"><span class="change-badge" id="change-${r.Ticker}">جاري التحديث...</span></div>
       </div>
       <div style="text-align:left">
-        <span class="rec-badge ${rec}">${rec}</span>
+        <span class="rec-badge ${rec}" id="rec-badge-${r.Ticker}">${rec}</span>
         <div style="font-size:11px;color:#8b949e;margin-top:4px">Score: ${r.Score||0}</div>
       </div>
     </div>

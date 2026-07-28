@@ -884,6 +884,12 @@ def compute_trade_plan(r, tech):
     # إذا كان هناك Earnings قبل الانتهاء → AVOID دائماً
     earn_risk = r.get("earn_before_expiry", False)
 
+    # Entry تحقق = تأكيد عملي للاتجاه (CALL: سعر ≥ entry | PUT: سعر ≤ entry)
+    entry_s = float(plan.get("entry_stock") or 0)
+    entry_hit_now = False
+    if entry_s > 0:
+        entry_hit_now = (is_call and price >= entry_s) or (not is_call and price <= entry_s)
+
     if earn_risk:
         plan["recommendation"] = "AVOID"
         plan["rec_note"]       = "⚠️ Earnings قبل انتهاء العقد — خطر كبير"
@@ -894,6 +900,9 @@ def compute_trade_plan(r, tech):
         plan["recommendation"] = "BUY"
         plan["rec_note"]       = ("الاتجاه والزخم والسيولة مناسبة"
                                    if trend_ok else "اختراق قوي رغم الاتجاه المختلط")
+    elif entry_hit_now and conf >= 45 and best_rr >= 1.0:
+        plan["recommendation"] = "BUY"
+        plan["rec_note"]       = "Entry تحقق — السعر دخل نقطة الدخول"
     elif conf >= MIN_CONF_TO_BUY and best_rr >= MIN_RR_TO_BUY:
         plan["recommendation"] = "WAIT"
         plan["rec_note"]       = "زخم جيد — راقب تأكيد الاتجاه"
