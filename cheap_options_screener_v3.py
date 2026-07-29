@@ -229,10 +229,84 @@ def trade_plan_is_valid(plan, price, is_call):
     if is_call:
         if entry > price * (1 + ENTRY_MAX_DRIFT):
             return False
+        if entry < price * (1 - ENTRY_MAX_DRIFT * 0.5):
+            return False
         return tp1 > entry > stop
     if entry < price * (1 - ENTRY_MAX_DRIFT):
         return False
+    if entry > price * (1 + ENTRY_MAX_DRIFT * 0.5):
+        return False
     return tp1 < entry < stop
+
+
+def compute_entry_level(price, is_call, pm_high, pm_low, yest_h, yest_l, atr):
+    """
+    Entry يتبع شروط المشروع:
+    CALL → اختراق فوق PM/أمس High (ضمن +5% من السعر)
+    PUT  → اختراق تحت PM/أمس Low (ضمن -5% من السعر)
+    إذا الاختراق تحقق → Entry = السعر الحالي
+    """
+    atr = float(atr or price * 0.025)
+    yest_h = float(yest_h or price)
+    yest_l = float(yest_l or price)
+
+    if is_call:
+        use_pm   = pm_high and pm_data_fresh(pm_high, price) and pm_high > price * 0.98
+        ref_high = float(pm_high if use_pm else yest_h)
+        src      = "Premarket" if use_pm else "أعلى أمس"
+        if price >= ref_high:
+            entry = round(price, 2)
+            note  = f"Entry عند السعر — الاختراق فوق {src} ${ref_high:.2f} تحقق"
+        else:
+            entry = round(ref_high + atr * 0.05, 2)
+            note  = f"فوق {src} High ${ref_high:.2f}"
+        max_e = round(price * (1 + ENTRY_MAX_DRIFT), 2)
+        min_e = round(price, 2)
+        if entry > max_e:
+            entry = max_e
+            note += " (ضمن حد +5%)"
+        entry = max(entry, min_e)
+    else:
+        use_pm  = pm_low and pm_data_fresh(pm_low, price) and pm_low < price * 1.02
+        ref_low = float(pm_low if use_pm else yest_l)
+        src     = "Premarket" if use_pm else "أدنى أمس"
+        if price <= ref_low:
+            entry = round(price, 2)
+            note  = f"Entry عند السعر — الاختراق تحت {src} ${ref_low:.2f} تحقق"
+        else:
+            entry = round(ref_low - atr * 0.05, 2)
+            note  = f"تحت {src} Low ${ref_low:.2f}"
+        min_e = round(price * (1 - ENTRY_MAX_DRIFT), 2)
+        max_e = round(price, 2)
+        if entry < min_e:
+            entry = min_e
+            note += " (ضمن حد -5%)"
+        entry = min(entry, max_e)
+
+    return entry, note
+
+
+def compute_targets(entry, is_call, atr, tech):
+    """TP1/2/3 — دائماً على الجانب الصحيح من Entry."""
+    atr = float(atr or 0)
+    entry = float(entry)
+    if is_call:
+        r1 = tech.get("resist1")
+        tp1 = float(r1) if r1 and float(r1) > entry else round(entry + atr * 1.1, 2)
+        r2 = tech.get("resist2")
+        tp2 = float(r2) if r2 and float(r2) > tp1 else round(tp1 + atr * 0.8, 2)
+        r3 = tech.get("resist3")
+        tp3 = float(r3) if r3 and float(r3) > tp2 else round(tp2 + atr * 1.0, 2)
+        tp2 = max(tp2, round(tp1 + atr * 0.4, 2))
+        tp3 = max(tp3, round(tp2 + atr * 0.6, 2))
+    else:
+        s1 = tech.get("support1")
+        tp1 = float(s1) if s1 and float(s1) < entry else round(entry - atr * 1.1, 2)
+        tp2 = round(entry - atr * 1.9, 2)
+        tp3 = round(entry - atr * 3.0, 2)
+        tp2 = min(tp2, round(tp1 - atr * 0.4, 2))
+        tp3 = min(tp3, round(tp2 - atr * 0.6, 2))
+    return round(tp1, 2), round(tp2, 2), round(tp3, 2)
 
 
 def parse_price_num(val):
@@ -843,26 +917,16 @@ def compute_trade_plan(r, tech):
     plan["greeks"] = bs_greeks(price, strike, T_entry, RISK_FREE_RATE, iv, opt_type)
 
     # ── Entry ─────────────────────────────────────────────────────────────
-    # الأولوية: Premarket High → أعلى أمس → السعر الحالي + ATR buffer
     pm_high = r.get("pm_high")
     pm_low  = r.get("pm_low")
     yest_h  = tech.get("yesterday_high") or price
     yest_l  = tech.get("yesterday_low")  or price
 
-    if is_call:
-        use_pm   = pm_high and pm_data_fresh(pm_high, price) and pm_high > price * 0.98
-        ref_high = pm_high if use_pm else yest_h
-        entry    = round(ref_high + atr * 0.05, 2)
-        src      = "Premarket" if use_pm else "أعلى أمس"
-        plan["entry_note"] = f"فوق {src} High ${ref_high:.2f}"
-    else:
-        use_pm  = pm_low and pm_data_fresh(pm_low, price) and pm_low < price * 1.02
-        ref_low = pm_low if use_pm else yest_l
-        entry   = round(ref_low - atr * 0.05, 2)
-        src     = "Premarket" if use_pm else "أدنى أمس"
-        plan["entry_note"] = f"تحت {src} Low ${ref_low:.2f}"
-
+    entry, entry_note = compute_entry_level(
+        price, is_call, pm_high, pm_low, yest_h, yest_l, atr,
+    )
     plan["entry_stock"] = entry
+    plan["entry_note"]  = entry_note
 
     # ── Stop Loss ─────────────────────────────────────────────────────────
     if is_call:
@@ -870,8 +934,10 @@ def compute_trade_plan(r, tech):
         vwap = tech.get("vwap")
         if vwap and vwap < entry * 0.99:
             stop_stock = max(stop_stock, round(vwap - atr * 0.15, 2))
+        stop_stock = min(stop_stock, round(entry - atr * 0.25, 2))
     else:
         stop_stock = round(entry + atr * 1.1, 2)
+        stop_stock = max(stop_stock, round(entry + atr * 0.25, 2))
 
     stop_opt = bs_price(stop_stock, strike, T_entry, RISK_FREE_RATE, iv, opt_type)
     plan["stop_stock"]  = stop_stock
@@ -881,14 +947,7 @@ def compute_trade_plan(r, tech):
     plan["risk_per_contract"] = round(risk_per, 2)
 
     # ── Targets ───────────────────────────────────────────────────────────
-    if is_call:
-        tp1 = tech.get("resist1") or round(entry + atr * 1.1, 2)
-        tp2 = tech.get("resist2") or round(entry + atr * 1.9, 2)
-        tp3 = tech.get("resist3") or round(entry + atr * 3.0, 2)
-    else:
-        tp1 = tech.get("support1") or round(entry - atr * 1.1, 2)
-        tp2 = round(entry - atr * 1.9, 2)
-        tp3 = round(entry - atr * 3.0, 2)
+    tp1, tp2, tp3 = compute_targets(entry, is_call, atr, tech)
 
     def opt_at(target_price):
         # نستخدم نصف DTE لأننا نخرج قبل الانتهاء في الغالب
