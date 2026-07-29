@@ -121,6 +121,14 @@
   .live-status.status-tp { background: #1a2a40; color: #58a6ff; border-color: #58a6ff; }
   .live-status.status-stop { background: #3d1a1a; color: #f85149; border-color: #f85149; }
   .live-dist { font-size: 10px; font-weight: 500; color: #8b949e; margin-top: 3px; }
+
+  /* SPY — توصية خاصة */
+  .spy-hero { background: linear-gradient(135deg, #1a2a40 0%, #161b22 100%); border: 2px solid #58a6ff; border-radius: 14px; padding: 20px 24px; margin-bottom: 20px; box-shadow: 0 0 24px rgba(88,166,255,0.15); }
+  .spy-hero-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 14px; flex-wrap: wrap; gap: 12px; }
+  .spy-badge { background: #1f6feb; color: #fff; font-size: 11px; font-weight: 700; padding: 4px 12px; border-radius: 20px; letter-spacing: 0.5px; }
+  .spy-title { font-size: 26px; font-weight: 800; color: #58a6ff; }
+  .spy-sub { font-size: 12px; color: #8b949e; margin-top: 4px; }
+  .spy-empty { text-align: center; padding: 28px; color: #8b949e; font-size: 13px; border: 1px dashed #30363d; border-radius: 12px; margin-bottom: 20px; }
 </style>
 </head>
 <body>
@@ -168,6 +176,7 @@
   </div>
   <div id="errorDiv" style="display:none"></div>
   <div id="mainContent" style="display:none">
+    <div id="spySection"></div>
     <div class="tab-bar">
       <div class="tab active" onclick="showTab('cards')">🃏 بطاقات</div>
       <div class="tab" onclick="showTab('table')">📋 جدول</div>
@@ -434,6 +443,41 @@ function recClass(r) {
   return 'avoid-card';
 }
 
+const SPY_TICKER = 'SPY';
+
+function isSpyRow(r) {
+  return String(r.Ticker || '').toUpperCase() === SPY_TICKER;
+}
+
+function splitSpyRows(rows) {
+  const spy = rows.find(isSpyRow) || null;
+  const rest = rows.filter(r => !isSpyRow(r));
+  return { spy, rest };
+}
+
+function renderSpySection(spyRow) {
+  const box = document.getElementById('spySection');
+  if (!spyRow) {
+    box.innerHTML = `<div class="spy-empty">📌 SPY — بانتظار أول مسح (يُحدّث تلقائياً كل 15 دقيقة)</div>`;
+    return;
+  }
+  box.innerHTML = `
+    <div class="spy-hero">
+      <div class="spy-hero-header">
+        <div>
+          <span class="spy-badge">📌 توصية SPY الخاصة</span>
+          <div class="spy-title">${spyRow.Ticker}</div>
+          <div class="spy-sub">S&P 500 ETF · عقود أسبوعية · premium $1–$25</div>
+        </div>
+        <div style="text-align:left">
+          <span class="rec-badge ${spyRow.recommendation || 'AVOID'}" id="rec-badge-${spyRow.Ticker}">${spyRow.recommendation || 'AVOID'}</span>
+          <div style="font-size:12px;color:#8b949e;margin-top:6px">ثقة ${spyRow.confidence || 0}% · Score ${spyRow.Score || 0}</div>
+        </div>
+      </div>
+      ${buildCard(spyRow)}
+    </div>`;
+}
+
 function renderCards(rows) {
   const buy = rows.filter(r => r.recommendation === 'BUY');
   const wait = rows.filter(r => r.recommendation === 'WAIT');
@@ -647,19 +691,23 @@ async function loadData() {
     }
 
     const rows = parseCSV(text);
+    const { spy, rest } = splitSpyRows(rows);
     registerTradePlans(rows);
-    const buy = rows.filter(r => r.recommendation === 'BUY').length;
-    const wait = rows.filter(r => r.recommendation === 'WAIT').length;
-    const avoid = rows.filter(r => !['BUY','WAIT'].includes(r.recommendation)).length;
 
-    document.getElementById('statTotal').textContent = rows.length;
+    renderSpySection(spy);
+
+    const buy = rest.filter(r => r.recommendation === 'BUY').length;
+    const wait = rest.filter(r => r.recommendation === 'WAIT').length;
+    const avoid = rest.filter(r => !['BUY','WAIT'].includes(r.recommendation)).length;
+
+    document.getElementById('statTotal').textContent = rest.length;
     document.getElementById('statBuy').textContent = buy;
     document.getElementById('statWait').textContent = wait;
     document.getElementById('statAvoid').textContent = avoid;
     document.getElementById('statsBar').style.display = 'flex';
 
-    renderCards(rows);
-    renderTable(rows);
+    renderCards(rest);
+    renderTable(rest);
 
     document.getElementById('lastUpdate').textContent = 'آخر تحديث: ' + new Date().toLocaleTimeString('ar-SA');
     document.getElementById('loadingDiv').style.display = 'none';
@@ -678,6 +726,10 @@ async function loadData() {
       const p = parseFloat(String(r.Price || '').replace('$', '')) || 0;
       if (p > 0) updateLiveTradeStatus(r.Ticker, p);
     });
+    if (spy) {
+      const sp = parseFloat(String(spy.Price || '').replace('$', '')) || 0;
+      if (sp > 0) updateLiveTradeStatus('SPY', sp);
+    }
   } catch (err) {
     document.getElementById('loadingDiv').style.display = 'none';
     document.getElementById('errorDiv').style.display = 'block';

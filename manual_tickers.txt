@@ -1,7 +1,8 @@
 # قائمة يدوية — سهم واحد في كل سطر
 # تُدمج مع Finviz في كل run تلقائي (SCREENER_SOURCE=both)
-# عدّل هذه القائمة حسب ما تريد متابعته
+# SPY = توصية خاصة في الدashboard (بروفايل premium أعلى)
 
+SPY
 SQQQ
 SOXL
 TSLA

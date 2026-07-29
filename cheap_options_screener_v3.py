@@ -87,6 +87,35 @@ FINVIZ_FILTERS = {
     "Relative Volume": "Over 1.5",       # نشاط عالي اليوم (RVOL > 1.5x)
 }
 
+SPY_TICKER = "SPY"
+PRIORITY_TICKERS = (SPY_TICKER,)
+
+# بروفايلات tickers خاصة — premium أعلى وحدود مختلفة
+TICKER_PROFILES = {
+    SPY_TICKER: {
+        "label":           "SPY — S&P 500 ETF",
+        "prem_min":        1.0,
+        "prem_max":        25.0,
+        "max_stock_price": 800.0,
+        "max_spread_pct":  0.10,
+        "min_oi":          1000,
+        "dte_target":      7,
+        "dte_window":      10,
+    },
+}
+
+
+def ticker_profile(ticker):
+    return TICKER_PROFILES.get(str(ticker or "").upper(), {})
+
+
+def profile_limit(ticker, key, default):
+    return ticker_profile(ticker).get(key, default)
+
+
+def is_spy_ticker(ticker):
+    return str(ticker or "").upper() == SPY_TICKER
+
 
 # ════════════════════════════════════════════════════════════════════════
 #  BLACK-SCHOLES ENGINE
@@ -172,13 +201,14 @@ def _safe_int(v):
         return 0
 
 
-def effective_oi(oi, opt_vol):
+def effective_oi(oi, opt_vol, min_oi=None):
     """Yahoo أحياناً يرجّع OI=0 — استخدم opt_vol كبديل مؤقت."""
+    min_oi = MIN_OI if min_oi is None else min_oi
     oi = _safe_int(oi)
     ov = _safe_int(opt_vol)
-    if oi >= MIN_OI:
+    if oi >= min_oi:
         return oi
-    if oi == 0 and ov >= MIN_OI:
+    if oi == 0 and ov >= min_oi:
         return ov
     return oi
 
@@ -215,17 +245,24 @@ def parse_price_num(val):
 
 def row_passes_save_filters(r):
     """فلترة نهائية موحّدة: OI · spread · premium · سعر منطقي."""
+    ticker = str(r.get("Ticker", "")).upper()
+    max_price  = profile_limit(ticker, "max_stock_price", MAX_STOCK_PRICE)
+    prem_min   = profile_limit(ticker, "prem_min", TARGET_PREM_MIN)
+    prem_max   = profile_limit(ticker, "prem_max", TARGET_PREM_MAX)
+    max_spread = profile_limit(ticker, "max_spread_pct", MAX_SPREAD_PCT)
+    min_oi     = profile_limit(ticker, "min_oi", MIN_OI)
+
     price = float(r.get("price_num") or parse_price_num(r.get("Price")) or 0)
     prem  = float(r.get("premium") or 0)
     sp    = float(r.get("spread_pct") if r.get("spread_pct") is not None else 99)
-    oi    = effective_oi(r.get("oi"), r.get("opt_vol"))
+    oi    = effective_oi(r.get("oi"), r.get("opt_vol"), min_oi)
     strike = float(r.get("strike") or 0)
 
-    if price <= 0 or price > MAX_STOCK_PRICE:
+    if price <= 0 or price > max_price:
         return False
-    if prem < TARGET_PREM_MIN or prem > TARGET_PREM_MAX:
+    if prem < prem_min or prem > prem_max:
         return False
-    if oi < MIN_OI or sp > MAX_SPREAD_PCT:
+    if oi < min_oi or sp > max_spread:
         return False
     if strike > 0 and price > 0 and abs(strike - price) / price > 0.40:
         return False
@@ -241,17 +278,26 @@ def filter_results_df(df):
 
 def row_passes_watchlist_filters(r):
     """فلتر مخفّف للـ watchlist — لا يُحفظ spread/OI ضعيف جداً."""
+    ticker = str(r.get("Ticker", "")).upper()
+    max_price  = profile_limit(ticker, "max_stock_price", MAX_STOCK_PRICE)
+    prem_min   = profile_limit(ticker, "prem_min", TARGET_PREM_MIN)
+    prem_max   = profile_limit(ticker, "prem_max", TARGET_PREM_MAX)
+    max_spread = profile_limit(ticker, "max_spread_pct", MAX_SPREAD_PCT)
+
     price = float(r.get("price_num") or parse_price_num(r.get("Price")) or 0)
     prem  = float(r.get("premium") or 0)
     sp    = float(r.get("spread_pct") if r.get("spread_pct") is not None else 99)
-    oi    = effective_oi(r.get("oi"), r.get("opt_vol"))
-    if price <= 0 or price > MAX_STOCK_PRICE:
+    oi    = effective_oi(r.get("oi"), r.get("opt_vol"),
+                         profile_limit(ticker, "min_oi", MIN_OI))
+    if price <= 0 or price > max_price:
         return False
-    if prem < TARGET_PREM_MIN or prem > TARGET_PREM_MAX:
+    if prem < prem_min or prem > prem_max:
         return False
-    if sp > MAX_SPREAD_PCT * 1.5:
+    if sp > max_spread * 1.5:
         return False
-    if oi < 100:
+    if oi < 100 and not is_spy_ticker(ticker):
+        return False
+    if is_spy_ticker(ticker) and oi < profile_limit(ticker, "min_oi", 100):
         return False
     return True
 
@@ -597,7 +643,9 @@ def fetch_options_data(ticker, stock_price):
         if not exps:
             out["error"] = "no_options"; return out
 
-        exp = find_best_expiry(exps, DTE_TARGET, DTE_WINDOW)
+        dte_tgt = profile_limit(ticker, "dte_target", DTE_TARGET)
+        dte_win = profile_limit(ticker, "dte_window", DTE_WINDOW)
+        exp = find_best_expiry(exps, dte_tgt, dte_win)
         if exp is None:
             exp = exps[0] if exps else None
         if exp is None:
@@ -684,7 +732,10 @@ def score_stock(row):
     if row.get("has_weekly"): score += 2; notes.append("Weekly✓ +2")
 
     prem = row.get("premium", 0) or 0
-    if TARGET_PREM_MIN <= prem <= TARGET_PREM_MAX:
+    ticker = str(row.get("Ticker", "")).upper()
+    prem_min = profile_limit(ticker, "prem_min", TARGET_PREM_MIN)
+    prem_max = profile_limit(ticker, "prem_max", TARGET_PREM_MAX)
+    if prem_min <= prem <= prem_max:
         score += 2; notes.append("Prem✓ +2")
 
     atr_pct = row.get("atr_pct", 0) or 0
@@ -1256,11 +1307,29 @@ def fetch_candidates(source=None):
     combined = combined.drop_duplicates(subset=["Ticker"], keep="first")
     if "_FastScore" in combined.columns:
         combined = combined.sort_values("_FastScore", ascending=False, na_position="last")
-    candidates = combined.head(MAX_STOCKS_DEEP).reset_index(drop=True)
+    candidates = pin_priority_tickers(combined, PRIORITY_TICKERS).reset_index(drop=True)
 
     src_counts = candidates.get("_source", pd.Series(dtype=str)).value_counts().to_dict()
     print(f"  → {len(candidates)} candidates ({src_counts})\n")
     return candidates
+
+
+def pin_priority_tickers(df, priority=PRIORITY_TICKERS):
+    """تثبيت tickers مهمة (SPY) حتى لو خرجت من top N."""
+    if df is None or df.empty:
+        return df
+    pinned_parts = []
+    rest = df.copy()
+    for t in priority:
+        hit = rest[rest["Ticker"].str.upper() == str(t).upper()]
+        if not hit.empty:
+            pinned_parts.append(hit.iloc[[0]])
+            rest = rest[rest["Ticker"].str.upper() != str(t).upper()]
+    if not pinned_parts:
+        return df.head(MAX_STOCKS_DEEP).reset_index(drop=True)
+    pinned = pd.concat(pinned_parts, ignore_index=True)
+    room = max(0, MAX_STOCKS_DEEP - len(pinned))
+    return pd.concat([pinned, rest.head(room)], ignore_index=True)
 
 
 def process_candidates(candidates_df, show_progress=True):
@@ -1340,6 +1409,8 @@ def process_candidates(candidates_df, show_progress=True):
         row["tp2_stock"]      = plan.get("tp2_stock")
         row["tp3_stock"]      = plan.get("tp3_stock")
         row["tp1_rr"]         = plan.get("tp1_rr")
+        if is_spy_ticker(ticker):
+            row["profile"] = "spy"
 
         if show_progress:
             stk_s   = f"${row['strike']:.2f}" if row["strike"]  else "   N/A"
@@ -1361,6 +1432,24 @@ def process_candidates(candidates_df, show_progress=True):
               .reset_index(drop=True))
 
 
+def ensure_spy_saved(combined, result_df, save_cols):
+    """SPY يُحفظ دائماً في CSV إذا وُجدت بيانات عقد."""
+    if result_df is None or result_df.empty:
+        return combined
+    spy_hit = result_df[result_df["Ticker"].str.upper() == SPY_TICKER]
+    if spy_hit.empty:
+        return combined
+    spy = spy_hit.iloc[[0]].copy()
+    if not float(spy.iloc[0].get("premium") or 0):
+        return combined
+    cols = [c for c in save_cols if c in spy.columns]
+    spy = spy[cols]
+    if combined is None or combined.empty:
+        return spy
+    combined = combined[combined["Ticker"].str.upper() != SPY_TICKER]
+    return pd.concat([spy, combined], ignore_index=True)
+
+
 def save_screen_results(result_df, path="options_v3_results.csv"):
     save_cols = [c for c in SAVE_COLS if c in result_df.columns]
     strict = filter_results_df(result_df)
@@ -1379,6 +1468,8 @@ def save_screen_results(result_df, path="options_v3_results.csv"):
         combined = pd.concat(parts, ignore_index=True).drop_duplicates(subset=["Ticker"], keep="first")
     else:
         combined = pd.DataFrame()
+
+    combined = ensure_spy_saved(combined, result_df, save_cols)
 
     used_fallback = not watchlist.empty and (
         strict.empty or len(combined) > len(strict)
