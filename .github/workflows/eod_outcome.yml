@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: eod-outcome
+  group: repo-csv-writes
   cancel-in-progress: false
 
 permissions:
@@ -38,9 +38,6 @@ jobs:
 
       - name: Commit outcomes.csv
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add outcomes.csv
-          git diff --cached --quiet || git commit -m "EOD outcomes: $(date -u '+%Y-%m-%d %H:%M UTC')"
-          git pull --rebase origin main || true
-          git push
+          bash .github/scripts/push_csv_changes.sh \
+            "EOD outcomes: $(date -u '+%Y-%m-%d %H:%M UTC')" \
+            outcomes.csv
