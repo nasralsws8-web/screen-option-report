@@ -95,10 +95,12 @@ TICKER_PROFILES = {
     SPY_TICKER: {
         "label":           "SPY — S&P 500 ETF",
         "prem_min":        1.0,
-        "prem_max":        25.0,
+        "prem_max":        5.0,      # OTM — مو ATM ($6+)
+        "target_prem":     2.50,     # الهدف: ~$2.50 للعقد
+        "use_otm_strike":  True,     # strike OTM أرخص من ATM
         "max_stock_price": 800.0,
         "max_spread_pct":  0.10,
-        "min_oi":          1000,
+        "min_oi":          500,
         "dte_target":      7,
         "dte_window":      10,
     },
@@ -613,11 +615,78 @@ def _leg_from_atm(atm_row):
     return {
         "premium":    round((bid + ask) / 2, 2),
         "iv":         round(float(atm_row.get("impliedVolatility") or 0), 4),
-        "oi":         int(atm_row.get("openInterest") or 0),
-        "opt_vol":    int(atm_row.get("volume") or 0),
+        "oi":         _safe_int(atm_row.get("openInterest")),
+        "opt_vol":    _safe_int(atm_row.get("volume")),
         "spread_pct": round((ask - bid) / ask, 4) if ask > 0 else None,
         "strike":     float(atm_row.get("strike") or 0),
     }
+
+
+def _pick_best_strike(chain_df, stock_price, is_call, ticker):
+    """
+    اختيار strike — SPY: OTM ضمن premium $1–$5 (مو ATM ~$6+).
+    الباقي: ATM كالسابق.
+    """
+    if chain_df is None or chain_df.empty:
+        return None
+
+    prof = ticker_profile(ticker)
+    use_otm = prof.get("use_otm_strike", False)
+    prem_min = profile_limit(ticker, "prem_min", TARGET_PREM_MIN)
+    prem_max = profile_limit(ticker, "prem_max", TARGET_PREM_MAX)
+    target   = prof.get("target_prem", (prem_min + prem_max) / 2)
+    max_sp   = profile_limit(ticker, "max_spread_pct", MAX_SPREAD_PCT)
+    min_oi   = profile_limit(ticker, "min_oi", MIN_OI)
+
+    if not use_otm:
+        return _leg_from_atm(_atm_row(chain_df, stock_price))
+
+    candidates = []
+    for _, row in chain_df.iterrows():
+        leg = _leg_from_atm(row)
+        if not leg:
+            continue
+        strike = leg["strike"]
+        prem   = leg["premium"]
+        sp     = leg["spread_pct"] if leg["spread_pct"] is not None else 99
+        oi     = effective_oi(leg["oi"], leg["opt_vol"], min_oi)
+
+        if prem < prem_min or prem > prem_max:
+            continue
+        if sp > max_sp:
+            continue
+        if oi < min_oi:
+            continue
+        # OTM فقط
+        if is_call and strike <= stock_price * 1.001:
+            continue
+        if not is_call and strike >= stock_price * 0.999:
+            continue
+        if abs(strike - stock_price) / stock_price > 0.05:
+            continue  # لا نبعد أكثر من 5%
+
+        dist_prem = abs(prem - target)
+        candidates.append((dist_prem, leg))
+
+    if candidates:
+        candidates.sort(key=lambda x: x[0])
+        return candidates[0][1]
+
+    # fallback: أرخص strike في النطاق (حتى ITM) ثم ATM
+    loose = []
+    for _, row in chain_df.iterrows():
+        leg = _leg_from_atm(row)
+        if not leg:
+            continue
+        prem = leg["premium"]
+        sp   = leg["spread_pct"] if leg["spread_pct"] is not None else 99
+        if prem_min <= prem <= prem_max and sp <= max_sp:
+            loose.append((abs(prem - target), leg))
+    if loose:
+        loose.sort(key=lambda x: x[0])
+        return loose[0][1]
+
+    return _leg_from_atm(_atm_row(chain_df, stock_price))
 
 
 def _apply_leg_fields(target, leg):
@@ -738,18 +807,21 @@ def fetch_options_data(ticker, stock_price):
         if calls.empty:
             out["error"] = "empty_chain"; return out
 
-        leg_call = _leg_from_atm(_atm_row(calls, stock_price))
+        leg_call = _pick_best_strike(calls, stock_price, True, ticker)
         if not leg_call:
             out["error"] = "no_market"; return out
 
-        leg_put = _leg_from_atm(_atm_row(puts, stock_price)) if not puts.empty else None
+        leg_put = _pick_best_strike(puts, stock_price, False, ticker) if not puts.empty else None
+        # اتجاه من ATM OI (إشارة فقط)
+        atm_call = _leg_from_atm(_atm_row(calls, stock_price))
+        atm_put  = _leg_from_atm(_atm_row(puts, stock_price)) if not puts.empty else None
         out["leg_call"] = leg_call
         out["leg_put"]  = leg_put or leg_call
         _apply_leg_fields(out, leg_call)
 
-        # إشارة الاتجاه: Call OI مقابل Put OI
-        if leg_put and leg_call["oi"] > 0 and leg_put["oi"] > 0:
-            ratio = leg_call["oi"] / leg_put["oi"]
+        # إشارة الاتجاه: Call OI مقابل Put OI (ATM)
+        if atm_put and atm_call and atm_call["oi"] > 0 and atm_put["oi"] > 0:
+            ratio = atm_call["oi"] / atm_put["oi"]
             out["direction"] = ("CALL 📈" if ratio > 1.4
                                 else "PUT  📉" if ratio < 0.7
                                 else "NEUTRAL")
