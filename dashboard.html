@@ -853,11 +853,16 @@ async function loadHistory(force) {
     }
 
     const closed  = rows.filter(r => r.status !== 'open');
-    const wins    = closed.filter(r => ['tp1_hit','tp2_hit','tp3_hit'].includes(r.status));
-    const stops   = closed.filter(r => r.status === 'stop_hit');
-    const winRate = closed.length ? (wins.length / closed.length * 100).toFixed(1) : '—';
-    const avgWin  = wins.length  ? (wins.reduce((s,r)=>s+parseFloat(r.result_pct||0),0)/wins.length).toFixed(2)  : '—';
-    const avgLoss = stops.length ? (stops.reduce((s,r)=>s+parseFloat(r.result_pct||0),0)/stops.length).toFixed(2) : '—';
+    const withOpt = closed.filter(r => r.option_pnl_pct !== '' && r.option_pnl_pct != null && !isNaN(parseFloat(r.option_pnl_pct)));
+    const optWins = withOpt.filter(r => parseFloat(r.option_pnl_pct) > 0);
+    const optLoss = withOpt.filter(r => parseFloat(r.option_pnl_pct) <= 0);
+    const wins    = withOpt.length ? optWins : closed.filter(r => ['tp1_hit','tp2_hit','tp3_hit'].includes(r.status));
+    const stops   = withOpt.length ? optLoss : closed.filter(r => r.status === 'stop_hit');
+    const winRate = closed.length ? (wins.length / (withOpt.length || closed.length) * 100).toFixed(1) : '—';
+    const pnlField = (r) => withOpt.length && r.option_pnl_pct !== '' && r.option_pnl_pct != null ? parseFloat(r.option_pnl_pct) : parseFloat(r.result_pct||0);
+    const avgWin  = wins.length  ? (wins.reduce((s,r)=>s+pnlField(r),0)/wins.length).toFixed(1)  : '—';
+    const avgLoss = stops.length ? (stops.reduce((s,r)=>s+pnlField(r),0)/stops.length).toFixed(1) : '—';
+    const pnlLabel = withOpt.length ? 'P&L العقد' : 'حركة السهم';
 
     const statusLabel = {
       'open':'🟡 مفتوح','tp1_hit':'✅ TP1','tp2_hit':'✅✅ TP2',
@@ -876,9 +881,9 @@ async function loadHistory(force) {
       <p style="font-size:12px;color:#8b949e;margin-bottom:12px">${finnhubHint} · يتحدث عند فتح التبويب أو 🔄 تحديث</p>
       <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:20px">
         <div class="stat total"><div class="stat-num">${rows.length}</div><div class="stat-label">إجمالي التوصيات</div></div>
-        <div class="stat buy"><div class="stat-num">${winRate}%</div><div class="stat-label">Win Rate</div></div>
-        <div class="stat buy"><div class="stat-num">${avgWin === '—' ? '—' : '+'+avgWin+'%'}</div><div class="stat-label">Avg Win</div></div>
-        <div class="stat avoid"><div class="stat-num">${avgLoss === '—' ? '—' : avgLoss+'%'}</div><div class="stat-label">Avg Loss</div></div>
+        <div class="stat buy"><div class="stat-num">${winRate}%</div><div class="stat-label">Win Rate (${pnlLabel})</div></div>
+        <div class="stat buy"><div class="stat-num">${avgWin === '—' ? '—' : (parseFloat(avgWin)>=0?'+':'')+avgWin+'%'}</div><div class="stat-label">Avg Win (${pnlLabel})</div></div>
+        <div class="stat avoid"><div class="stat-num">${avgLoss === '—' ? '—' : avgLoss+'%'}</div><div class="stat-label">Avg Loss (${pnlLabel})</div></div>
         <div class="stat wait"><div class="stat-num">${rows.filter(r=>r.status==='open').length}</div><div class="stat-label">🟡 مفتوحة</div></div>
       </div>
       <div style="overflow-x:auto">
@@ -893,7 +898,9 @@ async function loadHistory(force) {
           <th style="padding:10px;text-align:right;color:#8b949e">vs Entry</th>
           <th style="padding:10px;text-align:right;color:#8b949e">TP1</th>
           <th style="padding:10px;text-align:right;color:#8b949e">Stop</th>
-          <th style="padding:10px;text-align:right;color:#8b949e">النتيجة</th>
+          <th style="padding:10px;text-align:right;color:#8b949e">Premium</th>
+          <th style="padding:10px;text-align:right;color:#8b949e">P&L العقد</th>
+          <th style="padding:10px;text-align:right;color:#8b949e">حركة السهم</th>
           <th style="padding:10px;text-align:right;color:#8b949e">سجل CSV</th>
           <th style="padding:10px;text-align:right;color:#8b949e">الحالة الحية</th>
         </tr></thead>
@@ -903,6 +910,11 @@ async function loadHistory(force) {
             const res = parseFloat(r.result_pct);
             const resStr = isNaN(res) ? '—' : (res>=0?'+':'')+res.toFixed(2)+'%';
             const resColor = isNaN(res)?'#8b949e':res>=0?'#3fb950':'#f85149';
+            const optPnl = parseFloat(r.option_pnl_pct);
+            const optStr = isNaN(optPnl) ? '—' : (optPnl>=0?'+':'')+optPnl.toFixed(1)+'%';
+            const optColor = isNaN(optPnl)?'#8b949e':optPnl>=0?'#3fb950':'#f85149';
+            const prem = parseFloat(r.premium);
+            const premStr = isNaN(prem) ? '—' : '$'+prem.toFixed(2);
             const st = r.status || 'open';
             const isOpen = st === 'open';
             const entryHit = String(r.entry_hit).toLowerCase() === 'true';
@@ -927,7 +939,9 @@ async function loadHistory(force) {
               <td id="hist-move-${key}" style="padding:10px;font-weight:700;color:${moveColor}">${moveStr}</td>
               <td style="padding:10px;color:#3fb950">$${parseFloat(r.tp1_stock||0).toFixed(2)}</td>
               <td style="padding:10px;color:#f85149">$${parseFloat(r.stop_stock||0).toFixed(2)}</td>
-              <td style="padding:10px;font-weight:700;color:${resColor}">${resStr}</td>
+              <td style="padding:10px;color:#e3b341">${premStr}</td>
+              <td style="padding:10px;font-weight:700;color:${optColor}">${optStr}</td>
+              <td style="padding:10px;color:${resColor}">${resStr}</td>
               <td style="padding:10px;font-weight:700;color:${statusColor[st]||'#8b949e'}">${statusLabel[st]||st}</td>
               <td id="hist-live-${key}" style="padding:10px;font-size:12px;color:${liveSt ? (liveSt.cls==='status-stop'?'#f85149':liveSt.cls==='status-tp'?'#58a6ff':liveSt.cls==='status-in-trade'?'#3fb950':'#e3b341') : '#8b949e'}">${liveSt ? liveSt.label + (liveSt.dist ? ' · '+liveSt.dist : '') : (isOpen ? 'بانتظار سعر…' : '—')}</td>
             </tr>`;

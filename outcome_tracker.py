@@ -3,28 +3,61 @@ outcome_tracker.py
 ------------------
 يسجّل توصيات BUY الجديدة في outcomes.csv
 ويتحقق من النتائج للتوصيات المفتوحة (هل وصل Entry/TP1/TP2/TP3 أو ضرب Stop؟)
+
+result_pct      = حركة السهم % (للمرجع)
+option_pnl_pct  = ربح/خسارة العقد % (Black-Scholes عند TP/Stop/Expiry)
 """
 
+import math
 import os
+from datetime import datetime, timedelta
+
 import pandas as pd
 import yfinance as yf
-from datetime import datetime, timedelta
+from scipy.stats import norm
 
 OUTCOMES_FILE = "outcomes.csv"
 RESULTS_FILE  = "options_v3_results.csv"
+
+RISK_FREE_RATE = 0.053
+MIN_IV         = 0.01
+DEFAULT_IV     = 0.40
 
 OUTCOMES_COLS = [
     "date", "ticker", "direction", "score", "confidence",
     "price_at_rec", "entry_stock", "stop_stock",
     "tp1_stock", "tp2_stock", "tp3_stock", "expiry",
+    "premium", "strike", "iv", "dte_num",
     "entry_hit", "entry_hit_date",
     "status",   # open / tp1_hit / tp2_hit / tp3_hit / stop_hit / expired
-    "result_pct"
+    "result_pct",
+    "option_pnl_pct",
 ]
 
 
+def bs_price(S, K, T, r, sigma, opt):
+    """Black-Scholes — نفس منطق cheap_options_screener_v3."""
+    if S <= 0 or K <= 0:
+        return 0.0
+    if T <= 0:
+        return max(S - K, 0) if opt == "call" else max(K - S, 0)
+    if sigma <= 0:
+        return 0.0
+    d1 = (math.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * math.sqrt(T))
+    d2 = d1 - sigma * math.sqrt(T)
+    if opt == "call":
+        return max(S * norm.cdf(d1) - K * math.exp(-r * T) * norm.cdf(d2), 0)
+    return max(K * math.exp(-r * T) * norm.cdf(-d2) - S * norm.cdf(-d1), 0)
+
+
+def parse_date(val):
+    try:
+        return pd.to_datetime(val).date()
+    except Exception:
+        return None
+
+
 def valid_target(price):
-    """رفض أهداف سالبة أو صفر (مثل SNXX tp3=-3.78)."""
     try:
         return float(price) > 0
     except (TypeError, ValueError):
@@ -32,7 +65,6 @@ def valid_target(price):
 
 
 def resolve_is_call(direction, entry, tp1, stop):
-    """CALL/PUT/NEUTRAL — NEUTRAL يُستنتج من entry/tp1/stop."""
     d = str(direction or "").upper()
     if "PUT" in d:
         return False
@@ -49,6 +81,80 @@ def resolve_is_call(direction, entry, tp1, stop):
     if entry > 0 and stop > 0:
         return stop < entry
     return True
+
+
+def move_pct(entry, target, is_call):
+    if entry <= 0:
+        return 0.0
+    if is_call:
+        return round((target - entry) / entry * 100, 2)
+    return round((entry - target) / entry * 100, 2)
+
+
+def calc_option_pnl_pct(row, stock_at_exit, exit_date):
+    """نسبة ربح/خسارة العقد عند سعر سهم معيّن وتاريخ خروج."""
+    try:
+        premium = float(row.get("premium") or 0)
+        strike  = float(row.get("strike") or 0)
+    except (TypeError, ValueError):
+        return None
+    if premium <= 0 or strike <= 0:
+        return None
+
+    iv_raw = row.get("iv")
+    try:
+        iv = float(iv_raw) if iv_raw is not None else DEFAULT_IV
+    except (TypeError, ValueError):
+        iv = DEFAULT_IV
+    if iv < MIN_IV:
+        iv = DEFAULT_IV
+
+    expiry = parse_date(row.get("expiry"))
+    if exit_date is None:
+        exit_date = datetime.now().date()
+    elif not isinstance(exit_date, datetime):
+        exit_date = parse_date(exit_date) or datetime.now().date()
+
+    if expiry:
+        T = max((expiry - exit_date).days / 365, 1 / 365)
+    else:
+        dte = int(float(row.get("dte_num") or 7))
+        T = max(dte / 365, 1 / 365)
+
+    is_call = resolve_is_call(
+        row.get("direction"), row.get("entry_stock"),
+        row.get("tp1_stock"), row.get("stop_stock"),
+    )
+    opt_type = "call" if is_call else "put"
+    exit_val = bs_price(float(stock_at_exit), strike, T, RISK_FREE_RATE, iv, opt_type)
+    return round((exit_val - premium) / premium * 100, 2)
+
+
+def first_hit_date(post, level, is_call, hit_type="tp"):
+    """أول يوم في post حيث تحقق TP أو Stop."""
+    level = float(level)
+    for dt, bar in post.iterrows():
+        h, l = float(bar["High"]), float(bar["Low"])
+        if hit_type == "tp":
+            if is_call and h >= level:
+                return dt.date()
+            if not is_call and l <= level:
+                return dt.date()
+        else:
+            if is_call and l <= level:
+                return dt.date()
+            if not is_call and h >= level:
+                return dt.date()
+    return None
+
+
+def apply_close(outcomes_df, idx, row, status, entry, stock_price, is_call, exit_date=None):
+    """يحدّث status + result_pct + option_pnl_pct."""
+    outcomes_df.at[idx, "status"] = status
+    outcomes_df.at[idx, "result_pct"] = move_pct(entry, stock_price, is_call)
+    opt_pnl = calc_option_pnl_pct(row, stock_price, exit_date)
+    if opt_pnl is not None:
+        outcomes_df.at[idx, "option_pnl_pct"] = opt_pnl
 
 
 def recalculate_result_pct(row):
@@ -72,8 +178,31 @@ def recalculate_result_pct(row):
     return row.get("result_pct")
 
 
+def recalculate_option_pnl(row):
+    status = str(row.get("status") or "")
+    if status == "open":
+        return row.get("option_pnl_pct")
+    entry = float(row.get("entry_stock") or 0)
+    if entry <= 0:
+        return None
+    is_call = resolve_is_call(
+        row.get("direction"), entry,
+        row.get("tp1_stock"), row.get("stop_stock"),
+    )
+    stock_map = {
+        "tp1_hit":  float(row.get("tp1_stock") or 0),
+        "tp2_hit":  float(row.get("tp2_stock") or 0),
+        "tp3_hit":  float(row.get("tp3_stock") or 0),
+        "stop_hit": float(row.get("stop_stock") or 0),
+    }
+    if status in stock_map and stock_map[status] > 0:
+        exit_date = parse_date(row.get("entry_hit_date")) or parse_date(row.get("date"))
+        return calc_option_pnl_pct(row, stock_map[status], exit_date)
+    return row.get("option_pnl_pct")
+
+
 def recalculate_all_outcomes(outcomes_df):
-    fixed = 0
+    fixed_stock = fixed_opt = 0
     for idx, row in outcomes_df.iterrows():
         if row.get("status") == "open":
             continue
@@ -81,24 +210,88 @@ def recalculate_all_outcomes(outcomes_df):
         new = recalculate_result_pct(row)
         if new is not None and old != new:
             outcomes_df.at[idx, "result_pct"] = new
-            fixed += 1
-    if fixed:
-        print(f"✅ أعيد حساب result_pct لـ {fixed} صف تاريخي")
+            fixed_stock += 1
+        if has_option_data(row):
+            old_opt = row.get("option_pnl_pct")
+            new_opt = recalculate_option_pnl(row)
+            if new_opt is not None and old_opt != new_opt:
+                outcomes_df.at[idx, "option_pnl_pct"] = new_opt
+                fixed_opt += 1
+    if fixed_stock:
+        print(f"✅ أعيد حساب result_pct لـ {fixed_stock} صف")
+    if fixed_opt:
+        print(f"✅ أعيد حساب option_pnl_pct لـ {fixed_opt} صف")
     return outcomes_df
 
 
-def move_pct(entry, target, is_call):
-    """نسبة ربح/خسارة موجّهة حسب اتجاه الصفقة."""
-    if entry <= 0:
-        return 0.0
-    if is_call:
-        return round((target - entry) / entry * 100, 2)
-    return round((entry - target) / entry * 100, 2)
+def has_option_data(row):
+    try:
+        return float(row.get("premium") or 0) > 0 and float(row.get("strike") or 0) > 0
+    except (TypeError, ValueError):
+        return False
 
 
-# ─────────────────────────────────────────────
-# 1) تحميل أو إنشاء outcomes.csv
-# ─────────────────────────────────────────────
+def backfill_option_fields(outcomes_df):
+    """يملأ premium/strike/iv للصفوف القديمة من options_v3_results.csv."""
+    if not os.path.exists(RESULTS_FILE):
+        return outcomes_df
+    try:
+        results = pd.read_csv(RESULTS_FILE)
+    except Exception:
+        return outcomes_df
+    if results.empty:
+        return outcomes_df
+
+    lookup = {}
+    for _, r in results.iterrows():
+        t = str(r.get("Ticker", "")).upper().strip()
+        if t:
+            lookup[t] = r
+
+    filled = 0
+    for idx, row in outcomes_df.iterrows():
+        if str(row.get("status") or "") != "open":
+            continue
+        if has_option_data(row):
+            continue
+        t = str(row.get("ticker", "")).upper().strip()
+        src = lookup.get(t)
+        if src is None:
+            continue
+        try:
+            prem = float(src.get("premium") or 0)
+            strike = float(src.get("strike") or 0)
+        except (TypeError, ValueError):
+            continue
+        if prem <= 0 or strike <= 0:
+            continue
+        outcomes_df.at[idx, "premium"] = prem
+        outcomes_df.at[idx, "strike"]  = strike
+        outcomes_df.at[idx, "iv"]      = src.get("iv")
+        outcomes_df.at[idx, "dte_num"] = src.get("dte_num")
+        filled += 1
+
+    if filled:
+        print(f"✅ backfill: premium/strike لـ {filled} صف من CSV الحالي")
+    return outcomes_df
+
+
+def repair_closed_option_estimates(outcomes_df):
+    """صفوف مغلقة: premium الحالي من CSV ≠ عقد وقت الدخول — لا نقدّر P&L."""
+    cleared = 0
+    for idx, row in outcomes_df.iterrows():
+        if str(row.get("status") or "") == "open":
+            continue
+        if not has_option_data(row) and pd.isna(row.get("option_pnl_pct")):
+            continue
+        for col in ("premium", "strike", "iv", "dte_num", "option_pnl_pct"):
+            outcomes_df.at[idx, col] = None
+        cleared += 1
+    if cleared:
+        print(f"✅ repair: مسح تقديرات P&L لـ {cleared} صف مغلق (بدون premium وقت الدخول)")
+    return outcomes_df
+
+
 def load_outcomes():
     STR_COLS = ["date", "ticker", "direction", "expiry", "entry_hit_date", "status"]
     if os.path.exists(OUTCOMES_FILE):
@@ -113,9 +306,6 @@ def load_outcomes():
     return pd.DataFrame(columns=OUTCOMES_COLS)
 
 
-# ─────────────────────────────────────────────
-# 2) إضافة توصيات BUY الجديدة
-# ─────────────────────────────────────────────
 def add_new_recommendations(outcomes_df):
     if not os.path.exists(RESULTS_FILE):
         print("⚠️  options_v3_results.csv غير موجود — تخطي إضافة توصيات جديدة")
@@ -153,27 +343,43 @@ def add_new_recommendations(outcomes_df):
         if entry <= 0:
             continue
 
+        prem = r.get("premium")
+        strike = r.get("strike")
+        try:
+            prem_f = float(prem) if prem is not None else None
+        except (TypeError, ValueError):
+            prem_f = None
+        try:
+            strike_f = float(strike) if strike is not None else None
+        except (TypeError, ValueError):
+            strike_f = None
+
         new_row = {
-            "date":          today,
-            "ticker":        ticker,
-            "direction":     str(r.get("direction", "")).replace("📈", "").replace("📉", "").strip(),
-            "score":         r.get("Score", 0),
-            "confidence":    r.get("confidence", 0),
-            "price_at_rec":  r.get("Price", 0),
-            "entry_stock":   entry,
-            "stop_stock":    float(r.get("stop_stock") or 0),
-            "tp1_stock":     float(r.get("tp1_stock") or 0),
-            "tp2_stock":     float(r.get("tp2_stock") or 0),
-            "tp3_stock":     float(r.get("tp3_stock") or 0),
-            "expiry":        r.get("expiry", ""),
-            "entry_hit":     False,
+            "date":           today,
+            "ticker":         ticker,
+            "direction":      str(r.get("direction", "")).replace("📈", "").replace("📉", "").strip(),
+            "score":          r.get("Score", 0),
+            "confidence":     r.get("confidence", 0),
+            "price_at_rec":   r.get("Price", 0),
+            "entry_stock":    entry,
+            "stop_stock":     float(r.get("stop_stock") or 0),
+            "tp1_stock":      float(r.get("tp1_stock") or 0),
+            "tp2_stock":      float(r.get("tp2_stock") or 0),
+            "tp3_stock":      float(r.get("tp3_stock") or 0),
+            "expiry":         r.get("expiry", ""),
+            "premium":        prem_f,
+            "strike":         strike_f,
+            "iv":             r.get("iv"),
+            "dte_num":        r.get("dte_num"),
+            "entry_hit":      False,
             "entry_hit_date": "",
-            "status":        "open",
-            "result_pct":    None,
+            "status":         "open",
+            "result_pct":     None,
+            "option_pnl_pct": None,
         }
         outcomes_df = pd.concat(
             [outcomes_df, pd.DataFrame([new_row])],
-            ignore_index=True
+            ignore_index=True,
         )
         added += 1
 
@@ -181,9 +387,6 @@ def add_new_recommendations(outcomes_df):
     return outcomes_df
 
 
-# ─────────────────────────────────────────────
-# 3) تحديث نتائج التوصيات المفتوحة
-# ─────────────────────────────────────────────
 def update_open_outcomes(outcomes_df):
     open_mask = outcomes_df["status"] == "open"
     open_rows = outcomes_df[open_mask]
@@ -203,21 +406,15 @@ def update_open_outcomes(outcomes_df):
         tp2        = float(row["tp2_stock"] or 0)
         tp3        = float(row["tp3_stock"] or 0)
         expiry_str = str(row.get("expiry", ""))
-        is_call    = resolve_is_call(
-            row.get("direction"), entry, tp1, stop
-        )
+        is_call    = resolve_is_call(row.get("direction"), entry, tp1, stop)
 
         if not ticker or entry <= 0:
             continue
 
-        try:
-            expiry_date = pd.to_datetime(expiry_str).date()
-        except Exception:
-            expiry_date = today + timedelta(days=7)
+        expiry_date = parse_date(expiry_str) or (today + timedelta(days=7))
 
         try:
             start = rec_date.strftime("%Y-%m-%d")
-            # +2 أيام لضمان اكتمال شمعة اليوم بعد إغلاق السوق
             end   = (today + timedelta(days=2)).strftime("%Y-%m-%d")
             hist  = yf.download(ticker, start=start, end=end,
                                 interval="1d", progress=False, auto_adjust=True)
@@ -247,49 +444,44 @@ def update_open_outcomes(outcomes_df):
         if entry_hit and entry_hit_date:
             post = hist[hist.index >= pd.to_datetime(entry_hit_date)]
             if not post.empty:
-                max_high = float(post["High"].max())
-                min_low  = float(post["Low"].min())
-
                 if is_call:
-                    if valid_target(tp3) and max_high >= tp3:
-                        outcomes_df.at[idx, "status"]     = "tp3_hit"
-                        outcomes_df.at[idx, "result_pct"] = move_pct(entry, tp3, True)
-                    elif valid_target(tp2) and max_high >= tp2:
-                        outcomes_df.at[idx, "status"]     = "tp2_hit"
-                        outcomes_df.at[idx, "result_pct"] = move_pct(entry, tp2, True)
-                    elif valid_target(tp1) and max_high >= tp1:
-                        outcomes_df.at[idx, "status"]     = "tp1_hit"
-                        outcomes_df.at[idx, "result_pct"] = move_pct(entry, tp1, True)
-                    elif valid_target(stop) and min_low <= stop:
-                        outcomes_df.at[idx, "status"]     = "stop_hit"
-                        outcomes_df.at[idx, "result_pct"] = move_pct(entry, stop, True)
+                    if valid_target(tp3) and float(post["High"].max()) >= tp3:
+                        exit_d = first_hit_date(post, tp3, True, "tp") or today
+                        apply_close(outcomes_df, idx, row, "tp3_hit", entry, tp3, True, exit_d)
+                    elif valid_target(tp2) and float(post["High"].max()) >= tp2:
+                        exit_d = first_hit_date(post, tp2, True, "tp") or today
+                        apply_close(outcomes_df, idx, row, "tp2_hit", entry, tp2, True, exit_d)
+                    elif valid_target(tp1) and float(post["High"].max()) >= tp1:
+                        exit_d = first_hit_date(post, tp1, True, "tp") or today
+                        apply_close(outcomes_df, idx, row, "tp1_hit", entry, tp1, True, exit_d)
+                    elif valid_target(stop) and float(post["Low"].min()) <= stop:
+                        exit_d = first_hit_date(post, stop, True, "stop") or today
+                        apply_close(outcomes_df, idx, row, "stop_hit", entry, stop, True, exit_d)
                 else:
-                    if valid_target(tp3) and min_low <= tp3:
-                        outcomes_df.at[idx, "status"]     = "tp3_hit"
-                        outcomes_df.at[idx, "result_pct"] = move_pct(entry, tp3, False)
-                    elif valid_target(tp2) and min_low <= tp2:
-                        outcomes_df.at[idx, "status"]     = "tp2_hit"
-                        outcomes_df.at[idx, "result_pct"] = move_pct(entry, tp2, False)
-                    elif valid_target(tp1) and min_low <= tp1:
-                        outcomes_df.at[idx, "status"]     = "tp1_hit"
-                        outcomes_df.at[idx, "result_pct"] = move_pct(entry, tp1, False)
-                    elif valid_target(stop) and max_high >= stop:
-                        outcomes_df.at[idx, "status"]     = "stop_hit"
-                        outcomes_df.at[idx, "result_pct"] = move_pct(entry, stop, False)
+                    if valid_target(tp3) and float(post["Low"].min()) <= tp3:
+                        exit_d = first_hit_date(post, tp3, False, "tp") or today
+                        apply_close(outcomes_df, idx, row, "tp3_hit", entry, tp3, False, exit_d)
+                    elif valid_target(tp2) and float(post["Low"].min()) <= tp2:
+                        exit_d = first_hit_date(post, tp2, False, "tp") or today
+                        apply_close(outcomes_df, idx, row, "tp2_hit", entry, tp2, False, exit_d)
+                    elif valid_target(tp1) and float(post["Low"].min()) <= tp1:
+                        exit_d = first_hit_date(post, tp1, False, "tp") or today
+                        apply_close(outcomes_df, idx, row, "tp1_hit", entry, tp1, False, exit_d)
+                    elif valid_target(stop) and float(post["High"].max()) >= stop:
+                        exit_d = first_hit_date(post, stop, False, "stop") or today
+                        apply_close(outcomes_df, idx, row, "stop_hit", entry, stop, False, exit_d)
 
         if today > expiry_date and outcomes_df.at[idx, "status"] == "open":
             last_close = float(hist["Close"].iloc[-1])
-            outcomes_df.at[idx, "status"]     = "expired"
-            outcomes_df.at[idx, "result_pct"] = move_pct(entry, last_close, is_call)
+            apply_close(outcomes_df, idx, row, "expired", entry, last_close, is_call, today)
 
-        print(f"  {ticker}: {outcomes_df.at[idx, 'status']}")
+        opt_s = outcomes_df.at[idx, "option_pnl_pct"]
+        opt_str = f" opt={opt_s:+.1f}%" if opt_s is not None and not pd.isna(opt_s) else ""
+        print(f"  {ticker}: {outcomes_df.at[idx, 'status']}{opt_str}")
 
     return outcomes_df
 
 
-# ─────────────────────────────────────────────
-# 4) طباعة ملخص
-# ─────────────────────────────────────────────
 def print_summary(outcomes_df):
     closed = outcomes_df[outcomes_df["status"] != "open"]
     if closed.empty:
@@ -303,11 +495,23 @@ def print_summary(outcomes_df):
     avg_win  = float(wins["result_pct"].mean())  if not wins.empty  else 0
     avg_loss = float(stops["result_pct"].mean()) if not stops.empty else 0
 
-    print(f"\n📊 ملخص النتائج:")
+    print(f"\n📊 ملخص النتائج (حركة السهم):")
     print(f"   إجمالي مغلق : {len(closed)}")
     print(f"   Win Rate    : {win_rate:.1f}%")
     print(f"   Avg Win     : {avg_win:+.2f}%")
     print(f"   Avg Loss    : {avg_loss:+.2f}%")
+
+    with_opt = closed[closed["option_pnl_pct"].notna()]
+    if not with_opt.empty:
+        opt_wins = with_opt[with_opt["option_pnl_pct"] > 0]
+        opt_loss = with_opt[with_opt["option_pnl_pct"] <= 0]
+        opt_wr = len(opt_wins) / len(with_opt) * 100
+        avg_opt_win  = float(opt_wins["option_pnl_pct"].mean())  if not opt_wins.empty  else 0
+        avg_opt_loss = float(opt_loss["option_pnl_pct"].mean()) if not opt_loss.empty else 0
+        print(f"\n📈 ملخص P&L العقود ({len(with_opt)} صف ببيانات premium):")
+        print(f"   Win Rate    : {opt_wr:.1f}%")
+        print(f"   Avg Win     : {avg_opt_win:+.1f}%")
+        print(f"   Avg Loss    : {avg_opt_loss:+.1f}%")
 
 
 if __name__ == "__main__":
@@ -316,6 +520,9 @@ if __name__ == "__main__":
     print(f"🔍 {label}\n")
 
     outcomes = load_outcomes()
+    if os.environ.get("REPAIR_CLOSED_OPTIONS", "").lower() in ("1", "true", "yes"):
+        outcomes = repair_closed_option_estimates(outcomes)
+    outcomes = backfill_option_fields(outcomes)
     outcomes = recalculate_all_outcomes(outcomes)
     if not eod:
         outcomes = add_new_recommendations(outcomes)
