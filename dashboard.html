@@ -397,6 +397,11 @@ function registerTradePlans(rows) {
   });
 }
 
+function parsePrice(val) {
+  const n = parseFloat(String(val ?? '').replace(/[$,\s]/g, ''));
+  return isNaN(n) || n <= 0 ? 0 : n;
+}
+
 function parseCSV(text) {
   const lines = text.trim().split('\n');
   const headers = lines[0].split(',').map(h => h.trim().replace(/^"|"$/g,''));
@@ -467,7 +472,7 @@ function renderSpySection(spyRow) {
         <div>
           <span class="spy-badge">📌 توصية SPY الخاصة</span>
           <div class="spy-title">${spyRow.Ticker}</div>
-          <div class="spy-sub">S&P 500 ETF · عقود OTM · premium $1–$5 (مو ATM)</div>
+          <div class="spy-sub">S&P 500 ETF · Strike $${parsePrice(spyRow.strike).toFixed(0)} · Premium $${parsePrice(spyRow.premium).toFixed(2)} · OTM</div>
         </div>
         <div style="text-align:left">
           <span class="rec-badge ${spyRow.recommendation || 'AVOID'}" id="rec-badge-${spyRow.Ticker}">${spyRow.recommendation || 'AVOID'}</span>
@@ -520,7 +525,7 @@ function calcEntry(r) {
   if (r.entry_stock && parseFloat(r.entry_stock) > 0)
     return '$' + parseFloat(r.entry_stock).toFixed(2);
   // وإلا احسب تقريبي من PM High + 5% of ATR
-  const price = parseFloat(r.Price || r.price_num || 0);
+  const price = parsePrice(r.Price || r.price_num);
   const atr = (parseFloat(r.atr_pct) || 0) * price / 100;
   const isCall = (r.direction || '').includes('CALL');
   const isPut  = (r.direction || '').includes('PUT');
@@ -545,7 +550,7 @@ function buildCard(r) {
     <div class="card-header">
       <div>
         <div class="ticker">${r.Ticker}</div>
-        <div class="card-price price-live" id="price-${r.Ticker}">$${parseFloat(r.Price||0).toFixed(2)}</div>
+        <div class="card-price price-live" id="price-${r.Ticker}">$${parsePrice(r.Price || r.price_num).toFixed(2)}</div>
   <div style="font-size:11px;margin-bottom:4px"><span class="change-badge" id="change-${r.Ticker}">جاري التحديث...</span></div>
       </div>
       <div style="text-align:left">
@@ -646,7 +651,7 @@ function renderTable(rows) {
     const be = calcBreakEven(r);
     return `<tr>
       <td class="tbl-ticker">${r.Ticker}</td>
-      <td>$${parseFloat(r.Price||0).toFixed(2)}</td>
+      <td>$${parsePrice(r.Price || r.price_num).toFixed(2)}</td>
       <td style="color:#58a6ff;font-weight:700">${stk ? '$'+stk.toFixed(2) : 'N/A'}</td>
       <td style="color:#3fb950;font-weight:700">${entry}</td>
       <td style="color:#f85149;font-weight:700">${fmt(r.stop_stock)}</td>
@@ -723,11 +728,11 @@ async function loadData() {
     connectFinnhub(tickers);
     // إذا ما في Finnhub — استخدم سعر CSV كبداية
     rows.forEach(r => {
-      const p = parseFloat(String(r.Price || '').replace('$', '')) || 0;
+      const p = parsePrice(r.Price || r.price_num);
       if (p > 0) updateLiveTradeStatus(r.Ticker, p);
     });
     if (spy) {
-      const sp = parseFloat(String(spy.Price || '').replace('$', '')) || 0;
+      const sp = parsePrice(spy.Price || spy.price_num);
       if (sp > 0) updateLiveTradeStatus('SPY', sp);
     }
   } catch (err) {
