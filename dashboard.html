@@ -202,6 +202,14 @@ let tradePlans = {};  // خطة الصفقة لكل ticker — تربط Finnhub 
 let outcomeRows = []; // صفوف السجل — للتحديث الحي
 let outcomeOpenTickers = [];
 
+function isScanStale(scannedAt) {
+  try {
+    const d = new Date(scannedAt.replace(' UTC', 'Z'));
+    if (isNaN(d)) return false;
+    return (Date.now() - d.getTime()) > 30 * 60 * 1000;
+  } catch (_) { return false; }
+}
+
 // ── Finnhub WebSocket ────────────────────────────────────────
 function connectFinnhub(tickers) {
   const key = localStorage.getItem('finnhub_key');
@@ -711,10 +719,15 @@ async function loadData() {
     document.getElementById('statAvoid').textContent = avoid;
     document.getElementById('statsBar').style.display = 'flex';
 
+    const scanTs = rows.find(r => r.scanned_at)?.scanned_at;
+    const staleWarn = scanTs && isScanStale(scanTs);
+    document.getElementById('lastUpdate').innerHTML = scanTs
+      ? `آخر مسح: ${scanTs}${staleWarn ? ' <span style="color:#f85149">⚠️ بيانات قديمة</span>' : ''}`
+      : 'آخر تحديث: ' + new Date().toLocaleTimeString('ar-SA');
+
     renderCards(rest);
     renderTable(rest);
 
-    document.getElementById('lastUpdate').textContent = 'آخر تحديث: ' + new Date().toLocaleTimeString('ar-SA');
     document.getElementById('loadingDiv').style.display = 'none';
     document.getElementById('mainContent').style.display = 'block';
     historyLoaded = false;

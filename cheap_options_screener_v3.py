@@ -313,6 +313,20 @@ def compute_targets(entry, is_call, atr, tech):
     return round(tp1, 2), round(tp2, 2), round(tp3, 2)
 
 
+def stock_rr(entry, target, stop, is_call):
+    """R:R على مستويات السهم — مستقر ولا يتأثر بقيم BS الشاذة."""
+    entry, target, stop = float(entry), float(target), float(stop)
+    if entry <= 0:
+        return 0.0
+    if is_call:
+        risk, reward = entry - stop, target - entry
+    else:
+        risk, reward = stop - entry, entry - target
+    if risk <= 0 or reward <= 0:
+        return 0.0
+    return round(min(reward / risk, 10.0), 1)
+
+
 def parse_price_num(val):
     if val is None:
         return 0.0
@@ -414,7 +428,9 @@ def save_results_csv(filtered_df, path="options_v3_results.csv"):
                 pass
         print("  ⚠️  0 matches — no valid previous CSV to keep")
         return False
-    filtered_df.to_csv(path, index=False)
+    out = filtered_df.copy()
+    out["scanned_at"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+    out.to_csv(path, index=False)
     return True
 
 
@@ -921,16 +937,16 @@ def score_stock(row):
         elif sp < 0.08: score += 1; notes.append("Spread<8% +1")
         else:           score -= 1; notes.append("Spread>8% -1")
 
-    if row.get("has_weekly"): score += 2; notes.append("Weekly✓ +2")
-    elif row.get("is_0dte"):  score += 3; notes.append("0DTE✓ +3")
+    if row.get("is_0dte") or int(row.get("dte_num") or 99) == 0:
+        score += 3; notes.append("0DTE✓ +3")
+    elif row.get("has_weekly"):
+        score += 2; notes.append("Weekly✓ +2")
 
     dte = int(row.get("dte_num") if row.get("dte_num") is not None else 99)
     max_dte = profile_limit(row.get("Ticker"), "max_dte", MAX_DTE)
     if dte > max_dte:
         score -= 5; notes.append(f"DTE>{max_dte}d -5")
-    elif dte == 0:
-        score += 2; notes.append("SameDay +2")
-    elif dte <= 7:
+    elif 0 < dte <= 7:
         score += 1; notes.append(f"DTE{dte}d +1")
 
     prem = row.get("premium", 0) or 0
@@ -1036,7 +1052,7 @@ def compute_trade_plan(r, tech):
     if price == 0 or premium == 0:
         return plan
     if iv_estimated:
-        plan["rec_note"] = "IV من Yahoo ناقص — R:R تقديري"
+        plan["rec_note"] = "IV من Yahoo ناقص — R:R على السهم"
 
     T_entry = max(dte / 365, 1 / 365)
     T_half  = max((dte / 2) / 365, 1 / 365)
@@ -1071,26 +1087,24 @@ def compute_trade_plan(r, tech):
     plan["stop_stock"]  = stop_stock
     plan["stop_option"] = round(stop_opt, 2)
 
-    risk_per = max((premium - stop_opt) * 100, 1.0)
+    risk_per = max(abs(premium - stop_opt) * 100, 1.0)
     plan["risk_per_contract"] = round(risk_per, 2)
 
     # ── Targets ───────────────────────────────────────────────────────────
     tp1, tp2, tp3 = compute_targets(entry, is_call, atr, tech)
 
     def opt_at(target_price):
-        # نستخدم نصف DTE لأننا نخرج قبل الانتهاء في الغالب
         return round(bs_price(target_price, strike, T_half,
                                RISK_FREE_RATE, iv, opt_type), 2)
 
-    def rr(opt_val):
-        reward = (opt_val - premium) * 100
-        return round(reward / risk_per, 1) if risk_per > 0 else 0.0
+    def rr_stock(target_price):
+        return stock_rr(entry, target_price, stop_stock, is_call)
 
     o1, o2, o3 = opt_at(tp1), opt_at(tp2), opt_at(tp3)
     plan.update({
-        "tp1_stock": round(tp1, 2), "tp1_option": o1, "tp1_rr": rr(o1),
-        "tp2_stock": round(tp2, 2), "tp2_option": o2, "tp2_rr": rr(o2),
-        "tp3_stock": round(tp3, 2), "tp3_option": o3, "tp3_rr": rr(o3),
+        "tp1_stock": round(tp1, 2), "tp1_option": o1, "tp1_rr": rr_stock(tp1),
+        "tp2_stock": round(tp2, 2), "tp2_option": o2, "tp2_rr": rr_stock(tp2),
+        "tp3_stock": round(tp3, 2), "tp3_option": o3, "tp3_rr": rr_stock(tp3),
     })
 
     # ── Confidence % ──────────────────────────────────────────────────────
@@ -1155,7 +1169,9 @@ def compute_trade_plan(r, tech):
 
     # ── Recommendation ────────────────────────────────────────────────────
     trend    = tech.get("trend", "")
-    best_rr  = max(plan["tp1_rr"] or 0, plan["tp2_rr"] or 0, plan["tp3_rr"] or 0)
+    tp1_rr   = plan["tp1_rr"] or 0
+    best_rr  = max(tp1_rr, plan["tp2_rr"] or 0, plan["tp3_rr"] or 0)
+    plan["best_rr"] = round(best_rr, 1)
     conf     = plan["confidence"]
 
     # الاتجاه موافق للصفقة
@@ -1178,17 +1194,17 @@ def compute_trade_plan(r, tech):
     elif not trade_plan_is_valid(plan, price, is_call):
         plan["recommendation"] = "WAIT"
         plan["rec_note"]       = "خطة الدخول غير متسقة مع السعر الحالي — انتظر"
-    elif conf >= MIN_CONF_TO_BUY and best_rr >= MIN_RR_TO_BUY and (trend_ok or mixed_ok):
+    elif conf >= MIN_CONF_TO_BUY and tp1_rr >= 1.0 and best_rr >= MIN_RR_TO_BUY and (trend_ok or mixed_ok):
         plan["recommendation"] = "BUY"
         plan["rec_note"]       = ("الاتجاه والزخم والسيولة مناسبة"
                                    if trend_ok else "اختراق قوي رغم الاتجاه المختلط")
-    elif entry_hit_now and conf >= 45 and best_rr >= 1.0:
+    elif entry_hit_now and conf >= 45 and tp1_rr >= 1.0:
         plan["recommendation"] = "BUY"
         plan["rec_note"]       = "Entry تحقق — السعر دخل نقطة الدخول"
-    elif conf >= MIN_CONF_TO_BUY and best_rr >= MIN_RR_TO_BUY:
+    elif conf >= MIN_CONF_TO_BUY and tp1_rr >= 1.0 and best_rr >= MIN_RR_TO_BUY:
         plan["recommendation"] = "WAIT"
         plan["rec_note"]       = "زخم جيد — راقب تأكيد الاتجاه"
-    elif conf >= 45 and best_rr >= 1.0:
+    elif conf >= 45 and tp1_rr >= 1.0 and best_rr >= 1.0:
         plan["recommendation"] = "WAIT"
         plan["rec_note"]       = "انتظر تأكيد الاختراق"
     else:
@@ -1369,7 +1385,7 @@ SAVE_COLS = [
     "atr_pct", "gap_pct", "RVOL", "pm_high", "pm_low", "pm_volume",
     "expiry", "dte_num", "direction", "earnings", "float_shares", "avg_vol",
     "entry_stock", "stop_stock", "tp1_stock", "tp2_stock", "tp3_stock", "tp1_rr",
-    "Score", "recommendation", "confidence", "Notes",
+    "Score", "recommendation", "confidence", "Notes", "scanned_at",
 ]
 
 
@@ -1576,7 +1592,9 @@ def process_candidates(candidates_df, show_progress=True):
         }
 
         tech = compute_technicals(hist, price_num)
-        apply_option_leg(row, resolve_is_call(row, tech))
+        is_call = resolve_is_call(row, tech)
+        apply_option_leg(row, is_call)
+        row["direction"] = "CALL 📈" if is_call else "PUT  📉"
 
         score, notes = score_stock(row)
         row["Score"] = score
