@@ -472,7 +472,7 @@ function renderSpySection(spyRow) {
         <div>
           <span class="spy-badge">📌 توصية SPY الخاصة</span>
           <div class="spy-title">${spyRow.Ticker}</div>
-          <div class="spy-sub">S&P 500 ETF · Strike $${parsePrice(spyRow.strike).toFixed(0)} · Premium $${parsePrice(spyRow.premium).toFixed(2)} · OTM</div>
+          <div class="spy-sub">S&P 500 ETF · Strike $${parsePrice(spyRow.strike).toFixed(0)} · Premium $${parsePrice(spyRow.premium).toFixed(2)} · ${parseInt(spyRow.dte_num)===0 ? '<span style="color:#3fb950">0DTE اليوم</span>' : spyRow.dte_num ? spyRow.dte_num + ' أيام' : 'OTM'}</div>
         </div>
         <div style="text-align:left">
           <span class="rec-badge ${spyRow.recommendation || 'AVOID'}" id="rec-badge-${spyRow.Ticker}">${spyRow.recommendation || 'AVOID'}</span>
@@ -601,7 +601,7 @@ function buildCard(r) {
       </div>
       <div class="card-item">
         <div class="card-item-label">Expiry / DTE</div>
-        <div class="card-item-value">${r.expiry||'N/A'}</div>
+        <div class="card-item-value">${r.expiry||'N/A'}${parseInt(r.dte_num)===0 ? ' <span style="color:#3fb950;font-weight:700">0DTE</span>' : parseInt(r.dte_num)>0 ? ` <span style="color:#e3b341">(${r.dte_num}d)</span>` : ''}</div>
       </div>
       <div class="card-item">
         <div class="card-item-label">IV</div>

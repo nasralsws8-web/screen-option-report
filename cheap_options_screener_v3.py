@@ -67,8 +67,10 @@ PM_STALE_PCT   = 0.05    # تجاهل pm_high/pm_low إذا ابتعدت عن ا
 ENTRY_MAX_DRIFT = 0.05   # Entry يجب أن يكون ضمن ±5% من السعر الحالي
 MAX_STOCK_PRICE = 500.0  # رفض أسعار Yahoo الشاذة (مثل SNDK $1183)
 MIN_IV_DISPLAY  = 0.01   # IV أقل من 1% تُعامل كبيانات ناقصة
-DTE_TARGET       = 7       # الهدف: 7 أيام للانتهاء
-DTE_WINDOW       = 8       # ±8 أيام حول الهدف
+DTE_TARGET       = 7       # fallback إذا ما في 0DTE
+DTE_WINDOW       = 3       # ±3 أيام حول الهدف (fallback)
+MAX_DTE          = 10      # رفض أي عقد أبعد من 10 أيام
+PREFER_0DTE      = True     # أولوية: 0DTE (نفس اليوم) ثم الأقرب
 MAX_STOCKS_DEEP  = 40      # كم سهم ندرس بعمق
 DELAY_BETWEEN    = 0.30    # ثواني بين كل طلب yfinance
 MANUAL_TICKERS_FILE = "manual_tickers.txt"
@@ -101,8 +103,8 @@ TICKER_PROFILES = {
         "max_stock_price": 800.0,
         "max_spread_pct":  0.10,
         "min_oi":          500,
-        "dte_target":      7,
-        "dte_window":      10,
+        "max_dte":         10,
+        "prefer_0dte":     True,
     },
 }
 
@@ -342,6 +344,10 @@ def row_passes_save_filters(r):
         return False
     if strike > 0 and price > 0 and abs(strike - price) / price > 0.40:
         return False
+    dte = int(r.get("dte_num") if r.get("dte_num") is not None else 99)
+    max_dte = profile_limit(ticker, "max_dte", MAX_DTE)
+    if dte > max_dte:
+        return False
     return True
 
 
@@ -374,6 +380,9 @@ def row_passes_watchlist_filters(r):
     if oi < 100 and not is_spy_ticker(ticker):
         return False
     if is_spy_ticker(ticker) and oi < profile_limit(ticker, "min_oi", 100):
+        return False
+    dte = int(r.get("dte_num") if r.get("dte_num") is not None else 99)
+    if dte > profile_limit(ticker, "max_dte", MAX_DTE):
         return False
     return True
 
@@ -418,12 +427,52 @@ def find_best_expiry(expirations, dte_target=7, window=8):
         try:
             d    = datetime.strptime(exp, "%Y-%m-%d").date()
             diff = abs((d - target).days)
-            if diff < best_diff and d > today:
+            if diff < best_diff and d >= today:
                 best_diff = diff
                 best = exp
         except Exception:
             continue
     return best if best_diff <= window else None
+
+
+def find_nearest_expiry(expirations, ticker=None):
+    """
+    اختيار أقرب expiry — أولوية 0DTE (نفس اليوم) ثم غداً ثم الأسبوع.
+    يرفض أي expiry أبعد من MAX_DTE.
+    """
+    today = datetime.now().date()
+    max_dte = profile_limit(ticker, "max_dte", MAX_DTE)
+    prefer_0 = profile_limit(ticker, "prefer_0dte", PREFER_0DTE)
+
+    candidates = []
+    for exp in expirations:
+        try:
+            d = datetime.strptime(exp, "%Y-%m-%d").date()
+            dte = (d - today).days
+            if dte < 0:
+                continue
+            if dte > max_dte:
+                continue
+            candidates.append((dte, exp))
+        except Exception:
+            continue
+
+    if not candidates:
+        return None, None
+
+    candidates.sort(key=lambda x: x[0])
+
+    if prefer_0:
+        dte, exp = candidates[0]
+        return exp, dte
+
+    # fallback: الأقرب لـ 7 أيام ضمن الحد
+    target_dte = profile_limit(ticker, "dte_target", DTE_TARGET)
+    window = profile_limit(ticker, "dte_window", DTE_WINDOW)
+    best = min(candidates, key=lambda x: abs(x[0] - target_dte))
+    if abs(best[0] - target_dte) <= window:
+        return best[1], best[0]
+    return candidates[0][1], candidates[0][0]
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -742,7 +791,7 @@ def fetch_options_data(ticker, stock_price):
         "premium": None, "iv": None,      "oi": None,
         "opt_vol": None, "spread_pct": None, "expiry": None,
         "has_weekly": False, "direction": "?",
-        "strike": None,  "dte_num": 7,
+        "strike": None,  "dte_num": None,
         "hist": None,    "error": None,
         # Premarket
         "pm_high": None, "pm_low": None,
@@ -788,17 +837,14 @@ def fetch_options_data(ticker, stock_price):
 
         dte_tgt = profile_limit(ticker, "dte_target", DTE_TARGET)
         dte_win = profile_limit(ticker, "dte_window", DTE_WINDOW)
-        exp = find_best_expiry(exps, dte_tgt, dte_win)
+        exp, dte = find_nearest_expiry(exps, ticker)
         if exp is None:
-            exp = exps[0] if exps else None
-        if exp is None:
-            out["error"] = "no_expiry"; return out
+            out["error"] = "no_near_expiry"; return out
 
         out["expiry"]     = exp
-        exp_date          = datetime.strptime(exp, "%Y-%m-%d").date()
-        dte               = (exp_date - datetime.now().date()).days
         out["dte_num"]    = dte
-        out["has_weekly"] = dte <= 14
+        out["has_weekly"] = dte <= 7
+        out["is_0dte"]    = dte == 0
 
         chain = yt.option_chain(exp)
         calls = chain.calls.copy() if chain.calls is not None else pd.DataFrame()
@@ -876,6 +922,16 @@ def score_stock(row):
         else:           score -= 1; notes.append("Spread>8% -1")
 
     if row.get("has_weekly"): score += 2; notes.append("Weekly✓ +2")
+    elif row.get("is_0dte"):  score += 3; notes.append("0DTE✓ +3")
+
+    dte = int(row.get("dte_num") if row.get("dte_num") is not None else 99)
+    max_dte = profile_limit(row.get("Ticker"), "max_dte", MAX_DTE)
+    if dte > max_dte:
+        score -= 5; notes.append(f"DTE>{max_dte}d -5")
+    elif dte == 0:
+        score += 2; notes.append("SameDay +2")
+    elif dte <= 7:
+        score += 1; notes.append(f"DTE{dte}d +1")
 
     prem = row.get("premium", 0) or 0
     ticker = str(row.get("Ticker", "")).upper()
@@ -1311,7 +1367,7 @@ def print_trade_report(rank, r, tech, plan):
 SAVE_COLS = [
     "Ticker", "Price", "premium", "strike", "iv", "oi", "opt_vol", "spread_pct",
     "atr_pct", "gap_pct", "RVOL", "pm_high", "pm_low", "pm_volume",
-    "expiry", "direction", "earnings", "float_shares", "avg_vol",
+    "expiry", "dte_num", "direction", "earnings", "float_shares", "avg_vol",
     "entry_stock", "stop_stock", "tp1_stock", "tp2_stock", "tp3_stock", "tp1_rr",
     "Score", "recommendation", "confidence", "Notes",
 ]
@@ -1507,6 +1563,7 @@ def process_candidates(candidates_df, show_progress=True):
             "direction":    opts["direction"],
             "strike":       opts["strike"],
             "dte_num":      opts["dte_num"],
+            "is_0dte":      opts.get("is_0dte", False),
             "_hist":        hist,
             "pm_high":      opts["pm_high"],
             "pm_low":       opts["pm_low"],
