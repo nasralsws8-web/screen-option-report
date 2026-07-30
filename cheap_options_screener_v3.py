@@ -1703,7 +1703,7 @@ def process_candidates(candidates_df, show_progress=True):
         if today_vol <= 0:
             today_vol = float(opts.get("today_vol_yf") or 0)
 
-        fh = enrich_ticker_premarket(ticker, key=fh_key, delay=0.15) if fh_key else {
+        fh = enrich_ticker_premarket(ticker, key=fh_key, delay=0.35) if fh_key else {
             "fh_gap_pct": None, "fh_pm_bullish": False, "fh_pm_strong": False,
             "fh_pm_score": 0, "fh_pm_note": "لا يوجد FINNHUB_API_KEY",
         }
