@@ -34,6 +34,7 @@ jobs:
       - name: Run market scan (Finviz + manual)
         env:
           SCREENER_SOURCE: both
+          FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
         run: python price_update.py
 
       - name: Run outcome tracker

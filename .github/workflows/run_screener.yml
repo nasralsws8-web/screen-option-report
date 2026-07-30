@@ -32,6 +32,7 @@ jobs:
       - name: Run screener
         env:
           SCREENER_SOURCE: both
+          FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
         run: python cheap_options_screener_v3.py
 
       - name: Run outcome tracker
