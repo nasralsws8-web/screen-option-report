@@ -67,10 +67,11 @@ PM_STALE_PCT   = 0.05    # تجاهل pm_high/pm_low إذا ابتعدت عن ا
 ENTRY_MAX_DRIFT = 0.05   # Entry يجب أن يكون ضمن ±5% من السعر الحالي
 MAX_STOCK_PRICE = 500.0  # رفض أسعار Yahoo الشاذة (مثل SNDK $1183)
 MIN_IV_DISPLAY  = 0.01   # IV أقل من 1% تُعامل كبيانات ناقصة
-DTE_TARGET       = 7       # fallback إذا ما في 0DTE
-DTE_WINDOW       = 3       # ±3 أيام حول الهدف (fallback)
+DTE_TARGET       = 5       # تقريباً منتصف الأسبوع → أقرب جمعة
+DTE_WINDOW       = 4
 MAX_DTE          = 10      # رفض أي عقد أبعد من 10 أيام
-PREFER_0DTE      = True     # أولوية: 0DTE (نفس اليوم) ثم الأقرب
+PREFER_0DTE      = False    # ثيتا قاتلة — لا نفضّل نفس اليوم
+PREFER_FRIDAY    = True     # أولوية: انتهاء يوم الجمعة (weekly)
 MAX_STOCKS_DEEP  = 40      # كم سهم ندرس بعمق
 DELAY_BETWEEN    = 0.30    # ثواني بين كل طلب yfinance
 MANUAL_TICKERS_FILE = "manual_tickers.txt"
@@ -104,7 +105,8 @@ TICKER_PROFILES = {
         "max_spread_pct":  0.10,
         "min_oi":          500,
         "max_dte":         10,
-        "prefer_0dte":     True,
+        "prefer_0dte":     False,
+        "prefer_friday":   True,
     },
 }
 
@@ -243,74 +245,149 @@ def trade_plan_is_valid(plan, price, is_call):
     return tp1 < entry < stop
 
 
-def compute_entry_level(price, is_call, pm_high, pm_low, yest_h, yest_l, atr):
+def _fnum(val):
+    try:
+        v = float(val)
+        return v if v > 0 else None
+    except (TypeError, ValueError):
+        return None
+
+
+def compute_entry_level(price, is_call, pm_high, pm_low, yest_h, yest_l, atr, tech=None):
     """
-    Entry يتبع شروط المشروع:
-    CALL → اختراق فوق PM/أمس High (ضمن +5% من السعر)
-    PUT  → اختراق تحت PM/أمس Low (ضمن -5% من السعر)
-    إذا الاختراق تحقق → Entry = السعر الحالي
+    Entry على هيكل السعر:
+    CALL → أقرب دعم تحت السعر (سوينج / VWAP / EMA20)
+    PUT  → أقرب مقاومة فوق السعر
     """
+    tech = tech or {}
     atr = float(atr or price * 0.025)
-    yest_h = float(yest_h or price)
-    yest_l = float(yest_l or price)
+    price = float(price)
 
     if is_call:
-        use_pm   = pm_high and pm_data_fresh(pm_high, price) and pm_high > price * 0.98
-        ref_high = float(pm_high if use_pm else yest_h)
-        src      = "Premarket" if use_pm else "أعلى أمس"
-        if price >= ref_high:
-            entry = round(price, 2)
-            note  = f"Entry عند السعر — الاختراق فوق {src} ${ref_high:.2f} تحقق"
+        supports = []
+        for v in (
+            tech.get("support1"), tech.get("support2"),
+            tech.get("vwap"), tech.get("ema20"),
+            yest_l, pm_low,
+        ):
+            fv = _fnum(v)
+            if fv and fv < price:
+                supports.append(fv)
+        if supports:
+            # أقرب دعم من تحت (الأعلى تحت السعر)
+            base = max(supports)
+            dist = price - base
+            if dist <= atr * 0.35:
+                entry = round(price, 2)
+                note = f"عند السعر — قريب من دعم ${base:.2f}"
+            elif dist <= atr * 2.5:
+                entry = round(base + atr * 0.05, 2)
+                note = f"عند دعم ${base:.2f}"
+            else:
+                entry = round(price, 2)
+                note = f"دخول حالي — أقرب دعم بعيد ${base:.2f}"
         else:
-            entry = round(ref_high + atr * 0.05, 2)
-            note  = f"فوق {src} High ${ref_high:.2f}"
+            entry = round(price, 2)
+            note = "دخول عند السعر — لا دعم واضح قريب"
         max_e = round(price * (1 + ENTRY_MAX_DRIFT), 2)
-        min_e = round(price, 2)
-        if entry > max_e:
-            entry = max_e
-            note += " (ضمن حد +5%)"
-        entry = max(entry, min_e)
+        min_e = round(price * (1 - 0.02), 2)
+        entry = min(max(entry, min_e), max_e)
     else:
-        use_pm  = pm_low and pm_data_fresh(pm_low, price) and pm_low < price * 1.02
-        ref_low = float(pm_low if use_pm else yest_l)
-        src     = "Premarket" if use_pm else "أدنى أمس"
-        if price <= ref_low:
-            entry = round(price, 2)
-            note  = f"Entry عند السعر — الاختراق تحت {src} ${ref_low:.2f} تحقق"
+        resists = []
+        for v in (
+            tech.get("resist1"), tech.get("resist2"),
+            tech.get("vwap"), tech.get("ema20"),
+            yest_h, pm_high,
+        ):
+            fv = _fnum(v)
+            if fv and fv > price:
+                resists.append(fv)
+        if resists:
+            base = min(resists)
+            dist = base - price
+            if dist <= atr * 0.35:
+                entry = round(price, 2)
+                note = f"عند السعر — قريب من مقاومة ${base:.2f}"
+            elif dist <= atr * 2.5:
+                entry = round(base - atr * 0.05, 2)
+                note = f"عند مقاومة ${base:.2f}"
+            else:
+                entry = round(price, 2)
+                note = f"دخول حالي — أقرب مقاومة بعيدة ${base:.2f}"
         else:
-            entry = round(ref_low - atr * 0.05, 2)
-            note  = f"تحت {src} Low ${ref_low:.2f}"
+            entry = round(price, 2)
+            note = "دخول عند السعر — لا مقاومة واضحة قريبة"
         min_e = round(price * (1 - ENTRY_MAX_DRIFT), 2)
-        max_e = round(price, 2)
-        if entry < min_e:
-            entry = min_e
-            note += " (ضمن حد -5%)"
-        entry = min(entry, max_e)
+        max_e = round(price * (1 + 0.02), 2)
+        entry = min(max(entry, min_e), max_e)
 
-    return entry, note
+    return round(entry, 2), note
 
 
 def compute_targets(entry, is_call, atr, tech):
-    """TP1/2/3 — دائماً على الجانب الصحيح من Entry."""
+    """TP1/2/3 من دعم/مقاومة حقيقية — CALL فوق / PUT تحت."""
     atr = float(atr or 0)
     entry = float(entry)
+    tech = tech or {}
+
     if is_call:
-        r1 = tech.get("resist1")
-        tp1 = float(r1) if r1 and float(r1) > entry else round(entry + atr * 1.1, 2)
-        r2 = tech.get("resist2")
-        tp2 = float(r2) if r2 and float(r2) > tp1 else round(tp1 + atr * 0.8, 2)
-        r3 = tech.get("resist3")
-        tp3 = float(r3) if r3 and float(r3) > tp2 else round(tp2 + atr * 1.0, 2)
-        tp2 = max(tp2, round(tp1 + atr * 0.4, 2))
-        tp3 = max(tp3, round(tp2 + atr * 0.6, 2))
+        r1 = _fnum(tech.get("resist1"))
+        r2 = _fnum(tech.get("resist2"))
+        r3 = _fnum(tech.get("resist3"))
+        tp1 = r1 if r1 and r1 > entry else round(entry + atr * 1.0, 2)
+        tp2 = r2 if r2 and r2 > tp1 else round(tp1 + atr * 0.8, 2)
+        tp3 = r3 if r3 and r3 > tp2 else round(tp2 + atr * 1.0, 2)
+        # فرض ترتيب صحيح
+        tp1 = max(tp1, round(entry + atr * 0.35, 2))
+        tp2 = max(tp2, round(tp1 + atr * 0.35, 2))
+        tp3 = max(tp3, round(tp2 + atr * 0.45, 2))
     else:
-        s1 = tech.get("support1")
-        tp1 = float(s1) if s1 and float(s1) < entry else round(entry - atr * 1.1, 2)
-        tp2 = round(entry - atr * 1.9, 2)
-        tp3 = round(entry - atr * 3.0, 2)
-        tp2 = min(tp2, round(tp1 - atr * 0.4, 2))
-        tp3 = min(tp3, round(tp2 - atr * 0.6, 2))
+        s1 = _fnum(tech.get("support1"))
+        s2 = _fnum(tech.get("support2"))
+        s3 = _fnum(tech.get("support3"))
+        tp1 = s1 if s1 and s1 < entry else round(entry - atr * 1.0, 2)
+        tp2 = s2 if s2 and s2 < tp1 else round(tp1 - atr * 0.8, 2)
+        tp3 = s3 if s3 and s3 < tp2 else round(tp2 - atr * 1.0, 2)
+        tp1 = min(tp1, round(entry - atr * 0.35, 2))
+        tp2 = min(tp2, round(tp1 - atr * 0.35, 2))
+        tp3 = min(tp3, round(tp2 - atr * 0.45, 2))
+
     return round(tp1, 2), round(tp2, 2), round(tp3, 2)
+
+
+def compute_structure_stop(entry, is_call, atr, tech):
+    """Stop خلف أقرب مستوى هيكل."""
+    atr = float(atr or 0)
+    entry = float(entry)
+    tech = tech or {}
+    if is_call:
+        floor_candidates = [
+            _fnum(tech.get("support2")),
+            _fnum(tech.get("support1")),
+            _fnum(tech.get("vwap")),
+            _fnum(tech.get("ema20")),
+        ]
+        below = [v for v in floor_candidates if v and v < entry]
+        if below:
+            stop = max(below) - atr * 0.15
+        else:
+            stop = entry - atr * 1.0
+        stop = min(stop, entry - atr * 0.25)
+        return round(stop, 2)
+    else:
+        ceil_candidates = [
+            _fnum(tech.get("resist2")),
+            _fnum(tech.get("resist1")),
+            _fnum(tech.get("vwap")),
+            _fnum(tech.get("ema20")),
+        ]
+        above = [v for v in ceil_candidates if v and v > entry]
+        if above:
+            stop = min(above) + atr * 0.15
+        else:
+            stop = entry + atr * 1.0
+        stop = max(stop, entry + atr * 0.25)
+        return round(stop, 2)
 
 
 def stock_rr(entry, target, stop, is_call):
@@ -453,11 +530,12 @@ def find_best_expiry(expirations, dte_target=7, window=8):
 
 def find_nearest_expiry(expirations, ticker=None):
     """
-    اختيار أقرب expiry — أولوية 0DTE (نفس اليوم) ثم غداً ثم الأسبوع.
+    اختيار expiry — أولوية جمعة الأسبوع (أقل ثيتا من 0DTE).
     يرفض أي expiry أبعد من MAX_DTE.
     """
     today = datetime.now().date()
     max_dte = profile_limit(ticker, "max_dte", MAX_DTE)
+    prefer_friday = profile_limit(ticker, "prefer_friday", PREFER_FRIDAY)
     prefer_0 = profile_limit(ticker, "prefer_0dte", PREFER_0DTE)
 
     candidates = []
@@ -469,25 +547,32 @@ def find_nearest_expiry(expirations, ticker=None):
                 continue
             if dte > max_dte:
                 continue
-            candidates.append((dte, exp))
+            # Friday = weekday 4
+            is_fri = d.weekday() == 4
+            candidates.append((dte, exp, is_fri))
         except Exception:
             continue
 
     if not candidates:
         return None, None
 
-    candidates.sort(key=lambda x: x[0])
+    if prefer_friday:
+        fridays = [c for c in candidates if c[2]]
+        if fridays:
+            # أقرب جمعة ضمن النافذة
+            fridays.sort(key=lambda x: x[0])
+            return fridays[0][1], fridays[0][0]
 
     if prefer_0:
-        dte, exp = candidates[0]
-        return exp, dte
+        candidates.sort(key=lambda x: x[0])
+        return candidates[0][1], candidates[0][0]
 
-    # fallback: الأقرب لـ 7 أيام ضمن الحد
     target_dte = profile_limit(ticker, "dte_target", DTE_TARGET)
     window = profile_limit(ticker, "dte_window", DTE_WINDOW)
     best = min(candidates, key=lambda x: abs(x[0] - target_dte))
     if abs(best[0] - target_dte) <= window:
         return best[1], best[0]
+    candidates.sort(key=lambda x: x[0])
     return candidates[0][1], candidates[0][0]
 
 
@@ -560,7 +645,7 @@ def compute_technicals(hist, current_price):
         "above_ema20": False, "above_ema50": False, "above_ema200": False,
         "above_vwap":  False,
         "resist1": None, "resist2": None, "resist3": None,
-        "support1": None,
+        "support1": None, "support2": None, "support3": None,
         "trend": "UNKNOWN",
         "yesterday_high": None, "yesterday_low": None,
     }
@@ -617,29 +702,36 @@ def compute_technicals(hist, current_price):
     # مستويات المقاومة (Swing Highs فوق السعر الحالي)
     atr = res["atr14"] or (current_price * 0.025)
     swing_h = sorted(
-        set(round(h, 2) for h in highs[-20:] if h > current_price * 1.005),
-        reverse=True
+        set(round(h, 2) for h in highs[-20:] if h > current_price * 1.003)
     )
-    deduped = []
-    for h in sorted(swing_h):
-        if not deduped or h - deduped[-1] > atr * 0.4:
-            deduped.append(h)
+    dedup_r = []
+    for h in swing_h:
+        if not dedup_r or h - dedup_r[-1] > atr * 0.35:
+            dedup_r.append(h)
 
-    r1 = deduped[0] if len(deduped) >= 1 else round(current_price + atr * 1.0, 2)
-    r2 = deduped[1] if len(deduped) >= 2 else round(r1 + atr * 0.8, 2)
-    r3 = deduped[2] if len(deduped) >= 3 else round(r2 + atr * 1.0, 2)
-    r1 = max(r1, round(current_price + atr * 0.7, 2))
-    r2 = max(r2, round(r1 + atr * 0.5, 2))
-    r3 = max(r3, round(r2 + atr * 0.7, 2))
+    r1 = dedup_r[0] if len(dedup_r) >= 1 else round(current_price + atr * 1.0, 2)
+    r2 = dedup_r[1] if len(dedup_r) >= 2 else round(r1 + atr * 0.8, 2)
+    r3 = dedup_r[2] if len(dedup_r) >= 3 else round(r2 + atr * 1.0, 2)
     res["resist1"] = round(r1, 2)
-    res["resist2"] = round(r2, 2)
-    res["resist3"] = round(r3, 2)
+    res["resist2"] = round(max(r2, r1 + atr * 0.4), 2)
+    res["resist3"] = round(max(r3, res["resist2"] + atr * 0.5), 2)
 
-    # مستوى الدعم (Swing Low أسفل السعر)
+    # مستويات الدعم (Swing Lows تحت السعر)
     swing_l = sorted(
-        set(round(l, 2) for l in lows[-20:] if l < current_price * 0.995)
+        set(round(l, 2) for l in lows[-20:] if l < current_price * 0.997),
+        reverse=True,
     )
-    res["support1"] = swing_l[-1] if swing_l else round(current_price - atr * 1.2, 2)
+    dedup_s = []
+    for l in swing_l:
+        if not dedup_s or dedup_s[-1] - l > atr * 0.35:
+            dedup_s.append(l)
+
+    s1 = dedup_s[0] if len(dedup_s) >= 1 else round(current_price - atr * 1.0, 2)
+    s2 = dedup_s[1] if len(dedup_s) >= 2 else round(s1 - atr * 0.8, 2)
+    s3 = dedup_s[2] if len(dedup_s) >= 3 else round(s2 - atr * 1.0, 2)
+    res["support1"] = round(s1, 2)
+    res["support2"] = round(min(s2, s1 - atr * 0.4), 2)
+    res["support3"] = round(min(s3, res["support2"] - atr * 0.5), 2)
 
     # الاتجاه
     above_count = sum([res["above_ema20"], res["above_ema50"], res["above_ema200"]])
@@ -938,9 +1030,17 @@ def score_stock(row):
         else:           score -= 1; notes.append("Spread>8% -1")
 
     if row.get("is_0dte") or int(row.get("dte_num") or 99) == 0:
-        score += 3; notes.append("0DTE✓ +3")
-    elif row.get("has_weekly"):
-        score += 2; notes.append("Weekly✓ +2")
+        score -= 1; notes.append("0DTE ثيتا -1")
+    else:
+        exp = str(row.get("expiry") or "")
+        try:
+            is_fri = datetime.strptime(exp[:10], "%Y-%m-%d").weekday() == 4
+        except Exception:
+            is_fri = False
+        if is_fri:
+            score += 2; notes.append("Friday✓ +2")
+        elif row.get("has_weekly"):
+            score += 1; notes.append("Weekly✓ +1")
 
     dte = int(row.get("dte_num") if row.get("dte_num") is not None else 99)
     max_dte = profile_limit(row.get("Ticker"), "max_dte", MAX_DTE)
@@ -1067,21 +1167,13 @@ def compute_trade_plan(r, tech):
     yest_l  = tech.get("yesterday_low")  or price
 
     entry, entry_note = compute_entry_level(
-        price, is_call, pm_high, pm_low, yest_h, yest_l, atr,
+        price, is_call, pm_high, pm_low, yest_h, yest_l, atr, tech,
     )
     plan["entry_stock"] = entry
     plan["entry_note"]  = entry_note
 
-    # ── Stop Loss ─────────────────────────────────────────────────────────
-    if is_call:
-        stop_stock = round(entry - atr * 1.1, 2)
-        vwap = tech.get("vwap")
-        if vwap and vwap < entry * 0.99:
-            stop_stock = max(stop_stock, round(vwap - atr * 0.15, 2))
-        stop_stock = min(stop_stock, round(entry - atr * 0.25, 2))
-    else:
-        stop_stock = round(entry + atr * 1.1, 2)
-        stop_stock = max(stop_stock, round(entry + atr * 0.25, 2))
+    # ── Stop Loss (خلف هيكل) ─────────────────────────────────────────────
+    stop_stock = compute_structure_stop(entry, is_call, atr, tech)
 
     stop_opt = bs_price(stop_stock, strike, T_entry, RISK_FREE_RATE, iv, opt_type)
     plan["stop_stock"]  = stop_stock
@@ -1402,7 +1494,7 @@ SAVE_COLS = [
     "atr_pct", "gap_pct", "RVOL", "pm_high", "pm_low", "pm_volume",
     "expiry", "dte_num", "direction", "earnings", "float_shares", "avg_vol",
     "entry_stock", "stop_stock", "tp1_stock", "tp2_stock", "tp3_stock", "tp1_rr",
-    "Score", "recommendation", "confidence", "Notes", "scanned_at",
+    "entry_note", "Score", "recommendation", "confidence", "Notes", "scanned_at",
 ]
 
 
@@ -1632,6 +1724,7 @@ def process_candidates(candidates_df, show_progress=True):
         row["tp2_stock"]      = plan.get("tp2_stock")
         row["tp3_stock"]      = plan.get("tp3_stock")
         row["tp1_rr"]         = plan.get("tp1_rr")
+        row["entry_note"]     = plan.get("entry_note", "")
         if is_spy_ticker(ticker):
             row["profile"] = "spy"
 

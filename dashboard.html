@@ -529,7 +529,7 @@ function renderSpySection(spyRow) {
         <div>
           <span class="spy-badge">📌 توصية SPY الخاصة</span>
           <div class="spy-title">${spyRow.Ticker}</div>
-          <div class="spy-sub">S&P 500 ETF · Strike $${parsePrice(spyRow.strike).toFixed(0)} · Premium $${parsePrice(spyRow.premium).toFixed(2)} · ${parseInt(spyRow.dte_num)===0 ? '<span style="color:#3fb950">0DTE اليوم</span>' : spyRow.dte_num ? spyRow.dte_num + ' أيام' : 'OTM'}</div>
+          <div class="spy-sub">S&P 500 ETF · خطة سهم أولاً · ${spyRow.expiry ? 'عقد '+spyRow.expiry : ''}${parseInt(spyRow.dte_num)===0 ? ' · 0DTE' : spyRow.dte_num ? ' · '+spyRow.dte_num+' أيام' : ''} · Strike $${parsePrice(spyRow.strike).toFixed(0)} · Prem $${parsePrice(spyRow.premium).toFixed(2)}</div>
         </div>
         <div style="text-align:left">
           <span class="rec-badge ${spyRow.recommendation || 'AVOID'}" id="rec-badge-${spyRow.Ticker}">${spyRow.recommendation || 'AVOID'}</span>
@@ -601,7 +601,27 @@ function buildCard(r) {
   const spread = parseFloat(r.spread_pct) || 0;
   const spreadOk = spread < 0.08 ? 'green' : spread < 0.15 ? 'yellow' : 'red';
   const strike = parseFloat(r.strike) || 0;
+  const prem = parseFloat(r.premium) || 0;
+  const oi = parseInt(r.oi) || 0;
   const entry = calcEntry(r);
+  const dir = (r.direction || '').toUpperCase();
+  const isPut = dir.includes('PUT');
+  const dirLabel = isPut ? 'PUT ↓' : dir.includes('CALL') ? 'CALL ↑' : '—';
+  const dirColor = isPut ? '#f85149' : '#3fb950';
+  const dte = parseInt(r.dte_num);
+  let expTag = '';
+  if (r.expiry) {
+    try {
+      const ed = new Date(r.expiry + 'T12:00:00');
+      const fri = ed.getDay() === 5;
+      expTag = fri ? ' <span style="color:#3fb950;font-weight:700">جمعة</span>' :
+        (dte === 0 ? ' <span style="color:#f85149">0DTE</span>' :
+         (dte > 0 ? ` <span style="color:#e3b341">(${dte}d)</span>` : ''));
+    } catch (_) {}
+  }
+  const optionOk = prem > 0 && strike > 0 && oi >= 100 && spread > 0 && spread <= 0.15;
+  const entryNote = r.entry_note || '';
+
   return `
   <div class="card ${recClass(rec)}" id="card-${r.Ticker}">
     <div class="card-header">
@@ -612,26 +632,30 @@ function buildCard(r) {
       </div>
       <div style="text-align:left">
         <span class="rec-badge ${rec}" id="rec-badge-${r.Ticker}">${rec}</span>
-        <div style="font-size:11px;color:#8b949e;margin-top:4px">Score: ${r.Score||0}</div>
+        <div style="font-size:11px;color:${dirColor};margin-top:4px;font-weight:700">${dirLabel}</div>
+        <div style="font-size:11px;color:#8b949e;margin-top:2px">Score: ${r.Score||0}</div>
       </div>
     </div>
     <div class="live-status status-entry-wait" id="live-status-${r.Ticker}">
       ⏳ ربط السعر اللحظي...
       <div class="live-dist">Finnhub → Entry / Stop / TP</div>
     </div>
+
+    <div style="font-size:11px;color:#58a6ff;font-weight:700;margin:4px 0 6px">📈 خطة السهم (الأساس)</div>
+    ${entryNote ? `<div style="font-size:10px;color:#8b949e;margin-bottom:6px">${entryNote}</div>` : ''}
     <div style="display:flex;gap:8px;margin-bottom:6px">
-      <div style="flex:1;background:#1a2535;border:1px solid #1f6feb;border-radius:6px;padding:8px 10px">
-        <div style="font-size:10px;color:#8b949e">🎯 Strike</div>
-        <div style="font-size:15px;font-weight:700;color:#58a6ff">${strike ? '$'+strike.toFixed(2) : 'N/A'}</div>
-      </div>
       <div style="flex:1;background:#1a2a1a;border:1px solid #238636;border-radius:6px;padding:8px 10px">
         <div style="font-size:10px;color:#8b949e">🚀 Entry</div>
         <div style="font-size:15px;font-weight:700;color:#3fb950">${entry}</div>
       </div>
+      <div style="flex:1;background:#2a1a1a;border:1px solid #f85149;border-radius:6px;padding:8px 10px">
+        <div style="font-size:10px;color:#8b949e">🛑 Stop ${isPut ? '(فوق)' : '(تحت)'}</div>
+        <div style="font-size:15px;font-weight:700;color:#f85149">${fmt(r.stop_stock)}</div>
+      </div>
     </div>
-    <div style="display:flex;gap:6px;margin-bottom:6px">
+    <div style="display:flex;gap:6px;margin-bottom:10px">
       <div style="flex:1;background:#1a2520;border:1px solid #3fb950;border-radius:6px;padding:6px 8px;text-align:center">
-        <div style="font-size:9px;color:#8b949e">🎯 TP1</div>
+        <div style="font-size:9px;color:#8b949e">🎯 TP1 ${isPut ? '↓' : '↑'}</div>
         <div style="font-size:13px;font-weight:700;color:#3fb950">${fmt(r.tp1_stock)}</div>
       </div>
       <div style="flex:1;background:#1a2520;border:1px solid #3fb950;border-radius:6px;padding:6px 8px;text-align:center">
@@ -642,49 +666,44 @@ function buildCard(r) {
         <div style="font-size:9px;color:#8b949e">🏆 TP3</div>
         <div style="font-size:13px;font-weight:700;color:#58a6ff">${fmt(r.tp3_stock)}</div>
       </div>
-      <div style="flex:1;background:#2a1a1a;border:1px solid #f85149;border-radius:6px;padding:6px 8px;text-align:center">
-        <div style="font-size:9px;color:#8b949e">🛑 Stop</div>
-        <div style="font-size:13px;font-weight:700;color:#f85149">${fmt(r.stop_stock)}</div>
-      </div>
     </div>
-    <div style="background:#21262d;border-radius:6px;padding:5px 10px;margin-bottom:6px;text-align:center;font-size:11px">
-      <span style="color:#8b949e">⚖️ Break Even: </span>
-      <span style="color:#e3b341;font-weight:700">${calcBreakEven(r)}</span>
+
+    <div style="border-top:1px dashed #30363d;padding-top:8px;margin-bottom:6px">
+      <div style="font-size:11px;color:#e3b341;font-weight:700;margin-bottom:6px">📅 عقد الجمعة (اختياري)</div>
+      ${optionOk ? `
+      <div style="display:flex;gap:8px;margin-bottom:6px">
+        <div style="flex:1;background:#1a2535;border:1px solid #1f6feb;border-radius:6px;padding:8px 10px">
+          <div style="font-size:10px;color:#8b949e">Strike</div>
+          <div style="font-size:14px;font-weight:700;color:#58a6ff">$${strike.toFixed(2)}</div>
+        </div>
+        <div style="flex:1;background:#21262d;border-radius:6px;padding:8px 10px">
+          <div style="font-size:10px;color:#8b949e">Premium</div>
+          <div style="font-size:14px;font-weight:700;color:#e3b341">$${prem.toFixed(2)}</div>
+        </div>
+      </div>
+      <div class="card-grid">
+        <div class="card-item">
+          <div class="card-item-label">Expiry</div>
+          <div class="card-item-value">${r.expiry||'N/A'}${expTag}</div>
+        </div>
+        <div class="card-item">
+          <div class="card-item-label">OI</div>
+          <div class="card-item-value">${oi.toLocaleString()}</div>
+        </div>
+        <div class="card-item">
+          <div class="card-item-label">IV</div>
+          <div class="card-item-value">${iv ? (iv*100).toFixed(1)+'%' : 'N/A'}</div>
+        </div>
+        <div class="card-item">
+          <div class="card-item-label">Spread</div>
+          <div class="card-item-value ${spreadOk}">${spread ? (spread*100).toFixed(1)+'%' : 'N/A'}</div>
+        </div>
+      </div>` : `
+      <div style="background:#21262d;border:1px dashed #30363d;border-radius:8px;padding:12px;text-align:center;color:#8b949e;font-size:12px">
+        ⚠️ لا عقد موثوق اليوم — ركّز على خطة السهم
+      </div>`}
     </div>
-    <div class="card-grid">
-      <div class="card-item">
-        <div class="card-item-label">Premium</div>
-        <div class="card-item-value">$${parseFloat(r.premium||0).toFixed(2)}</div>
-      </div>
-      <div class="card-item">
-        <div class="card-item-label">Expiry / DTE</div>
-        <div class="card-item-value">${r.expiry||'N/A'}${parseInt(r.dte_num)===0 ? ' <span style="color:#3fb950;font-weight:700">0DTE</span>' : parseInt(r.dte_num)>0 ? ` <span style="color:#e3b341">(${r.dte_num}d)</span>` : ''}</div>
-      </div>
-      <div class="card-item">
-        <div class="card-item-label">IV</div>
-        <div class="card-item-value">${iv ? (iv*100).toFixed(1)+'%' : 'N/A'}</div>
-      </div>
-      <div class="card-item">
-        <div class="card-item-label">OI</div>
-        <div class="card-item-value">${parseInt(r.oi||0).toLocaleString()}</div>
-      </div>
-      <div class="card-item">
-        <div class="card-item-label">Spread</div>
-        <div class="card-item-value ${spreadOk}">${spread ? (spread*100).toFixed(1)+'%' : 'N/A'}</div>
-      </div>
-      <div class="card-item">
-        <div class="card-item-label">Direction</div>
-        <div class="card-item-value ${dirClass(r.direction)}">${(r.direction||'N/A').replace('📈','').replace('📉','').trim()}</div>
-      </div>
-      <div class="card-item">
-        <div class="card-item-label">PM High</div>
-        <div class="card-item-value">${r.pm_high ? '$'+parseFloat(r.pm_high).toFixed(2) : 'N/A'}</div>
-      </div>
-      <div class="card-item">
-        <div class="card-item-label">ATR%</div>
-        <div class="card-item-value">${r.atr_pct ? parseFloat(r.atr_pct).toFixed(1)+'%' : 'N/A'}</div>
-      </div>
-    </div>
+
     <div class="conf-bar"><div class="conf-fill" style="width:${conf}%;background:${confColor(conf)}"></div></div>
     <div style="font-size:11px;color:#8b949e;margin-top:4px;text-align:center">Confidence: ${conf}%</div>
   </div>`;
