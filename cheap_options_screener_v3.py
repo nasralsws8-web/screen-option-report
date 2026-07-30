@@ -1061,6 +1061,15 @@ def score_stock(row):
     elif atr_pct > 3:   score += 2; notes.append("ATR%>3 +2")
     elif atr_pct > 1.5: score += 1; notes.append("ATR%>1.5 +1")
 
+    # تأكيد صعود بريماركت من Finnhub
+    fh_bonus = int(row.get("fh_pm_score") or 0)
+    if fh_bonus > 0:
+        score += fh_bonus
+        if row.get("fh_pm_strong"):
+            notes.append(f"FH PM قوي +{fh_bonus}")
+        elif row.get("fh_pm_bullish"):
+            notes.append(f"FH PM صعود +{fh_bonus}")
+
     earnings = row.get("earnings")
     expiry   = row.get("expiry")
     row["earn_before_expiry"] = False
@@ -1494,7 +1503,8 @@ SAVE_COLS = [
     "atr_pct", "gap_pct", "RVOL", "pm_high", "pm_low", "pm_volume",
     "expiry", "dte_num", "direction", "earnings", "float_shares", "avg_vol",
     "entry_stock", "stop_stock", "tp1_stock", "tp2_stock", "tp3_stock", "tp1_rr",
-    "entry_note", "Score", "recommendation", "confidence", "Notes", "scanned_at",
+    "entry_note", "fh_gap_pct", "fh_pm_bullish", "fh_pm_strong", "fh_pm_note",
+    "Score", "recommendation", "confidence", "Notes", "scanned_at",
 ]
 
 
@@ -1645,10 +1655,17 @@ def pin_priority_tickers(df, priority=PRIORITY_TICKERS):
 
 
 def process_candidates(candidates_df, show_progress=True):
-    """Stage 2: Yahoo options + scoring + trade plan لكل مرشّح."""
+    """Stage 2: Yahoo options + Finnhub PM + scoring + trade plan لكل مرشّح."""
+    from finnhub_premarket import get_api_key, enrich_ticker_premarket
+
     rows = []
+    fh_key = get_api_key()
     if show_progress:
         print("⏳ Stage 2: Options + Premarket + Technical data...")
+        if fh_key:
+            print("   Finnhub: تأكيد صعود بريماركت مفعّل")
+        else:
+            print("   Finnhub: بدون FINNHUB_API_KEY — تخطي تأكيد PM")
         print(f"   {'Ticker':<8} {'Price':>8}  {'Strike':>8}  {'Premium':>8}  "
               f"{'OI':>7}  {'Spread':>7}  {'PM_High':>9}  Score")
         print(f"   {'─'*80}")
@@ -1665,6 +1682,11 @@ def process_candidates(candidates_df, show_progress=True):
         today_vol = float(s.get("Today_Vol", 0) or 0)
         if today_vol <= 0:
             today_vol = float(opts.get("today_vol_yf") or 0)
+
+        fh = enrich_ticker_premarket(ticker, key=fh_key, delay=0.15) if fh_key else {
+            "fh_gap_pct": None, "fh_pm_bullish": False, "fh_pm_strong": False,
+            "fh_pm_score": 0, "fh_pm_note": "لا يوجد FINNHUB_API_KEY",
+        }
 
         row = {
             "Ticker":       ticker,
@@ -1698,10 +1720,20 @@ def process_candidates(candidates_df, show_progress=True):
             "leg_put":      opts.get("leg_put"),
             "_error":       opts["error"],
             "_source":      s.get("_source", ""),
+            "fh_gap_pct":   fh.get("fh_gap_pct"),
+            "fh_pm_bullish": bool(fh.get("fh_pm_bullish")),
+            "fh_pm_strong": bool(fh.get("fh_pm_strong")),
+            "fh_pm_note":   fh.get("fh_pm_note", ""),
+            "fh_pm_score":  int(fh.get("fh_pm_score") or 0),
         }
 
         tech = compute_technicals(hist, price_num)
         is_call = resolve_is_call(row, tech)
+        trend = str(tech.get("trend") or "")
+        strong_bear = "BEARISH" in trend and "BULLISH" not in trend
+        # تأكيد صعود بريماركت من Finnhub → فضّل CALL (سهم/عقد صاعد)
+        if row["fh_pm_bullish"] and not strong_bear:
+            is_call = True
         apply_option_leg(row, is_call)
         row["direction"] = "CALL 📈" if is_call else "PUT  📉"
 
@@ -1734,9 +1766,10 @@ def process_candidates(candidates_df, show_progress=True):
             oi_s    = f"{row['oi']:,}"          if row["oi"]     is not None else "  N/A"
             sp_s    = f"{row['spread_pct']*100:.1f}%" if row["spread_pct"] is not None else "  N/A"
             pm_s    = f"${row['pm_high']:.2f}" if row["pm_high"] else "   N/A"
+            fh_s    = " FH↑" if row["fh_pm_bullish"] else ""
             err_s   = f"  ⚠ {row['_error']}"  if row["_error"] else ""
             print(f"   {ticker:<8} {str(row.get('Price',''))[:8]:>8}  {stk_s:>8}  "
-                  f"{prem_s:>8}  {oi_s:>7}  {sp_s:>7}  {pm_s:>9}  {score:>4}{err_s}")
+                  f"{prem_s:>8}  {oi_s:>7}  {sp_s:>7}  {pm_s:>9}  {score:>4}{fh_s}{err_s}")
 
         rows.append(row)
         time.sleep(DELAY_BETWEEN)

@@ -643,6 +643,12 @@ function buildCard(r) {
 
     <div style="font-size:11px;color:#58a6ff;font-weight:700;margin:4px 0 6px">📈 خطة السهم (الأساس)</div>
     ${entryNote ? `<div style="font-size:10px;color:#8b949e;margin-bottom:6px">${entryNote}</div>` : ''}
+    ${String(r.fh_pm_bullish).toLowerCase()==='true' || r.fh_pm_bullish===true || r.fh_pm_bullish==='True' ? `
+    <div style="background:linear-gradient(90deg,#1a3a2a,#161b22);border:1px solid #3fb950;border-radius:8px;padding:8px 10px;margin-bottom:8px">
+      <div style="font-size:12px;font-weight:700;color:#3fb950">✓ صعود بريماركت (Finnhub)</div>
+      <div style="font-size:10px;color:#8b949e;margin-top:2px">${r.fh_pm_note || ('فجوة ' + (r.fh_gap_pct || '') + '%')}${String(r.fh_pm_strong).toLowerCase()==='true' || r.fh_pm_strong===true ? ' · قوي' : ''}</div>
+    </div>` : (r.fh_gap_pct !== undefined && r.fh_gap_pct !== '' && r.fh_gap_pct != null ? `
+    <div style="font-size:10px;color:#8b949e;margin-bottom:6px">Finnhub gap: ${parseFloat(r.fh_gap_pct).toFixed(1)}% — بدون تأكيد صعود</div>` : '')}
     <div style="display:flex;gap:8px;margin-bottom:6px">
       <div style="flex:1;background:#1a2a1a;border:1px solid #238636;border-radius:6px;padding:8px 10px">
         <div style="font-size:10px;color:#8b949e">🚀 Entry</div>

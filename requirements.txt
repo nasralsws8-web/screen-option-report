@@ -5,3 +5,4 @@ pandas
 numpy
 curl_cffi
 Pillow
+requests
