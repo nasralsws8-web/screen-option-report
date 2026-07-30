@@ -116,10 +116,12 @@ def calc_option_pnl_pct(row, stock_at_exit, exit_date):
         exit_date = parse_date(exit_date) or datetime.now().date()
 
     if expiry:
-        T = max((expiry - exit_date).days / 365, 1 / 365)
+        days_left = (expiry - exit_date).days
+        # يوم الانتهاء أو بعده → intrinsic فقط (T=0)
+        T = 0.0 if days_left <= 0 else days_left / 365
     else:
         dte = int(float(row.get("dte_num") or 7))
-        T = max(dte / 365, 1 / 365)
+        T = max(dte / 365, 0.0)
 
     is_call = resolve_is_call(
         row.get("direction"), row.get("entry_stock"),
@@ -145,6 +147,49 @@ def first_hit_date(post, level, is_call, hit_type="tp"):
                 return dt.date()
             if not is_call and h >= level:
                 return dt.date()
+    return None
+
+
+def resolve_first_touch(post, is_call, stop, tp1, tp2, tp3):
+    """
+    أول لمسة زمنية: يمشي يوم بيوم.
+    إذا Stop و TP في نفس الشمعة اليومية → Stop يفوز (محافظة).
+    يرجع (status, exit_price, exit_date) أو None.
+    """
+    levels = []
+    if valid_target(stop):
+        levels.append(("stop_hit", float(stop), "stop"))
+    if valid_target(tp1):
+        levels.append(("tp1_hit", float(tp1), "tp"))
+    if valid_target(tp2):
+        levels.append(("tp2_hit", float(tp2), "tp"))
+    if valid_target(tp3):
+        levels.append(("tp3_hit", float(tp3), "tp"))
+    if not levels:
+        return None
+
+    for dt, bar in post.iterrows():
+        h, l = float(bar["High"]), float(bar["Low"])
+        stop_hit = False
+        tp_hits = []
+        for status, level, kind in levels:
+            if kind == "stop":
+                hit = (l <= level) if is_call else (h >= level)
+                if hit:
+                    stop_hit = True
+            else:
+                hit = (h >= level) if is_call else (l <= level)
+                if hit:
+                    tp_hits.append((status, level))
+        if stop_hit:
+            stop_lvl = next(lvl for st, lvl, k in levels if k == "stop")
+            return "stop_hit", stop_lvl, dt.date()
+        if tp_hits:
+            # أقرب هدف تحقق في هذا اليوم (TP1 قبل TP3)
+            order = {"tp1_hit": 1, "tp2_hit": 2, "tp3_hit": 3}
+            tp_hits.sort(key=lambda x: order.get(x[0], 9))
+            status, level = tp_hits[0]
+            return status, level, dt.date()
     return None
 
 
@@ -444,32 +489,10 @@ def update_open_outcomes(outcomes_df):
         if entry_hit and entry_hit_date:
             post = hist[hist.index >= pd.to_datetime(entry_hit_date)]
             if not post.empty:
-                if is_call:
-                    if valid_target(tp3) and float(post["High"].max()) >= tp3:
-                        exit_d = first_hit_date(post, tp3, True, "tp") or today
-                        apply_close(outcomes_df, idx, row, "tp3_hit", entry, tp3, True, exit_d)
-                    elif valid_target(tp2) and float(post["High"].max()) >= tp2:
-                        exit_d = first_hit_date(post, tp2, True, "tp") or today
-                        apply_close(outcomes_df, idx, row, "tp2_hit", entry, tp2, True, exit_d)
-                    elif valid_target(tp1) and float(post["High"].max()) >= tp1:
-                        exit_d = first_hit_date(post, tp1, True, "tp") or today
-                        apply_close(outcomes_df, idx, row, "tp1_hit", entry, tp1, True, exit_d)
-                    elif valid_target(stop) and float(post["Low"].min()) <= stop:
-                        exit_d = first_hit_date(post, stop, True, "stop") or today
-                        apply_close(outcomes_df, idx, row, "stop_hit", entry, stop, True, exit_d)
-                else:
-                    if valid_target(tp3) and float(post["Low"].min()) <= tp3:
-                        exit_d = first_hit_date(post, tp3, False, "tp") or today
-                        apply_close(outcomes_df, idx, row, "tp3_hit", entry, tp3, False, exit_d)
-                    elif valid_target(tp2) and float(post["Low"].min()) <= tp2:
-                        exit_d = first_hit_date(post, tp2, False, "tp") or today
-                        apply_close(outcomes_df, idx, row, "tp2_hit", entry, tp2, False, exit_d)
-                    elif valid_target(tp1) and float(post["Low"].min()) <= tp1:
-                        exit_d = first_hit_date(post, tp1, False, "tp") or today
-                        apply_close(outcomes_df, idx, row, "tp1_hit", entry, tp1, False, exit_d)
-                    elif valid_target(stop) and float(post["High"].max()) >= stop:
-                        exit_d = first_hit_date(post, stop, False, "stop") or today
-                        apply_close(outcomes_df, idx, row, "stop_hit", entry, stop, False, exit_d)
+                touch = resolve_first_touch(post, is_call, stop, tp1, tp2, tp3)
+                if touch:
+                    status, exit_price, exit_d = touch
+                    apply_close(outcomes_df, idx, row, status, entry, exit_price, is_call, exit_d)
 
         if today > expiry_date and outcomes_df.at[idx, "status"] == "open":
             last_close = float(hist["Close"].iloc[-1])

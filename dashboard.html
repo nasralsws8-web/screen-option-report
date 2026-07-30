@@ -137,9 +137,10 @@
   <h1>📊 Options Screener — Live Dashboard <span class="live-dot" id="liveDot" style="display:none"></span></h1>
   <div class="header-right">
     <div class="auto-refresh">
-      <input type="checkbox" id="autoRefresh"> تحديث تلقائي كل 5 دقائق
+      <input type="checkbox" id="autoRefresh" checked> تحديث CSV كل دقيقتين
     </div>
     <div class="last-update" id="lastUpdate">—</div>
+    <div class="last-update" id="marketStatus" style="color:#8b949e">—</div>
     <button class="btn" id="refreshBtn" onclick="loadData()">🔄 تحديث</button>
     <button class="btn-run" id="runBtn" onclick="triggerAndWait()" title="فحص Finviz + يدوي فوراً عبر GitHub Actions">⚡ تشغيل يدوي</button>
     <button class="btn-settings" onclick="openSettings()" title="إعدادات التوكن">⚙️</button>
@@ -195,12 +196,15 @@
 <script>
 const CSV_URL = 'https://raw.githubusercontent.com/nasralsws8-web/screen-option-report/main/options_v3_results.csv';
 let autoTimer = null;
+let quoteTimer = null;
 let livePrices = {};
 let finnhubWS = null;
 let currentTickers = [];
 let tradePlans = {};  // خطة الصفقة لكل ticker — تربط Finnhub بـ Entry/Stop/TP
 let outcomeRows = []; // صفوف السجل — للتحديث الحي
 let outcomeOpenTickers = [];
+let wsReconnectMs = 3000;
+let lastWsMsgAt = 0;
 
 function isScanStale(scannedAt) {
   try {
@@ -210,32 +214,56 @@ function isScanStale(scannedAt) {
   } catch (_) { return false; }
 }
 
-// ── Finnhub WebSocket ────────────────────────────────────────
+function isUsMarketHours() {
+  // تقريب ET بدون DST دقيق: 13:30–20:00 UTC ≈ 9:30–16:00 ET
+  const now = new Date();
+  const day = now.getUTCDay();
+  if (day === 0 || day === 6) return false;
+  const mins = now.getUTCHours() * 60 + now.getUTCMinutes();
+  return mins >= (13 * 60 + 30) && mins < (20 * 60);
+}
+
+function updateMarketBadge() {
+  const el = document.getElementById('marketStatus');
+  if (!el) return;
+  if (isUsMarketHours()) {
+    el.innerHTML = '<span class="live-badge">● السوق مفتوح</span>';
+  } else {
+    el.textContent = '⏸ السوق مغلق — أسعار مؤجلة / آخر صفقة';
+  }
+}
+
+// ── Finnhub WebSocket + REST polling (live طول الجلسة) ─────
 function connectFinnhub(tickers) {
   const key = localStorage.getItem('finnhub_key');
   if (!key) {
-    // fallback إذا ما في key
     setStatusOffline(tickers);
     return;
   }
 
-  currentTickers = tickers;
+  currentTickers = [...new Set(tickers.filter(Boolean))];
+  updateMarketBadge();
+  startQuotePolling();
+
   if (finnhubWS) { try { finnhubWS.close(); } catch(e){} }
 
   finnhubWS = new WebSocket(`wss://ws.finnhub.io?token=${key}`);
 
   finnhubWS.onopen = () => {
-    tickers.forEach(t => finnhubWS.send(JSON.stringify({type:'subscribe', symbol:t})));
+    wsReconnectMs = 3000;
+    currentTickers.forEach(t => finnhubWS.send(JSON.stringify({type:'subscribe', symbol:t})));
     document.getElementById('liveDot').style.display = 'inline-block';
-    document.getElementById('lastUpdate').innerHTML = '<span class="live-badge">● LIVE</span> Finnhub';
-    // إخفاء "جاري التحديث" من كل البطاقات
-    tickers.forEach(t => {
+    document.getElementById('lastUpdate').innerHTML =
+      '<span class="live-badge">● LIVE</span> Finnhub ' + (isUsMarketHours() ? '· صفقات لحظية' : '· خارج الجلسة');
+    currentTickers.forEach(t => {
       const ch = document.getElementById('change-' + t);
-      if (ch) ch.style.display = 'none';
+      if (ch && ch.textContent.includes('جاري')) ch.style.display = 'none';
     });
+    fetchFinnhubQuotes(currentTickers);
   };
 
   finnhubWS.onmessage = (event) => {
+    lastWsMsgAt = Date.now();
     const msg = JSON.parse(event.data);
     if (msg.type !== 'trade') return;
     msg.data.forEach(trade => {
@@ -243,7 +271,6 @@ function connectFinnhub(tickers) {
       const price  = trade.p;
       const prev   = livePrices[ticker];
 
-      // أول مرة نشوف السهم — سجّل كـ open
       if (!prev) {
         livePrices[ticker] = { price, open: price };
         updatePriceCard(ticker, price, 0, 0);
@@ -264,13 +291,34 @@ function connectFinnhub(tickers) {
 
   finnhubWS.onerror = () => {};
   finnhubWS.onclose = () => {
-    // إعادة الاتصال بعد 5 ثوانٍ تلقائياً
-    setTimeout(() => { if (localStorage.getItem('finnhub_key')) connectFinnhub(currentTickers); }, 5000);
+    document.getElementById('liveDot').style.display = 'none';
+    const delay = Math.min(wsReconnectMs, 30000);
+    wsReconnectMs = Math.min(wsReconnectMs * 1.5, 30000);
+    setTimeout(() => {
+      if (localStorage.getItem('finnhub_key') && currentTickers.length)
+        connectFinnhub(currentTickers);
+    }, delay);
   };
 }
 
+function startQuotePolling() {
+  if (quoteTimer) clearInterval(quoteTimer);
+  // REST كل 20 ثانية — يغطي الأسهم قليلة التداول عندما WebSocket صامت
+  quoteTimer = setInterval(() => {
+    updateMarketBadge();
+    const all = [...new Set([...currentTickers, ...outcomeOpenTickers])];
+    if (all.length) fetchFinnhubQuotes(all);
+    // إذا WebSocket صامت > 45 ثانية أثناء السوق — أعد الاتصال
+    if (isUsMarketHours() && lastWsMsgAt && Date.now() - lastWsMsgAt > 45000) {
+      if (localStorage.getItem('finnhub_key') && currentTickers.length)
+        connectFinnhub(currentTickers);
+    }
+  }, 20000);
+}
+
 function setStatusOffline(tickers) {
-  document.getElementById('lastUpdate').textContent = '⚠️ الأسعار من آخر تشغيل (السوق مغلق أو أدخل Finnhub Key)';
+  document.getElementById('lastUpdate').textContent = '⚠️ أدخل Finnhub Key للأسعار الحية (⚙️ الإعدادات)';
+  updateMarketBadge();
   tickers.forEach(t => {
     const ch = document.getElementById('change-' + t);
     if (ch) ch.style.display = 'none';
@@ -341,8 +389,9 @@ function evalLiveStatus(plan, price) {
 
 function effectiveLiveRec(plan, st) {
   if (plan.rec === 'AVOID' || st.cls === 'status-stop') return plan.rec;
+  // ترقية WAIT→BUY فقط إذا الشروط الكاملة: ثقة≥55 و tp1_rr≥1.3
   const rr = parseFloat(plan.rr) || 0;
-  if (st.inTrade && plan.conf >= 45 && rr >= 1.0 && (plan.rec === 'WAIT' || plan.rec === 'BUY')) return 'BUY';
+  if (st.inTrade && plan.conf >= 55 && rr >= 1.3 && (plan.rec === 'WAIT' || plan.rec === 'BUY')) return 'BUY';
   return plan.rec;
 }
 
@@ -826,8 +875,12 @@ async function fetchFinnhubQuotes(tickers) {
       if (!resp.ok) return;
       const q = await resp.json();
       if (q.c && q.c > 0) {
-        livePrices[t] = livePrices[t] || { price: q.c, open: q.c };
-        livePrices[t].price = q.c;
+        const open = q.o || (livePrices[t] && livePrices[t].open) || q.c;
+        const change = q.c - open;
+        const changePct = open ? (change / open) * 100 : 0;
+        const prev = livePrices[t] ? livePrices[t].price : q.c;
+        livePrices[t] = { price: q.c, open, change, changePct };
+        updatePriceCard(t, q.c, change, changePct, q.c >= prev);
         updateHistoryLiveCell(t, q.c);
       }
     } catch (e) { /* ignore */ }
@@ -964,8 +1017,16 @@ async function loadHistory(force) {
 }
 
 document.getElementById('autoRefresh').addEventListener('change', function() {
-  if (this.checked) { autoTimer = setInterval(loadData, 5*60*1000); }
-  else { clearInterval(autoTimer); }
+  if (this.checked) { autoTimer = setInterval(loadData, 2*60*1000); }
+  else { clearInterval(autoTimer); autoTimer = null; }
+});
+
+// إعادة الاتصال عند الرجوع للتبويب
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && currentTickers.length) {
+    updateMarketBadge();
+    if (localStorage.getItem('finnhub_key')) connectFinnhub(currentTickers);
+  }
 });
 
 // ── Token Settings ──────────────────────────────────────────
@@ -1077,6 +1138,11 @@ async function prefetchOutcomes() {
 }
 
 loadData();
+if (document.getElementById('autoRefresh').checked) {
+  autoTimer = setInterval(loadData, 2*60*1000);
+}
+updateMarketBadge();
+setInterval(updateMarketBadge, 60*1000);
 </script>
 </body>
 </html>

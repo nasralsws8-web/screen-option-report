@@ -1188,23 +1188,40 @@ def compute_trade_plan(r, tech):
     if entry_s > 0:
         entry_hit_now = (is_call and price >= entry_s) or (not is_call and price <= entry_s)
 
+    # سيولة كافية قبل أي BUY
+    min_oi = profile_limit(r.get("Ticker"), "min_oi", MIN_OI)
+    oi_ok = effective_oi(r.get("oi"), r.get("opt_vol"), min_oi) >= min_oi
+    sp = float(r.get("spread_pct") if r.get("spread_pct") is not None else 99)
+    max_sp = profile_limit(r.get("Ticker"), "max_spread_pct", MAX_SPREAD_PCT)
+    spread_ok = sp <= max_sp
+    liquid_ok = oi_ok and spread_ok
+
+    # BUY صارم: ثقة ≥55 + tp1_rr ≥1.3 + سيولة
+    buy_ready = (
+        conf >= MIN_CONF_TO_BUY
+        and tp1_rr >= MIN_RR_TO_BUY
+        and liquid_ok
+    )
+
     if earn_risk:
         plan["recommendation"] = "AVOID"
         plan["rec_note"]       = "⚠️ Earnings قبل انتهاء العقد — خطر كبير"
     elif not trade_plan_is_valid(plan, price, is_call):
         plan["recommendation"] = "WAIT"
         plan["rec_note"]       = "خطة الدخول غير متسقة مع السعر الحالي — انتظر"
-    elif conf >= MIN_CONF_TO_BUY and tp1_rr >= 1.0 and best_rr >= MIN_RR_TO_BUY and (trend_ok or mixed_ok):
+    elif buy_ready and (trend_ok or mixed_ok):
         plan["recommendation"] = "BUY"
         plan["rec_note"]       = ("الاتجاه والزخم والسيولة مناسبة"
                                    if trend_ok else "اختراق قوي رغم الاتجاه المختلط")
-    elif entry_hit_now and conf >= 45 and tp1_rr >= 1.0:
+    elif buy_ready and entry_hit_now:
+        # Entry تحقق يُسمح به فقط إذا الشروط الكاملة مكتملة
         plan["recommendation"] = "BUY"
-        plan["rec_note"]       = "Entry تحقق — السعر دخل نقطة الدخول"
-    elif conf >= MIN_CONF_TO_BUY and tp1_rr >= 1.0 and best_rr >= MIN_RR_TO_BUY:
+        plan["rec_note"]       = "Entry تحقق + شروط BUY مكتملة"
+    elif conf >= MIN_CONF_TO_BUY and tp1_rr >= MIN_RR_TO_BUY:
         plan["recommendation"] = "WAIT"
-        plan["rec_note"]       = "زخم جيد — راقب تأكيد الاتجاه"
-    elif conf >= 45 and tp1_rr >= 1.0 and best_rr >= 1.0:
+        plan["rec_note"]       = ("سيولة ضعيفة — راقب"
+                                   if not liquid_ok else "زخم جيد — راقب تأكيد الاتجاه")
+    elif conf >= 50 and tp1_rr >= 1.0:
         plan["recommendation"] = "WAIT"
         plan["rec_note"]       = "انتظر تأكيد الاختراق"
     else:
