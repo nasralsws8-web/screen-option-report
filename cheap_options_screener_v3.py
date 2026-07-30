@@ -351,6 +351,18 @@ def compute_targets(entry, is_call, atr, tech):
         tp1 = min(tp1, round(entry - atr * 0.35, 2))
         tp2 = min(tp2, round(tp1 - atr * 0.35, 2))
         tp3 = min(tp3, round(tp2 - atr * 0.45, 2))
+        # لا تسمح بأهداف ≤ 0
+        floor = max(entry * 0.05, 0.05)
+        tp1 = max(tp1, floor)
+        tp2 = max(min(tp2, tp1 - atr * 0.2), floor * 0.8)
+        tp3 = max(min(tp3, tp2 - atr * 0.2), floor * 0.5)
+        if not (tp3 < tp2 < tp1 < entry):
+            tp1 = round(entry - atr * 1.0, 2)
+            tp2 = round(entry - atr * 1.8, 2)
+            tp3 = round(entry - atr * 2.6, 2)
+            tp1 = max(tp1, floor)
+            tp2 = max(tp2, floor * 0.8)
+            tp3 = max(tp3, floor * 0.5)
 
     return round(tp1, 2), round(tp2, 2), round(tp3, 2)
 
@@ -433,8 +445,16 @@ def row_passes_save_filters(r):
         return False
     if oi < min_oi or sp > max_spread:
         return False
-    if strike > 0 and price > 0 and abs(strike - price) / price > 0.40:
+    if strike > 0 and price > 0 and abs(strike - price) / price > 0.25:
         return False
+    # رفض أهداف غير منطقية
+    for k in ("tp1_stock", "tp2_stock", "tp3_stock", "stop_stock", "entry_stock"):
+        try:
+            v = float(r.get(k) or 0)
+        except (TypeError, ValueError):
+            v = 0
+        if k != "entry_stock" and v != 0 and v <= 0:
+            return False
     dte = int(r.get("dte_num") if r.get("dte_num") is not None else 99)
     max_dte = profile_limit(ticker, "max_dte", MAX_DTE)
     if dte > max_dte:
