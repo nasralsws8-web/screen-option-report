@@ -59,10 +59,10 @@ except ImportError:
 # ════════════════════════════════════════════════════════════════════════
 #  CONFIG
 # ════════════════════════════════════════════════════════════════════════
-TARGET_PREM_MIN  = 0.50    # أقل سعر عقد مقبول ($)
+TARGET_PREM_MIN  = 1.00    # أقل سعر عقد للوضع الأساسي ($) — تحت دولار يضر دقة العقد
 TARGET_PREM_MAX  = 3.00    # أعلى سعر عقد مقبول ($)
 MIN_OI           = 500     # أقل Open Interest
-MAX_SPREAD_PCT = 0.15    # أقصى spread مقبول (15% كـ decimal)
+MAX_SPREAD_PCT = 0.10    # أقصى spread مقبول (10% كـ decimal) — سبريد ضيق
 PM_STALE_PCT   = 0.05    # تجاهل pm_high/pm_low إذا ابتعدت عن السعر >5%
 ENTRY_MAX_DRIFT = 0.05   # Entry يجب أن يكون ضمن ±5% من السعر الحالي
 MAX_STOCK_PRICE = 500.0  # رفض أسعار Yahoo الشاذة (مثل SNDK $1183)
@@ -82,12 +82,16 @@ RISK_FREE_RATE   = 0.053   # معدل الفائدة لـ Black-Scholes
 MIN_RR_TO_BUY    = 1.3     # أقل R:R لإعطاء BUY
 MIN_CONF_TO_BUY  = 55      # أقل Confidence% لإعطاء BUY
 
+# قواعد التشغيل المتفق عليها (2026-07-31)
+REQUIRE_SPY_ALIGNMENT = True   # لا PUT والسوق صاعد / لا CALL والسوق هابط
+EXEC_AFTER_OPEN_MIN   = 15     # دقائق بعد الافتتاح قبل اعتماد التنفيذ (4:45 السعودية)
+
 FINVIZ_FILTERS = {
     "Option/Short":    "Optionable",
     "Average Volume":  "Over 1M",        # حجم يومي أعلى = spread أضيق
     "Country":         "USA",
     "Price":           "Over $5",        # تجنب penny stocks
-    "Relative Volume": "Over 1.5",       # نشاط عالي اليوم (RVOL > 1.5x)
+    "Relative Volume": "Over 2",         # نشاط عالي اليوم (RVOL > 2x)
 }
 
 SPY_TICKER = "SPY"
@@ -121,6 +125,55 @@ def profile_limit(ticker, key, default):
 
 def is_spy_ticker(ticker):
     return str(ticker or "").upper() == SPY_TICKER
+
+
+def classify_spy_regime(tech, price):
+    """
+    بوصلة السوق من SPY:
+      BULL  = فوق VWAP وEMA20 و/أو ترند صاعد
+      BEAR  = تحت VWAP وEMA20 و/أو ترند هابط
+      NEUTRAL = مختلط
+    """
+    if not tech or not price:
+        return "NEUTRAL"
+    trend = str(tech.get("trend") or "")
+    above_vwap = bool(tech.get("above_vwap"))
+    above_e20 = bool(tech.get("above_ema20"))
+    if "BULLISH" in trend and (above_vwap or above_e20):
+        return "BULL"
+    if "BEARISH" in trend and (not above_vwap or not above_e20):
+        return "BEAR"
+    if above_vwap and above_e20:
+        return "BULL"
+    if (not above_vwap) and (not above_e20):
+        return "BEAR"
+    return "NEUTRAL"
+
+
+def spy_alignment_ok(is_call, spy_regime):
+    """لا نعكس السوق: PUT مرفوض إذا SPY صاعد، CALL مرفوض إذا SPY هابط."""
+    if not REQUIRE_SPY_ALIGNMENT:
+        return True, ""
+    regime = str(spy_regime or "NEUTRAL").upper()
+    if regime == "BULL" and not is_call:
+        return False, "PUT مرفوض — SPY صاعد (فلتر اتجاه)"
+    if regime == "BEAR" and is_call:
+        return False, "CALL مرفوض — SPY هابط (فلتر اتجاه)"
+    return True, ""
+
+
+def fetch_spy_regime():
+    """جلب نظام SPY مرة واحدة قبل مسح الأسهم."""
+    try:
+        import yfinance as yf
+        hist = yf.Ticker(SPY_TICKER).history(period="60d")
+        if hist is None or len(hist) < 5:
+            return "NEUTRAL", None, None
+        price = float(hist["Close"].iloc[-1])
+        tech = compute_technicals(hist, price)
+        return classify_spy_regime(tech, price), tech, price
+    except Exception:
+        return "NEUTRAL", None, None
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -1317,16 +1370,35 @@ def compute_trade_plan(r, tech):
     spread_ok = sp <= max_sp
     liquid_ok = oi_ok and spread_ok
 
-    # BUY صارم: ثقة ≥55 + tp1_rr ≥1.3 + سيولة
+    # قواعد التشغيل: برايميوم ≥ $1 + فلتر اتجاه SPY
+    prem_min = profile_limit(r.get("Ticker"), "prem_min", TARGET_PREM_MIN)
+    prem_ok = premium >= prem_min
+    spy_regime = r.get("spy_regime") or "NEUTRAL"
+    align_ok, align_note = spy_alignment_ok(is_call, spy_regime)
+    plan["spy_regime"] = spy_regime
+    plan["spy_align_ok"] = align_ok
+
+    # BUY صارم: ثقة ≥55 + tp1_rr ≥1.3 + سيولة + prem + مع اتجاه SPY
     buy_ready = (
         conf >= MIN_CONF_TO_BUY
         and tp1_rr >= MIN_RR_TO_BUY
         and liquid_ok
+        and prem_ok
+        and align_ok
     )
 
     if earn_risk:
         plan["recommendation"] = "AVOID"
         plan["rec_note"]       = "⚠️ Earnings قبل انتهاء العقد — خطر كبير"
+    elif not align_ok:
+        plan["recommendation"] = "WAIT"
+        plan["rec_note"]       = align_note + " — مراقبة فقط"
+    elif not prem_ok:
+        plan["recommendation"] = "WAIT"
+        plan["rec_note"]       = f"Premium ${premium:.2f} تحت الحد ${prem_min:.2f} — الوضع الأساسي ≥$1"
+    elif not spread_ok:
+        plan["recommendation"] = "WAIT"
+        plan["rec_note"]       = f"سبريد مرتفع ({sp*100:.1f}%) — الحد {max_sp*100:.0f}%"
     elif not trade_plan_is_valid(plan, price, is_call):
         plan["recommendation"] = "WAIT"
         plan["rec_note"]       = "خطة الدخول غير متسقة مع السعر الحالي — انتظر"
@@ -1340,8 +1412,10 @@ def compute_trade_plan(r, tech):
         plan["rec_note"]       = "Entry تحقق + شروط BUY مكتملة"
     elif conf >= MIN_CONF_TO_BUY and tp1_rr >= MIN_RR_TO_BUY:
         plan["recommendation"] = "WAIT"
-        plan["rec_note"]       = ("سيولة ضعيفة — راقب"
-                                   if not liquid_ok else "زخم جيد — راقب تأكيد الاتجاه")
+        if not liquid_ok:
+            plan["rec_note"] = "سيولة ضعيفة — راقب"
+        else:
+            plan["rec_note"] = "زخم جيد — راقب تأكيد الاتجاه"
     elif conf >= 50 and tp1_rr >= 1.0:
         plan["recommendation"] = "WAIT"
         plan["rec_note"]       = "انتظر تأكيد الاختراق"
@@ -1524,6 +1598,7 @@ SAVE_COLS = [
     "expiry", "dte_num", "direction", "earnings", "float_shares", "avg_vol",
     "entry_stock", "stop_stock", "tp1_stock", "tp2_stock", "tp3_stock", "tp1_rr",
     "entry_note", "fh_gap_pct", "fh_pm_bullish", "fh_pm_strong", "fh_pm_note",
+    "spy_regime", "rec_note",
     "Score", "recommendation", "confidence", "Notes", "scanned_at",
 ]
 
@@ -1680,8 +1755,14 @@ def process_candidates(candidates_df, show_progress=True):
 
     rows = []
     fh_key = get_api_key()
+    spy_regime, spy_tech, spy_px = fetch_spy_regime()
     if show_progress:
         print("⏳ Stage 2: Options + Premarket + Technical data...")
+        print(f"   🧭 SPY regime: {spy_regime}"
+              + (f" @ ${spy_px:.2f}" if spy_px else ""))
+        print(f"   قواعد: Prem≥${TARGET_PREM_MIN:.2f} · Spread≤{MAX_SPREAD_PCT*100:.0f}%"
+              f" · فلتر اتجاه SPY={'ON' if REQUIRE_SPY_ALIGNMENT else 'OFF'}"
+              f" · تنفيذ بعد +{EXEC_AFTER_OPEN_MIN}د من الافتتاح")
         if fh_key:
             print("   Finnhub: تأكيد صعود بريماركت مفعّل")
         else:
@@ -1707,6 +1788,14 @@ def process_candidates(candidates_df, show_progress=True):
             "fh_gap_pct": None, "fh_pm_bullish": False, "fh_pm_strong": False,
             "fh_pm_score": 0, "fh_pm_note": "لا يوجد FINNHUB_API_KEY",
         }
+
+        # إذا الصف SPY نفسه — حدّث البوصلة من بياناته الحية في المسح
+        row_regime = spy_regime
+        if is_spy_ticker(ticker) and hist is not None and len(hist) >= 5:
+            row_regime = classify_spy_regime(
+                compute_technicals(hist, price_num), price_num
+            )
+            spy_regime = row_regime
 
         row = {
             "Ticker":       ticker,
@@ -1745,6 +1834,7 @@ def process_candidates(candidates_df, show_progress=True):
             "fh_pm_strong": bool(fh.get("fh_pm_strong")),
             "fh_pm_note":   fh.get("fh_pm_note", ""),
             "fh_pm_score":  int(fh.get("fh_pm_score") or 0),
+            "spy_regime":   row_regime,
         }
 
         tech = compute_technicals(hist, price_num)
@@ -1754,6 +1844,7 @@ def process_candidates(candidates_df, show_progress=True):
         # تأكيد صعود بريماركت من Finnhub → فضّل CALL (سهم/عقد صاعد)
         if row["fh_pm_bullish"] and not strong_bear:
             is_call = True
+        # لا نقلب الاتجاه صمتاً: التعارض مع SPY يُحوَّل إلى WAIT داخل compute_trade_plan
         apply_option_leg(row, is_call)
         row["direction"] = "CALL 📈" if is_call else "PUT  📉"
 
@@ -1767,7 +1858,8 @@ def process_candidates(candidates_df, show_progress=True):
             row["_error"] = (row.get("_error") or "") + f" plan:{e}"
             plan = {"recommendation": "AVOID", "confidence": 0,
                     "entry_stock": None, "stop_stock": None,
-                    "tp1_stock": None, "tp2_stock": None, "tp3_stock": None}
+                    "tp1_stock": None, "tp2_stock": None, "tp3_stock": None,
+                    "rec_note": "", "spy_regime": row_regime}
         row["recommendation"] = plan.get("recommendation", "AVOID")
         row["confidence"]     = plan.get("confidence", 0)
         row["entry_stock"]    = plan.get("entry_stock")
@@ -1777,6 +1869,8 @@ def process_candidates(candidates_df, show_progress=True):
         row["tp3_stock"]      = plan.get("tp3_stock")
         row["tp1_rr"]         = plan.get("tp1_rr")
         row["entry_note"]     = plan.get("entry_note", "")
+        row["rec_note"]       = plan.get("rec_note", "")
+        row["spy_regime"]     = plan.get("spy_regime", row_regime)
         if is_spy_ticker(ticker):
             row["profile"] = "spy"
 

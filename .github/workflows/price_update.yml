@@ -2,8 +2,9 @@ name: Price Update (Every 15 min during market hours)
 
 on:
   schedule:
-    # Mon-Fri 13:30 - 19:45 UTC (9:30 AM - 3:45 PM ET) every 15 minutes
-    - cron: '*/15 13-19 * * 1-5'
+    # أول تحديث مع المسح الكامل 9:45 ET، ثم كل 15 دقيقة
+    - cron: '45 13 * * 1-5'
+    - cron: '*/15 14-19 * * 1-5'
     - cron: '0 20 * * 1-5'   # Final update at market close 4 PM ET
   workflow_dispatch:
 

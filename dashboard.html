@@ -21,7 +21,18 @@
   @keyframes flashDown { 0%{background:#3d1a1a} 100%{background:transparent} }
   .flash-up { animation: flashUp 0.6s ease-out; }
   .flash-down { animation: flashDown 0.6s ease-out; }
-  .live-badge { font-size:11px; background:#1a4731; color:#3fb950; padding:3px 8px; border-radius:10px; font-weight:700; }
+  .rules-banner {
+    margin: 12px 24px 0; padding: 12px 16px; border-radius: 8px;
+    background: #161b22; border: 1px solid #388bfd66; font-size: 12px; line-height: 1.6; color: #c9d1d9;
+  }
+  .rules-banner strong { color: #58a6ff; }
+  .rules-banner .rule-warn { color: #e3b341; }
+  .exec-badge {
+    font-size: 11px; padding: 3px 10px; border-radius: 10px; font-weight: 700;
+    background: #3d2d00; color: #e3b341;
+  }
+  .exec-badge.ok { background: #1a4731; color: #3fb950; }
+
   .change-badge { font-size: 11px; padding: 2px 6px; border-radius: 4px; margin-right: 4px; }
   .change-up { background: #1a4731; color: #3fb950; }
   .change-down { background: #3d1a1a; color: #f85149; }
@@ -147,6 +158,16 @@
   </div>
 </div>
 
+<div class="rules-banner" id="rulesBanner">
+  <strong>قواعد التشغيل:</strong>
+  مسح معتمد ≈ <strong>٤:٤٥ السعودية</strong> (٩:٤٥ ET) —
+  لا تنفيذ عكس <strong>SPY</strong> —
+  Premium <strong>≥ $1</strong> —
+  سبريد <strong>≤ 10%</strong>.
+  <span class="exec-badge" id="execWindowBadge">نافذة التنفيذ: …</span>
+  <div class="rule-warn" style="margin-top:4px">تحديث الأسعار اللحظي ≠ توصية جديدة. اعتمد المسح الكامل + الشروط أعلاه.</div>
+</div>
+
 <!-- Modal إعدادات التوكن -->
 <div class="modal-overlay" id="settingsModal">
   <div class="modal">
@@ -215,22 +236,57 @@ function isScanStale(scannedAt) {
 }
 
 function isUsMarketHours() {
-  // تقريب ET بدون DST دقيق: 13:30–20:00 UTC ≈ 9:30–16:00 ET
+  // تقريب ET: 13:45–20:00 UTC ≈ 9:45–16:00 ET (بعد ضوضاء الافتتاح)
   const now = new Date();
   const day = now.getUTCDay();
   if (day === 0 || day === 6) return false;
   const mins = now.getUTCHours() * 60 + now.getUTCMinutes();
-  return mins >= (13 * 60 + 30) && mins < (20 * 60);
+  return mins >= (13 * 60 + 45) && mins < (20 * 60);
+}
+
+/** نافذة التنفيذ المتفق عليها: بعد 9:45 ET (4:45 السعودية) */
+function isExecWindow() {
+  const now = new Date();
+  const day = now.getUTCDay();
+  if (day === 0 || day === 6) return false;
+  const mins = now.getUTCHours() * 60 + now.getUTCMinutes();
+  return mins >= (13 * 60 + 45) && mins < (20 * 60);
+}
+
+function updateExecWindowBadge() {
+  const el = document.getElementById('execWindowBadge');
+  if (!el) return;
+  if (isExecWindow()) {
+    el.textContent = 'نافذة التنفيذ: مفتوحة (بعد ٤:٤٥)';
+    el.className = 'exec-badge ok';
+  } else {
+    el.textContent = 'نافذة التنفيذ: مغلقة — راقب فقط حتى ٤:٤٥';
+    el.className = 'exec-badge';
+  }
 }
 
 function updateMarketBadge() {
   const el = document.getElementById('marketStatus');
   if (!el) return;
   if (isUsMarketHours()) {
-    el.innerHTML = '<span class="live-badge">● السوق مفتوح</span>';
+    el.textContent = 'السوق مفتوح (بعد ٩:٤٥ ET)';
+    el.style.color = '#3fb950';
+  } else if (isUsMarketHoursLoose()) {
+    el.textContent = 'افتتاح — انتظر ٤:٤٥ قبل التنفيذ';
+    el.style.color = '#e3b341';
   } else {
-    el.textContent = '⏸ السوق مغلق — أسعار مؤجلة / آخر صفقة';
+    el.textContent = 'السوق مغلق';
+    el.style.color = '#8b949e';
   }
+  updateExecWindowBadge();
+}
+
+function isUsMarketHoursLoose() {
+  const now = new Date();
+  const day = now.getUTCDay();
+  if (day === 0 || day === 6) return false;
+  const mins = now.getUTCHours() * 60 + now.getUTCMinutes();
+  return mins >= (13 * 60 + 30) && mins < (13 * 60 + 45);
 }
 
 // ── Finnhub WebSocket + REST polling (live طول الجلسة) ─────
@@ -387,10 +443,30 @@ function evalLiveStatus(plan, price) {
   return { cls: 'status-entry-wait', label: '⏳ بانتظار Entry', dist: `${pct}% تحت السعر الحالي`, inTrade: false };
 }
 
+function passesOpsRules(plan) {
+  const prem = parseFloat(plan.prem) || 0;
+  const spread = parseFloat(plan.spread) || 0;
+  const regime = String(plan.spyRegime || 'NEUTRAL').toUpperCase();
+  const dir = String(plan.direction || '').toUpperCase();
+  const isPut = dir.includes('PUT');
+  const isCall = dir.includes('CALL');
+  if (prem > 0 && prem < 1.0) return { ok: false, why: 'Premium < $1' };
+  if (spread > 0.10) return { ok: false, why: 'سبريد > 10%' };
+  if (regime === 'BULL' && isPut) return { ok: false, why: 'PUT ضد SPY صاعد' };
+  if (regime === 'BEAR' && isCall) return { ok: false, why: 'CALL ضد SPY هابط' };
+  if (!isExecWindow()) return { ok: false, why: 'قبل نافذة ٤:٤٥' };
+  return { ok: true, why: '' };
+}
+
 function effectiveLiveRec(plan, st) {
   if (plan.rec === 'AVOID' || st.cls === 'status-stop') return plan.rec;
-  // ترقية WAIT→BUY فقط إذا الشروط الكاملة: ثقة≥55 و tp1_rr≥1.3
+  const rules = passesOpsRules(plan);
+  // ترقية WAIT→BUY فقط إذا الشروط الكاملة + قواعد التشغيل
   const rr = parseFloat(plan.rr) || 0;
+  if (!rules.ok) {
+    if (plan.rec === 'BUY') return 'WAIT';
+    return plan.rec;
+  }
   if (st.inTrade && plan.conf >= 55 && rr >= 1.3 && (plan.rec === 'WAIT' || plan.rec === 'BUY')) return 'BUY';
   return plan.rec;
 }
@@ -450,8 +526,13 @@ function registerTradePlans(rows) {
       rec: r.recommendation || 'AVOID',
       conf: parseInt(r.confidence) || 0,
       rr: parseFloat(r.tp1_rr) || 0,
+      prem: parseFloat(r.premium) || 0,
+      spread: parseFloat(r.spread_pct) || 0,
+      spyRegime: r.spy_regime || 'NEUTRAL',
+      recNote: r.rec_note || '',
     };
   });
+  updateExecWindowBadge();
 }
 
 function parsePrice(val) {
@@ -599,7 +680,7 @@ function buildCard(r) {
   const conf = parseInt(r.confidence) || 0;
   const iv = parseFloat(r.iv) || 0;
   const spread = parseFloat(r.spread_pct) || 0;
-  const spreadOk = spread < 0.08 ? 'green' : spread < 0.15 ? 'yellow' : 'red';
+  const spreadOk = spread > 0 && spread <= 0.10 ? 'green' : spread <= 0.15 ? 'yellow' : 'red';
   const strike = parseFloat(r.strike) || 0;
   const prem = parseFloat(r.premium) || 0;
   const oi = parseInt(r.oi) || 0;
@@ -619,8 +700,13 @@ function buildCard(r) {
          (dte > 0 ? ` <span style="color:#e3b341">(${dte}d)</span>` : ''));
     } catch (_) {}
   }
-  const optionOk = prem > 0 && strike > 0 && oi >= 100 && spread > 0 && spread <= 0.15;
+  const optionOk = prem >= 1.0 && strike > 0 && oi >= 100 && spread > 0 && spread <= 0.10;
   const entryNote = r.entry_note || '';
+  const recNote = r.rec_note || '';
+  const spyRegime = r.spy_regime || '';
+  const premWarn = prem > 0 && prem < 1.0;
+  const againstSpy = (String(spyRegime).toUpperCase() === 'BULL' && isPut) ||
+    (String(spyRegime).toUpperCase() === 'BEAR' && dir.includes('CALL'));
 
   return `
   <div class="card ${recClass(rec)}" id="card-${r.Ticker}">
@@ -634,8 +720,13 @@ function buildCard(r) {
         <span class="rec-badge ${rec}" id="rec-badge-${r.Ticker}">${rec}</span>
         <div style="font-size:11px;color:${dirColor};margin-top:4px;font-weight:700">${dirLabel}</div>
         <div style="font-size:11px;color:#8b949e;margin-top:2px">Score: ${r.Score||0}</div>
+        ${spyRegime ? `<div style="font-size:10px;color:#58a6ff;margin-top:2px">SPY: ${spyRegime}</div>` : ''}
       </div>
     </div>
+    ${recNote || againstSpy || premWarn ? `
+    <div style="font-size:11px;color:#e3b341;background:#3d2d00;border-radius:6px;padding:6px 8px;margin-bottom:8px">
+      ${recNote || (againstSpy ? 'تعارض مع اتجاه SPY — مراقبة فقط' : '')}${premWarn ? (recNote ? ' · ' : '') + 'Premium تحت $1' : ''}
+    </div>` : ''}
     <div class="live-status status-entry-wait" id="live-status-${r.Ticker}">
       ⏳ ربط السعر اللحظي...
       <div class="live-dist">Finnhub → Entry / Stop / TP</div>

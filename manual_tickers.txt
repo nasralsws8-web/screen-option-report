@@ -1,11 +1,26 @@
 # قائمة يدوية — سهم واحد في كل سطر
-# تُدمج مع Finviz في كل run تلقائي (SCREENER_SOURCE=both)
-# SPY = توصية خاصة في الدashboard (بروفايل premium أعلى)
+# تُدمج مع Finviz في كل run (SCREENER_SOURCE=both)
+# التركيبة المطلوبة:
+#   1) SPY (أولوية خاصة)
+#   2) قائمة المتابعة الثابتة من الوسيط
+#   3) + مرشّحو Finviz للعقود الرخيصة (تلقائي — مو هنا)
 
+# —— الأولوية ——
 SPY
+
+# —— قائمة المتابعة (من صورة الوسيط) ——
+CRDO
+NAMM
+TSLA
+AMZN
+GOOG
+GOOGL
+AAPL
+MSFT
+NVDA
+
+# —— مراقبات سابقة / عقود رخيصة ثابتة ——
 SQQQ
 SOXL
-TSLA
-NVDA
 AMD
 SMCI

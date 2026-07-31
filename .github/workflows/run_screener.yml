@@ -1,8 +1,9 @@
-name: Options Screener Full Scan (Market Open)
+name: Options Screener Full Scan (9:45 ET / 4:45 Saudi)
 
 on:
   schedule:
-    - cron: '30 13 * * 1-5'
+    # 13:45 UTC ≈ 9:45 AM ET ≈ 4:45 PM Saudi — بعد ضوضاء الافتتاح
+    - cron: '45 13 * * 1-5'
   workflow_dispatch:
 
 concurrency:
