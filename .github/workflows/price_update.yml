@@ -2,8 +2,7 @@ name: Price Update (Every 15 min during market hours)
 
 on:
   schedule:
-    # أول تحديث مع المسح الكامل 9:45 ET، ثم كل 15 دقيقة
-    - cron: '45 13 * * 1-5'
+    # المسح الكامل (run_screener) عند 13:45 UTC — هنا نبدأ بعده كل 15 دقيقة لتجنب تداخل الكتابة
     - cron: '*/15 14-19 * * 1-5'
     - cron: '0 20 * * 1-5'   # Final update at market close 4 PM ET
   workflow_dispatch:

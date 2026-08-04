@@ -637,6 +637,35 @@ function registerTradePlans(rows) {
   updateExecWindowBadge();
 }
 
+/** طبّق قواعد المطاردة/R:R الحي/0DTE على صفوف CSV قبل الرسم (بدون انتظار Finnhub). */
+function applyScanGuards(rows) {
+  return rows.map(r => {
+    const plan = tradePlans[r.Ticker];
+    const price = parsePrice(r.Price || r.price_num);
+    if (!plan || !price) return r;
+    const st = evalLiveStatus(plan, price);
+    const eff = effectiveLiveRec(plan, st);
+    const out = { ...r };
+    out.tp1_rr_live = (st.liveRr != null ? st.liveRr : parseFloat(r.tp1_rr_live) || 0).toFixed(1);
+    out.entry_chased = st.chased ? 'True' : 'False';
+    if (eff !== (r.recommendation || 'AVOID')) {
+      out.recommendation = eff;
+      if (st.chased && eff === 'WAIT') {
+        out.rec_note = `مطاردة — السعر تجاوز Entry وR:R الحي 1:${(st.liveRr || 0).toFixed(1)} — لا تدخل متأخراً`;
+      } else if (plan.dte === 0 && eff === 'WAIT') {
+        out.rec_note = '0DTE — لا BUY من المسح';
+      } else if (eff === 'WAIT' && (r.recommendation || '') === 'BUY') {
+        out.rec_note = `R:R الحي 1:${(st.liveRr || 0).toFixed(1)} ضعيف — انتظر`;
+      }
+      // حدّث الخطة المحفوظة حتى الإحصاءات والشارات تتوافق
+      plan.rec = eff;
+      plan.recNote = out.rec_note || plan.recNote;
+      plan.rrLive = st.liveRr || 0;
+    }
+    return out;
+  });
+}
+
 function parsePrice(val) {
   const n = parseFloat(String(val ?? '').replace(/[$,\s]/g, ''));
   return isNaN(n) || n <= 0 ? 0 : n;
@@ -980,9 +1009,11 @@ async function loadData() {
       throw new Error('الملف فاضي — شغّل الـ workflow من GitHub Actions أولاً');
     }
 
-    const rows = parseCSV(text);
+    const rowsRaw = parseCSV(text);
+    registerTradePlans(rowsRaw);
+    const rows = applyScanGuards(rowsRaw);
+    registerTradePlans(rows); // بعد تصحيح المطاردة/R:R
     const { spy, rest } = splitSpyRows(rows);
-    registerTradePlans(rows);
 
     renderSpySection(spy);
 

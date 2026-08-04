@@ -123,7 +123,15 @@ def calc_option_pnl_pct(row, stock_at_exit, exit_date):
         # يوم الانتهاء أو بعده → intrinsic فقط (T=0)
         T = 0.0 if days_left <= 0 else days_left / 365
     else:
-        dte = int(float(row.get("dte_num") or 7))
+        # 0 يبقى 0 — لا تستخدم `or 7` لأنه يحوّل 0DTE إلى 7 أيام
+        raw_dte = row.get("dte_num")
+        if raw_dte is None or raw_dte == "":
+            dte = 7
+        else:
+            try:
+                dte = int(float(raw_dte))
+            except (TypeError, ValueError):
+                dte = 7
         T = max(dte / 365, 0.0)
 
     is_call = resolve_is_call(
@@ -290,11 +298,24 @@ def backfill_option_fields(outcomes_df):
     if results.empty:
         return outcomes_df
 
+    def _contract_key(ticker, strike, expiry):
+        t = str(ticker or "").upper().strip()
+        try:
+            s = f"{float(strike):.4f}"
+        except (TypeError, ValueError):
+            s = ""
+        e = str(expiry or "")[:10]
+        return t, s, e
+
     lookup = {}
+    by_ticker = {}
     for _, r in results.iterrows():
         t = str(r.get("Ticker", "")).upper().strip()
-        if t:
-            lookup[t] = r
+        if not t:
+            continue
+        key = _contract_key(t, r.get("strike"), r.get("expiry"))
+        lookup[key] = r
+        by_ticker[t] = r  # آخر صف للسهم — احتياطي فقط إذا ما فيه سترايك
 
     filled = 0
     for idx, row in outcomes_df.iterrows():
@@ -303,7 +324,17 @@ def backfill_option_fields(outcomes_df):
         if has_option_data(row):
             continue
         t = str(row.get("ticker", "")).upper().strip()
-        src = lookup.get(t)
+        key = _contract_key(t, row.get("strike"), row.get("expiry"))
+        src = lookup.get(key)
+        # لا تملأ من سهم آخر بعقد مختلف إذا عندنا سترايك معروف ومخالف
+        if src is None:
+            try:
+                row_strike = float(row.get("strike") or 0)
+            except (TypeError, ValueError):
+                row_strike = 0
+            if row_strike > 0:
+                continue  # سترايك معروف لكن ما طابق نتائج اليوم — لا تخلط عقود
+            src = by_ticker.get(t)
         if src is None:
             continue
         try:

@@ -1682,7 +1682,7 @@ SAVE_COLS = [
     "atr_pct", "gap_pct", "RVOL", "pm_high", "pm_low", "pm_volume",
     "expiry", "dte_num", "direction", "earnings", "float_shares", "avg_vol",
     "entry_stock", "stop_stock", "tp1_stock", "tp2_stock", "tp3_stock", "tp1_rr",
-    "tp1_rr_live",
+    "tp1_rr_live", "entry_chased",
     "entry_note", "fh_gap_pct", "fh_pm_bullish", "fh_pm_strong", "fh_pm_note",
     "spy_regime", "rec_note",
     "Score", "recommendation", "confidence", "Notes", "scanned_at",
@@ -1955,6 +1955,7 @@ def process_candidates(candidates_df, show_progress=True):
         row["tp3_stock"]      = plan.get("tp3_stock")
         row["tp1_rr"]         = plan.get("tp1_rr")
         row["tp1_rr_live"]    = plan.get("tp1_rr_live")
+        row["entry_chased"]   = bool(plan.get("entry_chased", False))
         row["entry_note"]     = plan.get("entry_note", "")
         row["rec_note"]       = plan.get("rec_note", "")
         row["spy_regime"]     = plan.get("spy_regime", row_regime)
