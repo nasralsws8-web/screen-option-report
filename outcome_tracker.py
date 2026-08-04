@@ -4,6 +4,9 @@ outcome_tracker.py
 يسجّل توصيات BUY الجديدة في outcomes.csv
 ويتحقق من النتائج للتوصيات المفتوحة (هل وصل Entry/TP1/TP2/TP3 أو ضرب Stop؟)
 
+كل عقد يُحفظ مستقلاً بمفتاح: Ticker + Strike + Expiry
+(نفس السهم بعقد مختلف = صف جديد في السجل)
+
 result_pct      = حركة السهم % (للمرجع)
 option_pnl_pct  = ربح/خسارة العقد % (Black-Scholes عند TP/Stop/Expiry)
 """
@@ -351,6 +354,35 @@ def load_outcomes():
     return pd.DataFrame(columns=OUTCOMES_COLS)
 
 
+def _norm_strike(val):
+    try:
+        if val is None or (isinstance(val, float) and math.isnan(val)):
+            return None
+        return round(float(val), 4)
+    except (TypeError, ValueError):
+        return None
+
+
+def _norm_expiry(val):
+    d = parse_date(val)
+    return d.isoformat() if d else str(val or "").strip()
+
+
+def _same_contract(df, ticker, strike_f, expiry_key):
+    """صفوف نفس العقد: Ticker + Strike + Expiry."""
+    if df is None or df.empty:
+        return df.iloc[0:0] if df is not None else pd.DataFrame()
+    mask = df["ticker"].astype(str).str.strip() == ticker
+    if strike_f is None:
+        mask = mask & df["strike"].isna()
+    else:
+        strikes = pd.to_numeric(df["strike"], errors="coerce")
+        mask = mask & strikes.notna() & (strikes.sub(strike_f).abs() < 1e-6)
+    exp = df["expiry"].map(_norm_expiry)
+    mask = mask & (exp == expiry_key)
+    return df[mask]
+
+
 def add_new_recommendations(outcomes_df):
     if not os.path.exists(RESULTS_FILE):
         print("⚠️  options_v3_results.csv غير موجود — تخطي إضافة توصيات جديدة")
@@ -370,20 +402,6 @@ def add_new_recommendations(outcomes_df):
         if not ticker:
             continue
 
-        open_same = outcomes_df[
-            (outcomes_df["ticker"] == ticker) &
-            (outcomes_df["status"] == "open")
-        ]
-        if not open_same.empty:
-            continue
-
-        already = outcomes_df[
-            (outcomes_df["ticker"] == ticker) &
-            (outcomes_df["date"] == today)
-        ]
-        if not already.empty:
-            continue
-
         entry = float(r.get("entry_stock") or 0)
         if entry <= 0:
             continue
@@ -394,10 +412,24 @@ def add_new_recommendations(outcomes_df):
             prem_f = float(prem) if prem is not None else None
         except (TypeError, ValueError):
             prem_f = None
-        try:
-            strike_f = float(strike) if strike is not None else None
-        except (TypeError, ValueError):
-            strike_f = None
+        strike_f = _norm_strike(strike)
+        expiry_key = _norm_expiry(r.get("expiry", ""))
+
+        # لا تكرار لنفس العقد المفتوح (سهم+سترايك+انتهاء)
+        open_same = _same_contract(
+            outcomes_df[outcomes_df["status"] == "open"],
+            ticker, strike_f, expiry_key,
+        )
+        if not open_same.empty:
+            continue
+
+        # لا تكرار لنفس العقد بنفس اليوم
+        already = _same_contract(
+            outcomes_df[outcomes_df["date"].astype(str) == today],
+            ticker, strike_f, expiry_key,
+        )
+        if not already.empty:
+            continue
 
         new_row = {
             "date":           today,
@@ -427,6 +459,7 @@ def add_new_recommendations(outcomes_df):
             ignore_index=True,
         )
         added += 1
+        print(f"  + {ticker} strike={strike_f} expiry={expiry_key}")
 
     print(f"✅ أضفت {added} توصية جديدة")
     return outcomes_df

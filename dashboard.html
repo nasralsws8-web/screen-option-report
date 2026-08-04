@@ -955,7 +955,8 @@ function movePctFromEntry(entry, price, isCall) {
 }
 
 function historyRowKey(r) {
-  return `${r.date}-${r.ticker}`;
+  // مفتاح فريد لكل عقد: تاريخ + سهم + سترايك + انتهاء
+  return `${r.date}-${r.ticker}-${r.strike ?? ''}-${r.expiry ?? ''}`;
 }
 
 function updateHistoryLiveCell(ticker, price) {
