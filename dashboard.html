@@ -163,9 +163,11 @@
   مسح معتمد ≈ <strong>٤:٤٥ السعودية</strong> (٩:٤٥ ET) —
   لا تنفيذ عكس <strong>SPY</strong> —
   Premium <strong>≥ $1</strong> —
-  سبريد <strong>≤ 10%</strong>.
+  سبريد <strong>≤ 10%</strong> —
+  R:R حي <strong>≥ 1.3</strong> —
+  لا مطاردة بعد Entry.
   <span class="exec-badge" id="execWindowBadge">نافذة التنفيذ: …</span>
-  <div class="rule-warn" style="margin-top:4px">تحديث الأسعار اللحظي ≠ توصية جديدة. اعتمد المسح الكامل + الشروط أعلاه.</div>
+  <div class="rule-warn" style="margin-top:4px">تحديث الأسعار اللحظي ≠ توصية جديدة. لا ترقية WAIT→BUY عند المطاردة.</div>
 </div>
 
 <!-- Modal إعدادات التوكن -->
@@ -412,35 +414,113 @@ function planIsCall(plan) {
   return true;
 }
 
+const MAX_ENTRY_CHASE_PCT = 0.003; // 0.3% — مطابق للمحرك
+const INVERSE_ETFS = new Set([
+  'SQQQ', 'SOXS', 'SPXU', 'SDOW', 'FAZ', 'TECS', 'UVIX', 'VXX', 'UVXY', 'SVIX', 'VIXY',
+]);
+
+function liveStockRR(price, tp1, stop, isCall) {
+  price = parseFloat(price) || 0;
+  tp1 = parseFloat(tp1) || 0;
+  stop = parseFloat(stop) || 0;
+  if (price <= 0 || tp1 <= 0 || stop <= 0) return 0;
+  let risk, reward;
+  if (isCall) {
+    risk = price - stop;
+    reward = tp1 - price;
+  } else {
+    risk = stop - price;
+    reward = price - tp1;
+  }
+  if (risk <= 0 || reward <= 0) return 0;
+  return Math.min(reward / risk, 10);
+}
+
+function entryIsChased(price, entry, isCall) {
+  price = parseFloat(price) || 0;
+  entry = parseFloat(entry) || 0;
+  if (price <= 0 || entry <= 0) return false;
+  if (isCall) return price > entry * (1 + MAX_ENTRY_CHASE_PCT);
+  return price < entry * (1 - MAX_ENTRY_CHASE_PCT);
+}
+
 function evalLiveStatus(plan, price) {
   const entry = plan.entry, stop = plan.stop;
   const tp1 = plan.tp1, tp2 = plan.tp2, tp3 = plan.tp3;
   const isCall = planIsCall(plan);
-  if (!entry || entry <= 0) return { cls: 'status-entry-wait', label: '⏳ بانتظار بيانات Entry', dist: '', inTrade: false };
+  const liveRr = liveStockRR(price, tp1, stop, isCall);
+  const chased = entryIsChased(price, entry, isCall);
+  if (!entry || entry <= 0) {
+    return { cls: 'status-entry-wait', label: '⏳ بانتظار بيانات Entry', dist: '', inTrade: false, chased: false, liveRr: 0 };
+  }
 
   if (isCall) {
-    if (stop > 0 && price <= stop) return { cls: 'status-stop', label: '🛑 Stop — السعر تحت الإيقاف', dist: '', inTrade: false };
-    if (tp3 > 0 && price >= tp3) return { cls: 'status-tp', label: '🏆 TP3 — الهدف الثالث', dist: '', inTrade: true };
-    if (tp2 > 0 && price >= tp2) return { cls: 'status-tp', label: '✅✅ TP2 — الهدف الثاني', dist: '', inTrade: true };
-    if (tp1 > 0 && price >= tp1) return { cls: 'status-tp', label: '✅ TP1 — الهدف الأول', dist: '', inTrade: true };
+    if (stop > 0 && price <= stop) {
+      return { cls: 'status-stop', label: '🛑 Stop — السعر تحت الإيقاف', dist: '', inTrade: false, chased: false, liveRr };
+    }
+    if (tp3 > 0 && price >= tp3) {
+      return { cls: 'status-tp', label: '🏆 TP3 — الهدف الثالث', dist: `R:R حي 1:${liveRr.toFixed(1)}`, inTrade: true, chased, liveRr };
+    }
+    if (tp2 > 0 && price >= tp2) {
+      return { cls: 'status-tp', label: '✅✅ TP2 — الهدف الثاني', dist: `R:R حي 1:${liveRr.toFixed(1)}`, inTrade: true, chased, liveRr };
+    }
+    if (tp1 > 0 && price >= tp1) {
+      return { cls: 'status-tp', label: '✅ TP1 — الهدف الأول', dist: `R:R حي 1:${liveRr.toFixed(1)}`, inTrade: true, chased, liveRr };
+    }
+    if (chased) {
+      const toTp = tp1 > 0 ? ((tp1 - price) / price * 100).toFixed(1) : null;
+      return {
+        cls: 'status-entry-wait',
+        label: '⛔ مطاردة — فات Entry (لا تدخل متأخراً)',
+        dist: `R:R حي 1:${liveRr.toFixed(1)}` + (toTp ? ` · +${toTp}% إلى TP1` : ''),
+        inTrade: false, chased: true, liveRr,
+      };
+    }
     if (price >= entry) {
       const toTp = tp1 > 0 ? ((tp1 - price) / price * 100).toFixed(1) : null;
-      return { cls: 'status-in-trade', label: '🟢 داخل الصفقة — Entry تحقق', dist: toTp ? `+${toTp}% إلى TP1` : '', inTrade: true };
+      return {
+        cls: 'status-in-trade',
+        label: '🟢 داخل الصفقة — Entry تحقق',
+        dist: `R:R حي 1:${liveRr.toFixed(1)}` + (toTp ? ` · +${toTp}% إلى TP1` : ''),
+        inTrade: true, chased: false, liveRr,
+      };
     }
     const pct = ((entry - price) / price * 100).toFixed(1);
-    return { cls: 'status-entry-wait', label: '⏳ بانتظار Entry', dist: `${pct}% فوق السعر الحالي`, inTrade: false };
+    return { cls: 'status-entry-wait', label: '⏳ بانتظار Entry', dist: `${pct}% فوق السعر الحالي · خطة 1:${(plan.rr || 0).toFixed(1)}`, inTrade: false, chased: false, liveRr };
   }
 
-  if (stop > 0 && price >= stop) return { cls: 'status-stop', label: '🛑 Stop — السعر فوق الإيقاف', dist: '', inTrade: false };
-  if (tp3 > 0 && price <= tp3) return { cls: 'status-tp', label: '🏆 TP3 — الهدف الثالث', dist: '', inTrade: true };
-  if (tp2 > 0 && price <= tp2) return { cls: 'status-tp', label: '✅✅ TP2 — الهدف الثاني', dist: '', inTrade: true };
-  if (tp1 > 0 && price <= tp1) return { cls: 'status-tp', label: '✅ TP1 — الهدف الأول', dist: '', inTrade: true };
+  if (stop > 0 && price >= stop) {
+    return { cls: 'status-stop', label: '🛑 Stop — السعر فوق الإيقاف', dist: '', inTrade: false, chased: false, liveRr };
+  }
+  if (tp3 > 0 && price <= tp3) {
+    return { cls: 'status-tp', label: '🏆 TP3 — الهدف الثالث', dist: `R:R حي 1:${liveRr.toFixed(1)}`, inTrade: true, chased, liveRr };
+  }
+  if (tp2 > 0 && price <= tp2) {
+    return { cls: 'status-tp', label: '✅✅ TP2 — الهدف الثاني', dist: `R:R حي 1:${liveRr.toFixed(1)}`, inTrade: true, chased, liveRr };
+  }
+  if (tp1 > 0 && price <= tp1) {
+    return { cls: 'status-tp', label: '✅ TP1 — الهدف الأول', dist: `R:R حي 1:${liveRr.toFixed(1)}`, inTrade: true, chased, liveRr };
+  }
+  if (chased) {
+    const toTp = tp1 > 0 ? ((price - tp1) / price * 100).toFixed(1) : null;
+    return {
+      cls: 'status-entry-wait',
+      label: '⛔ مطاردة — فات Entry (لا تدخل متأخراً)',
+      dist: `R:R حي 1:${liveRr.toFixed(1)}` + (toTp ? ` · ${toTp}% إلى TP1` : ''),
+      inTrade: false, chased: true, liveRr,
+    };
+  }
   if (price <= entry) {
     const toTp = tp1 > 0 ? ((price - tp1) / price * 100).toFixed(1) : null;
-    return { cls: 'status-in-trade', label: '🟢 داخل الصفقة — Entry تحقق', dist: toTp ? `${toTp}% إلى TP1` : '', inTrade: true };
+    return {
+      cls: 'status-in-trade',
+      label: '🟢 داخل الصفقة — Entry تحقق',
+      dist: `R:R حي 1:${liveRr.toFixed(1)}` + (toTp ? ` · ${toTp}% إلى TP1` : ''),
+      inTrade: true, chased: false, liveRr,
+    };
   }
   const pct = ((price - entry) / price * 100).toFixed(1);
-  return { cls: 'status-entry-wait', label: '⏳ بانتظار Entry', dist: `${pct}% تحت السعر الحالي`, inTrade: false };
+  return { cls: 'status-entry-wait', label: '⏳ بانتظار Entry', dist: `${pct}% تحت السعر الحالي · خطة 1:${(plan.rr || 0).toFixed(1)}`, inTrade: false, chased: false, liveRr };
 }
 
 function passesOpsRules(plan) {
@@ -448,26 +528,34 @@ function passesOpsRules(plan) {
   const spread = parseFloat(plan.spread) || 0;
   const regime = String(plan.spyRegime || 'NEUTRAL').toUpperCase();
   const dir = String(plan.direction || '').toUpperCase();
+  const ticker = String(plan.ticker || '').toUpperCase();
   const isPut = dir.includes('PUT');
   const isCall = dir.includes('CALL');
+  const inverse = INVERSE_ETFS.has(ticker);
   if (prem > 0 && prem < 1.0) return { ok: false, why: 'Premium < $1' };
   if (spread > 0.10) return { ok: false, why: 'سبريد > 10%' };
-  if (regime === 'BULL' && isPut) return { ok: false, why: 'PUT ضد SPY صاعد' };
-  if (regime === 'BEAR' && isCall) return { ok: false, why: 'CALL ضد SPY هابط' };
+  if (inverse) {
+    if (regime === 'BULL' && isCall) return { ok: false, why: 'CALL على صندوق عكسي ضد SPY صاعد' };
+    if (regime === 'BEAR' && isPut) return { ok: false, why: 'PUT على صندوق عكسي ضد SPY هابط' };
+  } else {
+    if (regime === 'BULL' && isPut) return { ok: false, why: 'PUT ضد SPY صاعد' };
+    if (regime === 'BEAR' && isCall) return { ok: false, why: 'CALL ضد SPY هابط' };
+  }
   if (!isExecWindow()) return { ok: false, why: 'قبل نافذة ٤:٤٥' };
   return { ok: true, why: '' };
 }
 
 function effectiveLiveRec(plan, st) {
   if (plan.rec === 'AVOID' || st.cls === 'status-stop') return plan.rec;
+  // مطاردة → لا BUY ظاهر (حتى لو المسح القديم قال BUY)
+  if (st.chased) return 'WAIT';
   const rules = passesOpsRules(plan);
-  // ترقية WAIT→BUY فقط إذا الشروط الكاملة + قواعد التشغيل
-  const rr = parseFloat(plan.rr) || 0;
   if (!rules.ok) {
     if (plan.rec === 'BUY') return 'WAIT';
     return plan.rec;
   }
-  if (st.inTrade && plan.conf >= 55 && rr >= 1.3 && (plan.rec === 'WAIT' || plan.rec === 'BUY')) return 'BUY';
+  // لا ترقية WAIT→BUY من السعر اللحظي — المسح الكامل فقط يمنح BUY
+  // (سابقاً: inTrade + conf/R:R كان يرقّي ويُضخّم المطاردة)
   return plan.rec;
 }
 
@@ -498,13 +586,20 @@ function updateLiveTradeStatus(ticker, price) {
   box.className = 'live-status ' + st.cls;
   box.innerHTML = st.label + (st.dist ? `<div class="live-dist">${st.dist}</div>` : '');
 
+  const rrEl = document.getElementById('rr-live-' + ticker);
+  if (rrEl) {
+    const planRr = parseFloat(plan.rr) || 0;
+    rrEl.textContent = `R:R خطة 1:${planRr.toFixed(1)} · حي 1:${(st.liveRr || 0).toFixed(1)}`;
+    rrEl.style.color = st.chased || st.liveRr < 1.3 ? '#f85149' : '#e3b341';
+  }
+
   const eff = effectiveLiveRec(plan, st);
   const badge = document.getElementById('rec-badge-' + ticker);
   const card  = document.getElementById('card-' + ticker);
   if (badge) {
-    const promoted = eff === 'BUY' && plan.rec === 'WAIT';
-    badge.className = 'rec-badge ' + eff + (promoted ? ' live' : '');
-    badge.textContent = promoted ? 'BUY ⚡' : eff;
+    // لا تظهر "BUY ⚡" — الترقية اللحظية أُلغيت لمنع المطاردة
+    badge.className = 'rec-badge ' + eff;
+    badge.textContent = eff;
   }
   if (card) {
     card.className = 'card ' + (eff === 'BUY' ? 'buy-card' : eff === 'WAIT' ? 'wait-card' : 'avoid-card');
@@ -517,6 +612,7 @@ function registerTradePlans(rows) {
   rows.forEach(r => {
     const entry = parseFloat(r.entry_stock) || 0;
     tradePlans[r.Ticker] = {
+      ticker: r.Ticker || '',
       direction: r.direction || '',
       entry: entry,
       stop: parseFloat(r.stop_stock) || 0,
@@ -526,6 +622,7 @@ function registerTradePlans(rows) {
       rec: r.recommendation || 'AVOID',
       conf: parseInt(r.confidence) || 0,
       rr: parseFloat(r.tp1_rr) || 0,
+      rrLive: parseFloat(r.tp1_rr_live) || 0,
       prem: parseFloat(r.premium) || 0,
       spread: parseFloat(r.spread_pct) || 0,
       spyRegime: r.spy_regime || 'NEUTRAL',
@@ -705,8 +802,15 @@ function buildCard(r) {
   const recNote = r.rec_note || '';
   const spyRegime = r.spy_regime || '';
   const premWarn = prem > 0 && prem < 1.0;
-  const againstSpy = (String(spyRegime).toUpperCase() === 'BULL' && isPut) ||
-    (String(spyRegime).toUpperCase() === 'BEAR' && dir.includes('CALL'));
+  const tickerU = String(r.Ticker || '').toUpperCase();
+  const inverse = INVERSE_ETFS.has(tickerU);
+  const againstSpy = inverse
+    ? ((String(spyRegime).toUpperCase() === 'BULL' && dir.includes('CALL')) ||
+       (String(spyRegime).toUpperCase() === 'BEAR' && isPut))
+    : ((String(spyRegime).toUpperCase() === 'BULL' && isPut) ||
+       (String(spyRegime).toUpperCase() === 'BEAR' && dir.includes('CALL')));
+  const planRr = parseFloat(r.tp1_rr) || 0;
+  const liveRrScan = parseFloat(r.tp1_rr_live) || 0;
 
   return `
   <div class="card ${recClass(rec)}" id="card-${r.Ticker}">
@@ -720,6 +824,9 @@ function buildCard(r) {
         <span class="rec-badge ${rec}" id="rec-badge-${r.Ticker}">${rec}</span>
         <div style="font-size:11px;color:${dirColor};margin-top:4px;font-weight:700">${dirLabel}</div>
         <div style="font-size:11px;color:#8b949e;margin-top:2px">Score: ${r.Score||0}</div>
+        <div style="font-size:10px;color:#e3b341;margin-top:2px" id="rr-live-${r.Ticker}">
+          R:R خطة 1:${planRr.toFixed(1)}${liveRrScan ? ` · حي 1:${liveRrScan.toFixed(1)}` : ''}
+        </div>
         ${spyRegime ? `<div style="font-size:10px;color:#58a6ff;margin-top:2px">SPY: ${spyRegime}</div>` : ''}
       </div>
     </div>

@@ -79,12 +79,19 @@ MANUAL_TICKERS_FILE = "manual_tickers.txt"
 DEFAULT_SCREENER_SOURCE = "both"
 
 RISK_FREE_RATE   = 0.053   # معدل الفائدة لـ Black-Scholes
-MIN_RR_TO_BUY    = 1.3     # أقل R:R لإعطاء BUY
+MIN_RR_TO_BUY    = 1.3     # أقل R:R لإعطاء BUY (من السعر الحي)
 MIN_CONF_TO_BUY  = 55      # أقل Confidence% لإعطاء BUY
+MAX_ENTRY_CHASE_PCT = 0.003  # إذا تجاوز السعر Entry بأكثر من 0.3% → مطاردة (لا BUY)
 
 # قواعد التشغيل المتفق عليها (2026-07-31)
 REQUIRE_SPY_ALIGNMENT = True   # لا PUT والسوق صاعد / لا CALL والسوق هابط
 EXEC_AFTER_OPEN_MIN   = 15     # دقائق بعد الافتتاح قبل اعتماد التنفيذ (4:45 السعودية)
+
+# صناديق عكسية — CALL عليها = رهان هبوط السوق (والعكس للـ PUT)
+INVERSE_ETFS = frozenset({
+    "SQQQ", "SOXS", "SPXU", "SDOW", "FAZ", "TECS",
+    "UVIX", "VXX", "UVXY", "SVIX", "VIXY",
+})
 
 FINVIZ_FILTERS = {
     "Option/Short":    "Optionable",
@@ -150,11 +157,23 @@ def classify_spy_regime(tech, price):
     return "NEUTRAL"
 
 
-def spy_alignment_ok(is_call, spy_regime):
-    """لا نعكس السوق: PUT مرفوض إذا SPY صاعد، CALL مرفوض إذا SPY هابط."""
+def is_inverse_ticker(ticker):
+    return str(ticker or "").upper().strip() in INVERSE_ETFS
+
+
+def spy_alignment_ok(is_call, spy_regime, ticker=None):
+    """لا نعكس السوق: PUT مرفوض إذا SPY صاعد، CALL مرفوض إذا SPY هابط.
+    الصناديق العكسية تُعامل باتجاه معكوس (CALL على SQQQ = رهان هبوط)."""
     if not REQUIRE_SPY_ALIGNMENT:
         return True, ""
     regime = str(spy_regime or "NEUTRAL").upper()
+    inv = is_inverse_ticker(ticker)
+    if inv:
+        if regime == "BULL" and is_call:
+            return False, "CALL على صندوق عكسي مرفوض — SPY صاعد"
+        if regime == "BEAR" and not is_call:
+            return False, "PUT على صندوق عكسي مرفوض — SPY هابط"
+        return True, ""
     if regime == "BULL" and not is_call:
         return False, "PUT مرفوض — SPY صاعد (فلتر اتجاه)"
     if regime == "BEAR" and is_call:
@@ -467,6 +486,37 @@ def stock_rr(entry, target, stop, is_call):
     if risk <= 0 or reward <= 0:
         return 0.0
     return round(min(reward / risk, 10.0), 1)
+
+
+def live_stock_rr(price, tp1, stop, is_call):
+    """R:R من السعر الحالي إلى TP1/Stop — يمنع تضخيم R:R بعد تجاوز Entry."""
+    try:
+        price, tp1, stop = float(price), float(tp1), float(stop)
+    except (TypeError, ValueError):
+        return 0.0
+    if price <= 0 or tp1 <= 0 or stop <= 0:
+        return 0.0
+    if is_call:
+        risk, reward = price - stop, tp1 - price
+    else:
+        risk, reward = stop - price, price - tp1
+    if risk <= 0 or reward <= 0:
+        return 0.0
+    return round(min(reward / risk, 10.0), 1)
+
+
+def entry_is_chased(price, entry, is_call, max_pct=None):
+    """True إذا السعر تجاوز Entry بأكثر من الحد → مطاردة متأخرة."""
+    max_pct = MAX_ENTRY_CHASE_PCT if max_pct is None else max_pct
+    try:
+        price, entry = float(price), float(entry)
+    except (TypeError, ValueError):
+        return False
+    if price <= 0 or entry <= 0:
+        return False
+    if is_call:
+        return price > entry * (1.0 + max_pct)
+    return price < entry * (1.0 - max_pct)
 
 
 def parse_price_num(val):
@@ -1343,10 +1393,15 @@ def compute_trade_plan(r, tech):
 
     # ── Recommendation ────────────────────────────────────────────────────
     trend    = tech.get("trend", "")
-    tp1_rr   = plan["tp1_rr"] or 0
+    tp1_rr   = plan["tp1_rr"] or 0  # R:R من Entry (مرجع الخطة فقط)
     best_rr  = max(tp1_rr, plan["tp2_rr"] or 0, plan["tp3_rr"] or 0)
     plan["best_rr"] = round(best_rr, 1)
     conf     = plan["confidence"]
+    ticker   = r.get("Ticker")
+
+    # R:R حي من السعر الحالي — هذا ما يُستخدم لبوابة BUY (يمنع R:R 9.0 بعد المطاردة)
+    live_rr = live_stock_rr(price, plan.get("tp1_stock"), plan.get("stop_stock"), is_call)
+    plan["tp1_rr_live"] = live_rr
 
     # الاتجاه موافق للصفقة
     trend_ok = (is_call and "BULLISH" in trend) or (not is_call and "BEARISH" in trend)
@@ -1356,35 +1411,39 @@ def compute_trade_plan(r, tech):
     # إذا كان هناك Earnings قبل الانتهاء → AVOID دائماً
     earn_risk = r.get("earn_before_expiry", False)
 
-    # Entry تحقق = تأكيد عملي للاتجاه (CALL: سعر ≥ entry | PUT: سعر ≤ entry)
+    # Entry تحقق = قرب Entry فقط (ليس مطاردة بعد تجاوزه)
     entry_s = float(plan.get("entry_stock") or 0)
+    chased = entry_is_chased(price, entry_s, is_call)
+    plan["entry_chased"] = chased
     entry_hit_now = False
-    if entry_s > 0:
+    if entry_s > 0 and not chased:
         entry_hit_now = (is_call and price >= entry_s) or (not is_call and price <= entry_s)
 
     # سيولة كافية قبل أي BUY
-    min_oi = profile_limit(r.get("Ticker"), "min_oi", MIN_OI)
+    min_oi = profile_limit(ticker, "min_oi", MIN_OI)
     oi_ok = effective_oi(r.get("oi"), r.get("opt_vol"), min_oi) >= min_oi
     sp = float(r.get("spread_pct") if r.get("spread_pct") is not None else 99)
-    max_sp = profile_limit(r.get("Ticker"), "max_spread_pct", MAX_SPREAD_PCT)
+    max_sp = profile_limit(ticker, "max_spread_pct", MAX_SPREAD_PCT)
     spread_ok = sp <= max_sp
     liquid_ok = oi_ok and spread_ok
 
-    # قواعد التشغيل: برايميوم ≥ $1 + فلتر اتجاه SPY
-    prem_min = profile_limit(r.get("Ticker"), "prem_min", TARGET_PREM_MIN)
+    # قواعد التشغيل: برايميوم ≥ $1 + فلتر اتجاه SPY (+ صناديق عكسية)
+    prem_min = profile_limit(ticker, "prem_min", TARGET_PREM_MIN)
     prem_ok = premium >= prem_min
     spy_regime = r.get("spy_regime") or "NEUTRAL"
-    align_ok, align_note = spy_alignment_ok(is_call, spy_regime)
+    align_ok, align_note = spy_alignment_ok(is_call, spy_regime, ticker)
     plan["spy_regime"] = spy_regime
     plan["spy_align_ok"] = align_ok
 
-    # BUY صارم: ثقة ≥55 + tp1_rr ≥1.3 + سيولة + prem + مع اتجاه SPY
+    # BUY صارم: ثقة ≥55 + R:R حي ≥1.3 + سيولة + prem + مع اتجاه SPY + بدون مطاردة
     buy_ready = (
         conf >= MIN_CONF_TO_BUY
-        and tp1_rr >= MIN_RR_TO_BUY
+        and live_rr >= MIN_RR_TO_BUY
         and liquid_ok
         and prem_ok
         and align_ok
+        and not chased
+        and dte > 0
     )
 
     if earn_risk:
@@ -1393,6 +1452,12 @@ def compute_trade_plan(r, tech):
     elif not align_ok:
         plan["recommendation"] = "WAIT"
         plan["rec_note"]       = align_note + " — مراقبة فقط"
+    elif chased:
+        plan["recommendation"] = "WAIT"
+        plan["rec_note"]       = (
+            f"مطاردة — السعر تجاوز Entry (${entry_s:.2f}) "
+            f"وR:R الحي 1:{live_rr:.1f} — لا تدخل متأخراً"
+        )
     elif not prem_ok:
         plan["recommendation"] = "WAIT"
         plan["rec_note"]       = f"Premium ${premium:.2f} تحت الحد ${prem_min:.2f} — الوضع الأساسي ≥$1"
@@ -1402,21 +1467,26 @@ def compute_trade_plan(r, tech):
     elif not trade_plan_is_valid(plan, price, is_call):
         plan["recommendation"] = "WAIT"
         plan["rec_note"]       = "خطة الدخول غير متسقة مع السعر الحالي — انتظر"
+    elif dte == 0:
+        plan["recommendation"] = "WAIT"
+        plan["rec_note"]       = "0DTE — لا BUY من المسح (تنفيذ يدوي فقط إن لزم)"
     elif buy_ready and (trend_ok or mixed_ok):
         plan["recommendation"] = "BUY"
         plan["rec_note"]       = ("الاتجاه والزخم والسيولة مناسبة"
                                    if trend_ok else "اختراق قوي رغم الاتجاه المختلط")
     elif buy_ready and entry_hit_now:
-        # Entry تحقق يُسمح به فقط إذا الشروط الكاملة مكتملة
+        # Entry تحقق يُسمح به فقط قرب المستوى + شروط BUY (بدون مطاردة)
         plan["recommendation"] = "BUY"
         plan["rec_note"]       = "Entry تحقق + شروط BUY مكتملة"
-    elif conf >= MIN_CONF_TO_BUY and tp1_rr >= MIN_RR_TO_BUY:
+    elif conf >= MIN_CONF_TO_BUY and (live_rr >= MIN_RR_TO_BUY or tp1_rr >= MIN_RR_TO_BUY):
         plan["recommendation"] = "WAIT"
         if not liquid_ok:
             plan["rec_note"] = "سيولة ضعيفة — راقب"
+        elif live_rr < MIN_RR_TO_BUY:
+            plan["rec_note"] = f"R:R الحي 1:{live_rr:.1f} ضعيف — انتظر رجوع قرب Entry"
         else:
             plan["rec_note"] = "زخم جيد — راقب تأكيد الاتجاه"
-    elif conf >= 50 and tp1_rr >= 1.0:
+    elif conf >= 50 and (live_rr >= 1.0 or tp1_rr >= 1.0):
         plan["recommendation"] = "WAIT"
         plan["rec_note"]       = "انتظر تأكيد الاختراق"
     else:
@@ -1597,6 +1667,7 @@ SAVE_COLS = [
     "atr_pct", "gap_pct", "RVOL", "pm_high", "pm_low", "pm_volume",
     "expiry", "dte_num", "direction", "earnings", "float_shares", "avg_vol",
     "entry_stock", "stop_stock", "tp1_stock", "tp2_stock", "tp3_stock", "tp1_rr",
+    "tp1_rr_live",
     "entry_note", "fh_gap_pct", "fh_pm_bullish", "fh_pm_strong", "fh_pm_note",
     "spy_regime", "rec_note",
     "Score", "recommendation", "confidence", "Notes", "scanned_at",
@@ -1868,6 +1939,7 @@ def process_candidates(candidates_df, show_progress=True):
         row["tp2_stock"]      = plan.get("tp2_stock")
         row["tp3_stock"]      = plan.get("tp3_stock")
         row["tp1_rr"]         = plan.get("tp1_rr")
+        row["tp1_rr_live"]    = plan.get("tp1_rr_live")
         row["entry_note"]     = plan.get("entry_note", "")
         row["rec_note"]       = plan.get("rec_note", "")
         row["spy_regime"]     = plan.get("spy_regime", row_regime)
