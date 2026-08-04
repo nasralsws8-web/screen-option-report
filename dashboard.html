@@ -140,6 +140,17 @@
   .spy-title { font-size: 26px; font-weight: 800; color: #58a6ff; }
   .spy-sub { font-size: 12px; color: #8b949e; margin-top: 4px; }
   .spy-empty { text-align: center; padding: 28px; color: #8b949e; font-size: 13px; border: 1px dashed #30363d; border-radius: 12px; margin-bottom: 20px; }
+
+  .stale-banner {
+    display: none; margin: 12px 24px 0; padding: 14px 16px; border-radius: 10px;
+    font-size: 13px; line-height: 1.7; font-weight: 600;
+  }
+  .stale-banner.show { display: block; }
+  .stale-banner.soft { background: #3d2d00; border: 1px solid #e3b341; color: #e3b341; }
+  .stale-banner.hard { background: #3d1a1a; border: 1px solid #f85149; color: #f85149; }
+  .stale-banner .stale-sub { font-weight: 500; font-size: 12px; opacity: 0.9; margin-top: 4px; }
+  .card.stale-muted { opacity: 0.72; }
+  .card.stale-muted.buy-card { border-left-color: #e3b341; }
 </style>
 </head>
 <body>
@@ -169,6 +180,8 @@
   <span class="exec-badge" id="execWindowBadge">نافذة التنفيذ: …</span>
   <div class="rule-warn" style="margin-top:4px">تحديث الأسعار اللحظي ≠ توصية جديدة. المسح الكامل فقط يمنح BUY — لا ترقية لحظية.</div>
 </div>
+
+<div class="stale-banner" id="staleBanner" role="alert"></div>
 
 <!-- Modal إعدادات التوكن -->
 <div class="modal-overlay" id="settingsModal">
@@ -218,6 +231,10 @@
 
 <script>
 const CSV_URL = 'https://raw.githubusercontent.com/nasralsws8-web/screen-option-report/main/options_v3_results.csv';
+/** أثناء الجلسة: أقدم من هذا = قديم (price_update كل ~15د) */
+const STALE_SOFT_MS = 45 * 60 * 1000;
+/** أقصى عمر مقبول لنفس جلسة التداول */
+const STALE_HARD_MS = 18 * 60 * 60 * 1000;
 let autoTimer = null;
 let quoteTimer = null;
 let livePrices = {};
@@ -228,13 +245,122 @@ let outcomeRows = []; // صفوف السجل — للتحديث الحي
 let outcomeOpenTickers = [];
 let wsReconnectMs = 3000;
 let lastWsMsgAt = 0;
+let lastScanFreshness = { level: 'ok', ageMs: 0, scanDate: null };
+
+function parseScanDate(scannedAt) {
+  if (!scannedAt) return null;
+  try {
+    const d = new Date(String(scannedAt).trim().replace(' UTC', 'Z'));
+    return isNaN(d.getTime()) ? null : d;
+  } catch (_) { return null; }
+}
+
+/** تاريخ جلسة التداول التقريبي (يوم UTC للجلسة الأمريكية النهارية). */
+function tradingSessionKey(date = new Date()) {
+  const mins = date.getUTCHours() * 60 + date.getUTCMinutes();
+  // قبل 10:00 UTC ≈ ما زلنا نعتبرها جلسة الأمس (بعد إغلاق أمريكا)
+  const base = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+  if (mins < 10 * 60) base.setUTCDate(base.getUTCDate() - 1);
+  // الجمعة بعد الإغلاق / السبت / الأحد → آخر جلسة جمعة
+  let day = base.getUTCDay(); // 0=Sun
+  if (day === 0) base.setUTCDate(base.getUTCDate() - 2);
+  else if (day === 6) base.setUTCDate(base.getUTCDate() - 1);
+  return base.toISOString().slice(0, 10);
+}
+
+/**
+ * مستوى حداثة المسح:
+ * ok | soft (تأخير داخل الجلسة) | hard (جلسة سابقة / عمر كبير / بدون تاريخ)
+ */
+function getScanFreshness(scannedAt) {
+  const d = parseScanDate(scannedAt);
+  if (!d) return { level: 'hard', ageMs: Infinity, scanDate: null, reason: 'لا يوجد scanned_at' };
+  const ageMs = Date.now() - d.getTime();
+  const scanSession = tradingSessionKey(d);
+  const nowSession = tradingSessionKey(new Date());
+  if (scanSession !== nowSession || ageMs > STALE_HARD_MS) {
+    return {
+      level: 'hard',
+      ageMs,
+      scanDate: d,
+      reason: scanSession !== nowSession
+        ? `المسح من جلسة ${scanSession} — الجلسة الحالية ${nowSession}`
+        : `عمر المسح ${(ageMs / 3600000).toFixed(1)} ساعة`,
+    };
+  }
+  if (isUsMarketHours() && ageMs > STALE_SOFT_MS) {
+    return {
+      level: 'soft',
+      ageMs,
+      scanDate: d,
+      reason: `آخر مسح منذ ${Math.round(ageMs / 60000)} دقيقة (المتوقع ≤45د أثناء الجلسة)`,
+    };
+  }
+  // بعد الإغلاق لنفس اليوم: عرض مسموح كمراقبة فقط — لا BUY تنفيذي
+  if (!isUsMarketHours() && !isUsMarketHoursLoose()) {
+    return {
+      level: 'soft',
+      ageMs,
+      scanDate: d,
+      reason: 'السوق مغلق — آخر مسح لليوم للعرض فقط (لا تنفيذ)',
+    };
+  }
+  return { level: 'ok', ageMs, scanDate: d, reason: '' };
+}
 
 function isScanStale(scannedAt) {
-  try {
-    const d = new Date(scannedAt.replace(' UTC', 'Z'));
-    if (isNaN(d)) return false;
-    return (Date.now() - d.getTime()) > 30 * 60 * 1000;
-  } catch (_) { return false; }
+  const f = getScanFreshness(scannedAt);
+  return f.level !== 'ok';
+}
+
+function formatAge(ageMs) {
+  if (!Number.isFinite(ageMs)) return '؟';
+  const m = Math.round(ageMs / 60000);
+  if (m < 60) return `${m} دقيقة`;
+  return `${(m / 60).toFixed(1)} ساعة`;
+}
+
+function updateStaleBanner(freshness) {
+  const el = document.getElementById('staleBanner');
+  if (!el) return;
+  lastScanFreshness = freshness;
+  if (freshness.level === 'ok') {
+    el.className = 'stale-banner';
+    el.innerHTML = '';
+    return;
+  }
+  if (freshness.level === 'hard') {
+    el.className = 'stale-banner show hard';
+    el.innerHTML = `
+      ⛔ بيانات قديمة — جلسة سابقة
+      <div class="stale-sub">${freshness.reason || ''} · عمرها ${formatAge(freshness.ageMs)}.
+      كل توصيات BUY حُوّلت إلى WAIT. لا تنفّذ حتى مسح جديد (⚡ تشغيل يدوي أو ٤:٤٥).</div>`;
+    return;
+  }
+  el.className = 'stale-banner show soft';
+  el.innerHTML = `
+    ⚠️ بيانات غير حديثة بما يكفي للتنفيذ
+    <div class="stale-sub">${freshness.reason || ''} · BUY مخفّض إلى WAIT للسلامة.
+    حدّث الصفحة أو شغّل مسح جديد.</div>`;
+}
+
+/** إذا المسح قديم: لا نعرض BUY كتنفيذ — نخفّضه إلى WAIT. */
+function applyStaleRecGuard(rows, freshness) {
+  if (!freshness || freshness.level === 'ok') return rows;
+  return rows.map(r => {
+    if ((r.recommendation || '') !== 'BUY') return r;
+    const out = { ...r, recommendation: 'WAIT' };
+    const note = freshness.level === 'hard'
+      ? 'بيانات من جلسة سابقة — لا تنفيذ حتى مسح جديد'
+      : 'مسح غير حديث — مراقبة فقط (لا تنفيذ)';
+    out.rec_note = note + (r.rec_note ? ' · ' + r.rec_note : '');
+    const plan = tradePlans[r.Ticker];
+    if (plan) {
+      plan.rec = 'WAIT';
+      plan.recNote = out.rec_note;
+    }
+    return out;
+  });
 }
 
 function isUsMarketHours() {
@@ -547,6 +673,10 @@ function passesOpsRules(plan) {
 
 function effectiveLiveRec(plan, st) {
   if (plan.rec === 'AVOID' || st.cls === 'status-stop') return plan.rec;
+  // بيانات قديمة / جلسة سابقة → لا BUY ظاهر أبداً
+  if (lastScanFreshness && lastScanFreshness.level !== 'ok') {
+    return plan.rec === 'AVOID' ? 'AVOID' : 'WAIT';
+  }
   // مطاردة / 0DTE / R:R حي ضعيف → لا BUY ظاهر
   if (st.chased) return 'WAIT';
   if (plan.dte === 0) return plan.rec === 'AVOID' ? 'AVOID' : 'WAIT';
@@ -846,8 +976,10 @@ function buildCard(r) {
   const planRr = parseFloat(r.tp1_rr) || 0;
   const liveRrScan = parseFloat(r.tp1_rr_live) || 0;
 
+  const staleCls = (lastScanFreshness && lastScanFreshness.level !== 'ok') ? ' stale-muted' : '';
+
   return `
-  <div class="card ${recClass(rec)}" id="card-${r.Ticker}">
+  <div class="card ${recClass(rec)}${staleCls}" id="card-${r.Ticker}">
     <div class="card-header">
       <div>
         <div class="ticker">${r.Ticker}</div>
@@ -1002,7 +1134,7 @@ async function loadData() {
 
   try {
     const url = CSV_URL + '?t=' + Date.now();
-    const resp = await fetch(url);
+    const resp = await fetch(url, { cache: 'no-store', headers: { 'Cache-Control': 'no-cache' } });
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const text = await resp.text();
     if (!text.trim() || text.trim().split('\n').length < 2) {
@@ -1010,9 +1142,14 @@ async function loadData() {
     }
 
     const rowsRaw = parseCSV(text);
+    const scanTs = rowsRaw.find(r => r.scanned_at)?.scanned_at;
+    const freshness = getScanFreshness(scanTs);
+    updateStaleBanner(freshness);
+
     registerTradePlans(rowsRaw);
-    const rows = applyScanGuards(rowsRaw);
-    registerTradePlans(rows); // بعد تصحيح المطاردة/R:R
+    let rows = applyScanGuards(rowsRaw);
+    rows = applyStaleRecGuard(rows, freshness);
+    registerTradePlans(rows); // بعد تصحيح المطاردة/R:R + حداثة المسح
     const { spy, rest } = splitSpyRows(rows);
 
     renderSpySection(spy);
@@ -1027,10 +1164,13 @@ async function loadData() {
     document.getElementById('statAvoid').textContent = avoid;
     document.getElementById('statsBar').style.display = 'flex';
 
-    const scanTs = rows.find(r => r.scanned_at)?.scanned_at;
-    const staleWarn = scanTs && isScanStale(scanTs);
+    const ageLabel = freshness.scanDate ? ` · عمرها ${formatAge(freshness.ageMs)}` : '';
+    const stampColor = freshness.level === 'hard' ? '#f85149'
+      : freshness.level === 'soft' ? '#e3b341' : '#3fb950';
+    const stampTag = freshness.level === 'hard' ? '⛔ جلسة سابقة'
+      : freshness.level === 'soft' ? '⚠️ غير حديث للتنفيذ' : '✓ حديث';
     document.getElementById('lastUpdate').innerHTML = scanTs
-      ? `آخر مسح: ${scanTs}${staleWarn ? ' <span style="color:#f85149">⚠️ بيانات قديمة</span>' : ''}`
+      ? `آخر مسح: ${scanTs}<span style="color:${stampColor}"> ${stampTag}${ageLabel}</span>`
       : 'آخر تحديث: ' + new Date().toLocaleTimeString('ar-SA');
 
     renderCards(rest);
@@ -1152,7 +1292,7 @@ async function loadHistory(force) {
   const container = document.getElementById('historyContent');
   container.innerHTML = '<div class="loading"><div class="spinner"></div><br>جاري تحميل السجل...</div>';
   try {
-    const resp = await fetch(OUTCOMES_URL + '?t=' + Date.now());
+    const resp = await fetch(OUTCOMES_URL + '?t=' + Date.now(), { cache: 'no-store' });
     if (!resp.ok) throw new Error('ما تم تحميل السجل');
     const text = await resp.text();
     const rows = parseCSV(text).filter(r => r.ticker);
@@ -1389,7 +1529,7 @@ async function triggerAndWait() {
 
 async function prefetchOutcomes() {
   try {
-    const resp = await fetch(OUTCOMES_URL + '?t=' + Date.now());
+    const resp = await fetch(OUTCOMES_URL + '?t=' + Date.now(), { cache: 'no-store' });
     if (!resp.ok) return;
     const rows = parseCSV(await resp.text()).filter(r => r.ticker);
     outcomeRows = rows;
