@@ -167,7 +167,7 @@
   R:R حي <strong>≥ 1.3</strong> —
   لا مطاردة بعد Entry.
   <span class="exec-badge" id="execWindowBadge">نافذة التنفيذ: …</span>
-  <div class="rule-warn" style="margin-top:4px">تحديث الأسعار اللحظي ≠ توصية جديدة. لا ترقية WAIT→BUY عند المطاردة.</div>
+  <div class="rule-warn" style="margin-top:4px">تحديث الأسعار اللحظي ≠ توصية جديدة. المسح الكامل فقط يمنح BUY — لا ترقية لحظية.</div>
 </div>
 
 <!-- Modal إعدادات التوكن -->
@@ -547,15 +547,16 @@ function passesOpsRules(plan) {
 
 function effectiveLiveRec(plan, st) {
   if (plan.rec === 'AVOID' || st.cls === 'status-stop') return plan.rec;
-  // مطاردة → لا BUY ظاهر (حتى لو المسح القديم قال BUY)
+  // مطاردة / 0DTE / R:R حي ضعيف → لا BUY ظاهر
   if (st.chased) return 'WAIT';
+  if (plan.dte === 0) return plan.rec === 'AVOID' ? 'AVOID' : 'WAIT';
+  if (st.liveRr != null && st.liveRr < 1.3 && plan.rec === 'BUY') return 'WAIT';
   const rules = passesOpsRules(plan);
   if (!rules.ok) {
     if (plan.rec === 'BUY') return 'WAIT';
     return plan.rec;
   }
   // لا ترقية WAIT→BUY من السعر اللحظي — المسح الكامل فقط يمنح BUY
-  // (سابقاً: inTrade + conf/R:R كان يرقّي ويُضخّم المطاردة)
   return plan.rec;
 }
 
@@ -611,6 +612,9 @@ function registerTradePlans(rows) {
   tradePlans = {};
   rows.forEach(r => {
     const entry = parseFloat(r.entry_stock) || 0;
+    const dteRaw = r.dte_num;
+    const dte = (dteRaw === 0 || dteRaw === '0') ? 0
+      : (dteRaw === undefined || dteRaw === null || dteRaw === '' ? null : parseInt(dteRaw, 10));
     tradePlans[r.Ticker] = {
       ticker: r.Ticker || '',
       direction: r.direction || '',
@@ -623,6 +627,7 @@ function registerTradePlans(rows) {
       conf: parseInt(r.confidence) || 0,
       rr: parseFloat(r.tp1_rr) || 0,
       rrLive: parseFloat(r.tp1_rr_live) || 0,
+      dte: Number.isFinite(dte) ? dte : null,
       prem: parseFloat(r.premium) || 0,
       spread: parseFloat(r.spread_pct) || 0,
       spyRegime: r.spy_regime || 'NEUTRAL',
@@ -825,7 +830,7 @@ function buildCard(r) {
         <div style="font-size:11px;color:${dirColor};margin-top:4px;font-weight:700">${dirLabel}</div>
         <div style="font-size:11px;color:#8b949e;margin-top:2px">Score: ${r.Score||0}</div>
         <div style="font-size:10px;color:#e3b341;margin-top:2px" id="rr-live-${r.Ticker}">
-          R:R خطة 1:${planRr.toFixed(1)}${liveRrScan ? ` · حي 1:${liveRrScan.toFixed(1)}` : ''}
+          R:R خطة 1:${planRr.toFixed(1)}${Number.isFinite(liveRrScan) ? ` · حي 1:${liveRrScan.toFixed(1)}` : ''}
         </div>
         ${spyRegime ? `<div style="font-size:10px;color:#58a6ff;margin-top:2px">SPY: ${spyRegime}</div>` : ''}
       </div>

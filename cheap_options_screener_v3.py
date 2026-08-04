@@ -161,6 +161,20 @@ def is_inverse_ticker(ticker):
     return str(ticker or "").upper().strip() in INVERSE_ETFS
 
 
+def parse_dte(row_or_val, default=7):
+    """اقرأ DTE بأمان — 0 يبقى 0 (لا يُحوَّل إلى default بسبب falsy)."""
+    if isinstance(row_or_val, dict):
+        val = row_or_val.get("dte_num", default)
+    else:
+        val = row_or_val
+    if val is None or val == "":
+        return int(default)
+    try:
+        return int(val)
+    except (TypeError, ValueError):
+        return int(default)
+
+
 def spy_alignment_ok(is_call, spy_regime, ticker=None):
     """لا نعكس السوق: PUT مرفوض إذا SPY صاعد، CALL مرفوض إذا SPY هابط.
     الصناديق العكسية تُعامل باتجاه معكوس (CALL على SQQQ = رهان هبوط)."""
@@ -1152,7 +1166,7 @@ def score_stock(row):
         elif sp < 0.08: score += 1; notes.append("Spread<8% +1")
         else:           score -= 1; notes.append("Spread>8% -1")
 
-    if row.get("is_0dte") or int(row.get("dte_num") or 99) == 0:
+    if row.get("is_0dte") or parse_dte(row, default=99) == 0:
         score -= 1; notes.append("0DTE ثيتا -1")
     else:
         exp = str(row.get("expiry") or "")
@@ -1276,7 +1290,7 @@ def compute_trade_plan(r, tech):
     iv_raw   = float(r.get("iv", 0) or 0)
     iv_estimated = iv_raw < MIN_IV_DISPLAY
     iv       = iv_raw if not iv_estimated else 0.4
-    dte      = int(r.get("dte_num",     7) or 7)
+    dte      = parse_dte(r, default=7)
     premium  = float(r.get("premium",   0) or 0)
     atr      = float(tech.get("atr14") or (price * 0.025))
     opt_type = "call" if is_call else "put"
@@ -1444,6 +1458,7 @@ def compute_trade_plan(r, tech):
         and align_ok
         and not chased
         and dte > 0
+        and not r.get("is_0dte")
     )
 
     if earn_risk:
@@ -1467,7 +1482,7 @@ def compute_trade_plan(r, tech):
     elif not trade_plan_is_valid(plan, price, is_call):
         plan["recommendation"] = "WAIT"
         plan["rec_note"]       = "خطة الدخول غير متسقة مع السعر الحالي — انتظر"
-    elif dte == 0:
+    elif dte == 0 or r.get("is_0dte"):
         plan["recommendation"] = "WAIT"
         plan["rec_note"]       = "0DTE — لا BUY من المسح (تنفيذ يدوي فقط إن لزم)"
     elif buy_ready and (trend_ok or mixed_ok):
@@ -1509,7 +1524,7 @@ def print_trade_report(rank, r, tech, plan):
     prem     = r.get("premium",   0) or 0
     strike   = r.get("strike",    0) or 0
     iv       = r.get("iv",        0) or 0
-    dte      = r.get("dte_num",   7) or 7
+    dte      = parse_dte(r, default=7)
     price_n  = r.get("price_num", 0) or 0
     oi       = int(r.get("oi",    0) or 0)
     opt_vol  = int(r.get("opt_vol",0) or 0)
