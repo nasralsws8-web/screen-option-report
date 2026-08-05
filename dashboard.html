@@ -231,15 +231,13 @@
 
 <script>
 const CSV_URLS = [
-  'https://cdn.jsdelivr.net/gh/nasralsws8-web/screen-option-report@main/options_v3_results.csv',
-  'https://raw.githubusercontent.com/nasralsws8-web/screen-option-report/main/options_v3_results.csv',
   './options_v3_results.csv',
+  'https://raw.githubusercontent.com/nasralsws8-web/screen-option-report/main/options_v3_results.csv',
 ];
-const CSV_URL = CSV_URLS[0];
+const CSV_URL = CSV_URLS[CSV_URLS.length - 1];
 const OUTCOMES_URLS = [
-  'https://cdn.jsdelivr.net/gh/nasralsws8-web/screen-option-report@main/outcomes.csv',
-  'https://raw.githubusercontent.com/nasralsws8-web/screen-option-report/main/outcomes.csv',
   './outcomes.csv',
+  'https://raw.githubusercontent.com/nasralsws8-web/screen-option-report/main/outcomes.csv',
 ];
 /** أثناء الجلسة: أقدم من هذا = قديم (price_update كل ~15د) */
 const STALE_SOFT_MS = 45 * 60 * 1000;
@@ -259,8 +257,12 @@ let lastScanFreshness = { level: 'ok', ageMs: 0, scanDate: null };
 
 async function fetchTextNoCache(urls) {
   const list = Array.isArray(urls) ? urls : [urls];
+  // من http://localhost فضّل الملف المحلي أولاً؛ من file:// جرّب GitHub ثم المحلي
+  const ordered = (typeof location !== 'undefined' && location.protocol === 'file:')
+    ? [...list].reverse()
+    : list;
   let lastErr = null;
-  for (const base of list) {
+  for (const base of ordered) {
     try {
       const url = base + (base.includes('?') ? '&' : '?') + 't=' + Date.now();
       const resp = await fetch(url, { cache: 'no-store' });
@@ -269,8 +271,8 @@ async function fetchTextNoCache(urls) {
         continue;
       }
       const text = await resp.text();
-      if (!text.trim()) {
-        lastErr = new Error(`ملف فاضي: ${base}`);
+      if (!text.trim() || text.trim().split('\n').length < 2) {
+        lastErr = new Error(`ملف فاضي أو غير مكتمل: ${base}`);
         continue;
       }
       return { text, source: base };
@@ -279,9 +281,21 @@ async function fetchTextNoCache(urls) {
     }
   }
   const fileHint = (typeof location !== 'undefined' && location.protocol === 'file:')
-    ? ' — Safari يمنع التحميل من file://. افتح عبر: python3 -m http.server 8765 ثم http://localhost:8765/dashboard.html'
+    ? ' — Safari يمنع التحميل من file://. افتح: http://127.0.0.1:8765/dashboard.html'
     : '';
   throw new Error((lastErr && lastErr.message ? lastErr.message : 'Load failed') + fileHint);
+}
+
+function warnIfFileProtocol() {
+  if (typeof location === 'undefined' || location.protocol !== 'file:') return;
+  const el = document.getElementById('staleBanner');
+  if (!el) return;
+  el.className = 'stale-banner show hard';
+  el.innerHTML = `
+    ⛔ فتحت الداشبورد كملف محلي (file://) — Safari يمنع تحميل البيانات
+    <div class="stale-sub">افتح بدلها:
+    <a href="http://127.0.0.1:8765/dashboard.html" style="color:#fff;text-decoration:underline">http://127.0.0.1:8765/dashboard.html</a>
+    (شغّل أولاً من مجلد المشروع: <code style="background:#21262d;padding:2px 6px;border-radius:4px">python3 -m http.server 8765</code>)</div>`;
 }
 
 function parseScanDate(scannedAt) {
@@ -1569,6 +1583,7 @@ async function prefetchOutcomes() {
   } catch (e) { /* ignore */ }
 }
 
+warnIfFileProtocol();
 loadData();
 if (document.getElementById('autoRefresh').checked) {
   autoTimer = setInterval(loadData, 2*60*1000);
