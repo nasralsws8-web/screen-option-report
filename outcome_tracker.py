@@ -39,7 +39,7 @@ OUTCOMES_COLS = [
     "price_at_rec", "entry_stock", "stop_stock",
     "tp1_stock", "tp2_stock", "tp3_stock", "expiry",
     "premium", "strike", "iv", "dte_num",
-    "entry_hit", "entry_hit_date", "exit_date",
+    "entry_hit", "entry_hit_date", "exit_date", "exit_stock",
     "status",   # open / tp1_hit / tp2_hit / tp3_hit / stop_hit / expired
     "result_pct",
     "option_pnl_pct",
@@ -48,7 +48,7 @@ OUTCOMES_COLS = [
 ]
 
 PATH_METRIC_COLS = [
-    "exit_date", "days_to_entry", "days_held",
+    "exit_date", "exit_stock", "days_to_entry", "days_held",
     "mfe_pct", "mae_pct", "hold_expiry_pct",
 ]
 
@@ -306,6 +306,48 @@ def build_hist_cache(outcomes_df):
     return cache
 
 
+def resolve_exit_stock(row, hist=None):
+    """
+    سعر السهم عند الخروج:
+    - TP/Stop → مستوى الهدف/الوقف
+    - expired → إغلاق يوم الانتهاء (من hist إن وُجد)
+    """
+    status = str(row.get("status") or "")
+    if status == "open" or not status:
+        return None
+
+    level_map = {
+        "tp1_hit": float(row.get("tp1_stock") or 0),
+        "tp2_hit": float(row.get("tp2_stock") or 0),
+        "tp3_hit": float(row.get("tp3_stock") or 0),
+        "stop_hit": float(row.get("stop_stock") or 0),
+    }
+    if status in level_map and level_map[status] > 0:
+        return round(level_map[status], 4)
+
+    if status == "expired":
+        expiry_date = parse_date(row.get("expiry")) or parse_date(row.get("exit_date"))
+        if hist is not None and not hist.empty and expiry_date:
+            close = hist_close_on_or_before(hist, expiry_date)
+            if close is not None:
+                return round(close, 4)
+        # احتياطي: استنتج من entry + result_pct إن أمكن
+        try:
+            entry = float(row.get("entry_stock") or 0)
+            res = float(row.get("result_pct"))
+            is_call = resolve_is_call(
+                row.get("direction"), entry,
+                row.get("tp1_stock"), row.get("stop_stock"),
+            )
+            if entry > 0 and res == res:  # not NaN
+                if is_call:
+                    return round(entry * (1 + res / 100.0), 4)
+                return round(entry * (1 - res / 100.0), 4)
+        except (TypeError, ValueError):
+            pass
+    return None
+
+
 def compute_path_metrics(row, hist, today=None):
     """
     يحسب مقاييس المراقبة لصف واحد.
@@ -324,7 +366,21 @@ def compute_path_metrics(row, hist, today=None):
     status = str(row.get("status") or "open")
     is_call = resolve_is_call(row.get("direction"), entry, tp1, stop)
 
-    if entry <= 0 or hist is None or hist.empty or rec_date is None:
+    if hist is None or hist.empty or rec_date is None:
+        # حتى بدون hist: TP/Stop معروفان من المستويات
+        if status != "open":
+            out["exit_stock"] = resolve_exit_stock(row, None)
+            if status == "expired" and expiry_date:
+                out["exit_date"] = expiry_date.strftime("%Y-%m-%d")
+        return out
+
+    # سعر/تاريخ الخروج متاح حتى بدون Entry (حالة expired)
+    if status != "open":
+        if status == "expired" and expiry_date:
+            out["exit_date"] = expiry_date.strftime("%Y-%m-%d")
+        out["exit_stock"] = resolve_exit_stock(row, hist)
+
+    if entry <= 0:
         return out
 
     # Entry hit من السجل أو إعادة اكتشاف — فقط داخل نافذة العقد
@@ -353,7 +409,7 @@ def compute_path_metrics(row, hist, today=None):
             entry_hit_date = hit_days.index[0].date()
 
     if not entry_hit or entry_hit_date is None:
-        # بدون دخول داخل نافذة العقد
+        # بدون دخول: نبقي exit_stock لـ expired إن وُجد
         return out
 
     # إذا لُمس Entry قبل/نفس يوم التوصية → 0 (جاهز فوراً)
@@ -361,7 +417,7 @@ def compute_path_metrics(row, hist, today=None):
     out["days_to_entry"] = 0 if dte is not None and dte < 0 else dte
 
     # تاريخ الخروج
-    exit_date = parse_date(row.get("exit_date"))
+    exit_date = parse_date(row.get("exit_date")) or parse_date(out.get("exit_date"))
     if exit_date and expiry_date and exit_date > expiry_date:
         exit_date = expiry_date
     if exit_date is None and status != "open":
@@ -374,6 +430,9 @@ def compute_path_metrics(row, hist, today=None):
             touch = resolve_first_touch(post, is_call, stop, tp1, tp2, tp3)
             if touch:
                 exit_date = touch[2]
+                # سعر اللمس الفعلي من الشمعة إن أمكن أدق من المستوى
+                if status.startswith("tp") or status == "stop_hit":
+                    out["exit_stock"] = round(float(touch[1]), 4)
             elif status == "expired" and expiry_date:
                 exit_date = expiry_date
 
@@ -384,7 +443,7 @@ def compute_path_metrics(row, hist, today=None):
     else:
         hold_end = exit_date or today
 
-    out["exit_date"] = exit_date.strftime("%Y-%m-%d") if exit_date else None
+    out["exit_date"] = exit_date.strftime("%Y-%m-%d") if exit_date else out.get("exit_date")
     held = calendar_days(entry_hit_date, hold_end)
     out["days_held"] = 0 if held is not None and held < 0 else held
 
@@ -397,19 +456,16 @@ def compute_path_metrics(row, hist, today=None):
     out["mae_pct"] = mae
 
     # نتيجة لو انمسك حتى إغلاق يوم الانتهاء
-    if expiry_date:
-        # لا نحسب قبل توفر شمعة الانتهاء (أو بعدها)
+    if expiry_date and entry > 0:
         expiry_close = hist_close_on_or_before(hist, expiry_date)
-        have_expiry_bar = False
-        if not hist.empty:
-            have_expiry_bar = (hist.index.normalize() <= _as_ts(expiry_date)).any() and (
-                today >= expiry_date
-                or (hist.index.normalize() >= _as_ts(expiry_date)).any()
-            )
-        if expiry_close is not None and (today >= expiry_date or have_expiry_bar):
-            # إذا الانتهاء لم يأتِ بعد، لا تكتب قيمة نهائية
-            if today >= expiry_date:
-                out["hold_expiry_pct"] = move_pct(entry, expiry_close, is_call)
+        if expiry_close is not None and today >= expiry_date:
+            out["hold_expiry_pct"] = move_pct(entry, expiry_close, is_call)
+            if status == "expired" and out.get("exit_stock") is None:
+                out["exit_stock"] = round(expiry_close, 4)
+
+    # تأكيد exit_stock للحالات المغلقة
+    if status != "open" and out.get("exit_stock") is None:
+        out["exit_stock"] = resolve_exit_stock(row, hist)
 
     return out
 
@@ -420,9 +476,15 @@ def apply_path_metrics(outcomes_df, idx, metrics):
 
 
 def apply_close(outcomes_df, idx, row, status, entry, stock_price, is_call, exit_date=None):
-    """يحدّث status + result_pct + option_pnl_pct + exit_date."""
+    """يحدّث status + result_pct + option_pnl_pct + exit_date + exit_stock."""
     outcomes_df.at[idx, "status"] = status
     outcomes_df.at[idx, "result_pct"] = move_pct(entry, stock_price, is_call)
+    try:
+        px = float(stock_price)
+        if px > 0:
+            outcomes_df.at[idx, "exit_stock"] = round(px, 4)
+    except (TypeError, ValueError):
+        pass
     if exit_date is not None:
         if hasattr(exit_date, "strftime"):
             outcomes_df.at[idx, "exit_date"] = exit_date.strftime("%Y-%m-%d")
@@ -707,6 +769,7 @@ def add_new_recommendations(outcomes_df):
             "entry_hit":      False,
             "entry_hit_date": "",
             "exit_date":      "",
+            "exit_stock":     None,
             "status":         "open",
             "result_pct":     None,
             "option_pnl_pct": None,

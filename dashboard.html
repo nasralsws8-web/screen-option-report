@@ -1406,6 +1406,7 @@ async function loadHistory(force) {
           <th style="padding:10px;text-align:right;color:#8b949e">Premium</th>
           <th style="padding:10px;text-align:right;color:#8b949e">P&L العقد</th>
           <th style="padding:10px;text-align:right;color:#8b949e">حركة السهم</th>
+          <th style="padding:10px;text-align:right;color:#8b949e">سعر الخروج</th>
           <th style="padding:10px;text-align:right;color:#8b949e">→Entry</th>
           <th style="padding:10px;text-align:right;color:#8b949e">مسك</th>
           <th style="padding:10px;text-align:right;color:#8b949e">MFE</th>
@@ -1453,6 +1454,14 @@ async function loadHistory(force) {
             const strikeStr = isNaN(strikeN) ? '—' : ('$' + (Number.isInteger(strikeN) ? String(strikeN) : strikeN.toFixed(2)));
             const expRaw = String(r.expiry || '').slice(0, 10);
             const expShort = expRaw && expRaw !== 'nan' ? expRaw.slice(5) : '—'; // MM-DD
+            const exitPx = parseFloat(r.exit_stock);
+            const exitLabel = st === 'expired' ? 'عند الانتهاء'
+              : st === 'stop_hit' ? 'عند Stop'
+              : (st.startsWith('tp') ? 'عند ' + st.replace('_hit','').toUpperCase() : 'خروج');
+            const exitHtml = isOpen || isNaN(exitPx)
+              ? '<span style="color:#8b949e">—</span>'
+              : `<div style="font-weight:700;color:#c9d1d9">$${exitPx.toFixed(2)}</div>
+                 <div style="font-size:10px;color:#8b949e;margin-top:2px">${exitLabel}</div>`;
             const contractHtml = `
               <div style="font-weight:700;color:#58a6ff">${r.ticker || '—'}</div>
               <div style="font-size:11px;color:#e3b341;margin-top:2px">Strike ${strikeStr}</div>
@@ -1470,6 +1479,7 @@ async function loadHistory(force) {
               <td style="padding:10px;color:#e3b341">${premStr}</td>
               <td style="padding:10px;font-weight:700;color:${optColor}">${optStr}</td>
               <td style="padding:10px;color:${resColor}">${resStr}</td>
+              <td style="padding:10px;line-height:1.25">${exitHtml}</td>
               <td style="padding:10px;color:#8b949e">${dteStr}</td>
               <td style="padding:10px;color:#8b949e">${heldStr}</td>
               <td style="padding:10px;color:#3fb950">${mfeStr}</td>
