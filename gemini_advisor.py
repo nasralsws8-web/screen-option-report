@@ -169,8 +169,16 @@ def enrich_dataframe(df: pd.DataFrame, only_recs=("BUY", "WAIT"),
     if df is None or df.empty:
         return df
     out = df.copy()
+    # CSV الفاضي يخليه pandas float64 (NaN) — لازم object قبل كتابة نص
     if "gemini_note" not in out.columns:
-        out["gemini_note"] = ""
+        out["gemini_note"] = pd.Series([""] * len(out), dtype="object")
+    else:
+        out["gemini_note"] = out["gemini_note"].astype("object")
+        out["gemini_note"] = out["gemini_note"].where(
+            out["gemini_note"].notna(), ""
+        ).astype(str)
+        out.loc[out["gemini_note"].str.lower() == "nan", "gemini_note"] = ""
+
     if not get_api_key():
         print("Gemini: لا يوجد GEMINI_API_KEY — تخطي المستشار")
         return out
@@ -181,7 +189,7 @@ def enrich_dataframe(df: pd.DataFrame, only_recs=("BUY", "WAIT"),
     for i, idx in enumerate(idxs, 1):
         row = out.loc[idx]
         note = advise_row(row)
-        out.at[idx, "gemini_note"] = note
+        out.at[idx, "gemini_note"] = note if note else ""
         ticker = row.get("Ticker", "?")
         print(f"  [{i}/{len(idxs)}] {ticker}: {'✓' if note else '—'}")
         if sleep_s > 0 and i < len(idxs):
