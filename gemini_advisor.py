@@ -194,15 +194,26 @@ def enrich_results_csv(path: str = RESULTS_FILE) -> bool:
         print(f"⚠️  {path} غير موجود")
         return False
     df = pd.read_csv(path)
+    if not get_api_key():
+        print("Gemini: لا يوجد GEMINI_API_KEY — تخطي المستشار")
+        return True
     enriched = enrich_dataframe(df)
     enriched.to_csv(path, index=False)
-    print(f"✓ حُفظ {path} مع gemini_note")
+    n = enriched["gemini_note"].fillna("").astype(str).str.strip()
+    n = n[n.ne("") & n.str.lower().ne("nan")].shape[0]
+    print(f"✓ حُفظ {path} — ملاحظات Gemini: {n}")
+    if n == 0:
+        print("⚠️  لم تُكتب أي ملاحظة — راجع المفتاح/الموديل/الحصة المجانية")
     return True
 
 
 def main():
-    ok = enrich_results_csv(RESULTS_FILE)
-    raise SystemExit(0 if ok else 1)
+    # المستشار اختياري — لا يوقف المسح أو تيليجرام عند الفشل
+    try:
+        enrich_results_csv(RESULTS_FILE)
+    except Exception as e:
+        print(f"⚠️  Gemini advisor crashed (non-fatal): {e}")
+    raise SystemExit(0)
 
 
 if __name__ == "__main__":
