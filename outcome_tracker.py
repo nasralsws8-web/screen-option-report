@@ -8,7 +8,9 @@ outcome_tracker.py
 (نفس السهم بعقد مختلف = صف جديد في السجل)
 
 result_pct      = حركة السهم % (للمرجع)
-option_pnl_pct  = ربح/خسارة العقد % (Black-Scholes عند TP/Stop/Expiry)
+option_pnl_pct  = ربح/خسارة العقد % من premium الدخول → exit_premium
+exit_premium    = سعر العقد عند الخروج (يفضّل إغلاق Yahoo اليومي الحقيقي)
+exit_premium_source = market | intrinsic | estimate
 
 مقاييس فترة المراقبة:
   days_to_entry   = أيام تقويمية من التوصية → لمس Entry
@@ -39,7 +41,8 @@ OUTCOMES_COLS = [
     "price_at_rec", "entry_stock", "stop_stock",
     "tp1_stock", "tp2_stock", "tp3_stock", "expiry",
     "premium", "strike", "iv", "dte_num",
-    "entry_hit", "entry_hit_date", "exit_date", "exit_stock", "exit_premium",
+    "entry_hit", "entry_hit_date", "exit_date", "exit_stock",
+    "exit_premium", "exit_premium_source",
     "status",   # open / tp1_hit / tp2_hit / tp3_hit / stop_hit / expired
     "result_pct",
     "option_pnl_pct",
@@ -48,7 +51,7 @@ OUTCOMES_COLS = [
 ]
 
 PATH_METRIC_COLS = [
-    "exit_date", "exit_stock", "exit_premium",
+    "exit_date", "exit_stock", "exit_premium", "exit_premium_source",
     "days_to_entry", "days_held",
     "mfe_pct", "mae_pct", "hold_expiry_pct",
 ]
@@ -115,12 +118,69 @@ def move_pct(entry, target, is_call):
     return round((entry - target) / entry * 100, 2)
 
 
+def occ_symbol(ticker, expiry, strike, is_call):
+    """رمز OCC مثل AMZN260807C00272500."""
+    t = str(ticker or "").strip().upper()
+    exp = parse_date(expiry)
+    if not t or not exp:
+        return None
+    try:
+        k = int(round(float(strike) * 1000))
+    except (TypeError, ValueError):
+        return None
+    if k <= 0:
+        return None
+    return f"{t}{exp.strftime('%y%m%d')}{'C' if is_call else 'P'}{k:08d}"
+
+
+def fetch_option_daily_hist(symbol, start_date, end_date, cache):
+    """تاريخ يومي لسعر العقد من Yahoo (إغلاق حقيقي)."""
+    if not symbol:
+        return pd.DataFrame()
+    key = (symbol, str(start_date), str(end_date))
+    if key in cache:
+        return cache[key]
+    try:
+        hist = yf.download(
+            symbol,
+            start=pd.Timestamp(start_date).strftime("%Y-%m-%d"),
+            end=(pd.Timestamp(end_date) + timedelta(days=2)).strftime("%Y-%m-%d"),
+            interval="1d",
+            progress=False,
+            auto_adjust=True,
+        )
+        if isinstance(hist.columns, pd.MultiIndex):
+            hist.columns = hist.columns.get_level_values(0)
+        if hist is None:
+            hist = pd.DataFrame()
+    except Exception:
+        hist = pd.DataFrame()
+    cache[key] = hist
+    return hist
+
+
+def market_option_close(ticker, expiry, strike, is_call, on_date, cache):
+    """إغلاق العقد اليومي في/قبل تاريخ الخروج — سعر سوق حقيقي إن وُجد."""
+    if on_date is None:
+        return None
+    sym = occ_symbol(ticker, expiry, strike, is_call)
+    if not sym:
+        return None
+    start = on_date - timedelta(days=14)
+    hist = fetch_option_daily_hist(sym, start, on_date, cache)
+    if hist is None or hist.empty or "Close" not in hist.columns:
+        return None
+    close = hist_close_on_or_before(hist, on_date)
+    if close is None or close < 0:
+        return None
+    return round(float(close), 4)
+
+
 def calc_option_exit_price(row, stock_at_exit, exit_date):
     """
-    تقدير سعر العقد ($) عند الخروج.
-    - يوم الانتهاء أو بعده: intrinsic فقط
-    - قبل الانتهاء: Black-Scholes بتقدير IV وقت التوصية
-    ليس سعراً من السوق الحي — تقدير تعليمي.
+    تقدير سعر العقد ($) — احتياطي فقط إذا فشل سعر السوق.
+    - يوم الانتهاء أو بعده: intrinsic
+    - قبل الانتهاء: Black-Scholes
     """
     try:
         strike = float(row.get("strike") or 0)
@@ -396,9 +456,7 @@ def compute_path_metrics(row, hist, today=None):
         if status == "expired" and expiry_date:
             out["exit_date"] = expiry_date.strftime("%Y-%m-%d")
         out["exit_stock"] = resolve_exit_stock(row, hist)
-        if out["exit_stock"] is not None:
-            exit_d = expiry_date if status == "expired" and expiry_date else parse_date(out.get("exit_date"))
-            out["exit_premium"] = calc_option_exit_price(row, out["exit_stock"], exit_d)
+        # exit_premium يُملأ لاحقاً من سوق Yahoo في enrich_market_exit_premiums
 
     if entry <= 0:
         return out
@@ -487,10 +545,16 @@ def compute_path_metrics(row, hist, today=None):
     if status != "open" and out.get("exit_stock") is None:
         out["exit_stock"] = resolve_exit_stock(row, hist)
     if status != "open" and out.get("exit_stock") is not None:
-        exit_d = parse_date(out.get("exit_date")) or parse_date(row.get("exit_date"))
-        if status == "expired" and expiry_date:
-            exit_d = expiry_date
-        out["exit_premium"] = calc_option_exit_price(row, out["exit_stock"], exit_d)
+        # لا تستبدل سعر سوق سبق حفظه — يُحدَّث لاحقاً في enrich_market_exit_premiums
+        prev_src = str(row.get("exit_premium_source") or "")
+        if prev_src != "market":
+            exit_d = parse_date(out.get("exit_date")) or parse_date(row.get("exit_date"))
+            if status == "expired" and expiry_date:
+                exit_d = expiry_date
+            out["exit_premium"] = calc_option_exit_price(row, out["exit_stock"], exit_d)
+            out["exit_premium_source"] = (
+                "intrinsic" if (expiry_date and exit_d and exit_d >= expiry_date) else "estimate"
+            )
 
     return out
 
@@ -498,6 +562,9 @@ def compute_path_metrics(row, hist, today=None):
 def apply_path_metrics(outcomes_df, idx, metrics):
     for col, val in metrics.items():
         outcomes_df.at[idx, col] = val
+
+
+_OPTION_PRICE_CACHE = {}
 
 
 def apply_close(outcomes_df, idx, row, status, entry, stock_price, is_call, exit_date=None):
@@ -518,9 +585,32 @@ def apply_close(outcomes_df, idx, row, status, entry, stock_price, is_call, exit
     exit_d = exit_date
     if exit_d is None:
         exit_d = parse_date(outcomes_df.at[idx, "exit_date"]) if "exit_date" in outcomes_df.columns else None
+    if isinstance(exit_d, datetime):
+        exit_d = exit_d.date()
+
+    # 1) سعر سوق حقيقي من Yahoo (إغلاق يوم الخروج)
+    mkt = market_option_close(
+        row.get("ticker"), row.get("expiry"), row.get("strike"),
+        is_call, exit_d, _OPTION_PRICE_CACHE,
+    )
+    if mkt is not None:
+        outcomes_df.at[idx, "exit_premium"] = mkt
+        outcomes_df.at[idx, "exit_premium_source"] = "market"
+        try:
+            prem = float(row.get("premium") or 0)
+            if prem > 0:
+                outcomes_df.at[idx, "option_pnl_pct"] = round((mkt - prem) / prem * 100, 2)
+        except (TypeError, ValueError):
+            pass
+        return
+
+    # 2) احتياطي: intrinsic / BS
     exit_prem = calc_option_exit_price(row, stock_price, exit_d)
     if exit_prem is not None:
         outcomes_df.at[idx, "exit_premium"] = exit_prem
+        exp = parse_date(row.get("expiry"))
+        src = "intrinsic" if (exp and exit_d and exit_d >= exp) else "estimate"
+        outcomes_df.at[idx, "exit_premium_source"] = src
     opt_pnl = calc_option_pnl_pct(row, stock_price, exit_d)
     if opt_pnl is not None:
         outcomes_df.at[idx, "option_pnl_pct"] = opt_pnl
@@ -802,6 +892,7 @@ def add_new_recommendations(outcomes_df):
             "exit_date":      "",
             "exit_stock":     None,
             "exit_premium":   None,
+            "exit_premium_source": "",
             "status":         "open",
             "result_pct":     None,
             "option_pnl_pct": None,
@@ -965,6 +1056,84 @@ def enrich_path_metrics(outcomes_df, hist_cache=None):
     return outcomes_df
 
 
+def enrich_market_exit_premiums(outcomes_df, cache=None):
+    """
+    يستبدل تقدير BS بسعر إغلاق العقد اليومي الحقيقي من Yahoo (OCC).
+    يعيد حساب option_pnl_pct من السعر الحقيقي.
+    """
+    if outcomes_df is None or outcomes_df.empty:
+        return outcomes_df
+
+    if cache is None:
+        cache = _OPTION_PRICE_CACHE
+
+    market_n = intrinsic_n = estimate_n = fail_n = 0
+    print("📥 جلب أسعار العقود الحقيقية من Yahoo...")
+
+    for idx, row in outcomes_df.iterrows():
+        status = str(row.get("status") or "")
+        if status == "open":
+            continue
+
+        ticker = str(row.get("ticker") or "").strip()
+        expiry = row.get("expiry")
+        strike = row.get("strike")
+        entry = float(row.get("entry_stock") or 0)
+        tp1 = float(row.get("tp1_stock") or 0)
+        stop = float(row.get("stop_stock") or 0)
+        is_call = resolve_is_call(row.get("direction"), entry, tp1, stop)
+        exit_d = parse_date(row.get("exit_date"))
+        if status == "expired":
+            exit_d = parse_date(expiry) or exit_d
+        if exit_d is None:
+            fail_n += 1
+            continue
+
+        mkt = market_option_close(ticker, expiry, strike, is_call, exit_d, cache)
+        if mkt is not None:
+            outcomes_df.at[idx, "exit_premium"] = mkt
+            outcomes_df.at[idx, "exit_premium_source"] = "market"
+            try:
+                prem = float(row.get("premium") or 0)
+                if prem > 0:
+                    outcomes_df.at[idx, "option_pnl_pct"] = round((mkt - prem) / prem * 100, 2)
+            except (TypeError, ValueError):
+                pass
+            market_n += 1
+            continue
+
+        # احتياطي
+        exit_stock = row.get("exit_stock")
+        try:
+            exit_stock = float(exit_stock) if exit_stock is not None else None
+        except (TypeError, ValueError):
+            exit_stock = None
+        if exit_stock is None or exit_stock <= 0:
+            fail_n += 1
+            continue
+        est = calc_option_exit_price(row, exit_stock, exit_d)
+        if est is None:
+            fail_n += 1
+            continue
+        exp = parse_date(expiry)
+        src = "intrinsic" if (exp and exit_d >= exp) else "estimate"
+        outcomes_df.at[idx, "exit_premium"] = est
+        outcomes_df.at[idx, "exit_premium_source"] = src
+        opt_pnl = calc_option_pnl_pct(row, exit_stock, exit_d)
+        if opt_pnl is not None:
+            outcomes_df.at[idx, "option_pnl_pct"] = opt_pnl
+        if src == "intrinsic":
+            intrinsic_n += 1
+        else:
+            estimate_n += 1
+
+    print(
+        f"✅ أسعار العقود: سوق={market_n} | ذاتي={intrinsic_n} | "
+        f"تقدير={estimate_n} | فشل={fail_n}"
+    )
+    return outcomes_df
+
+
 def print_summary(outcomes_df):
     closed = outcomes_df[outcomes_df["status"] != "open"]
     if closed.empty:
@@ -1035,6 +1204,7 @@ if __name__ == "__main__":
     hist_cache = build_hist_cache(outcomes)
     outcomes = update_open_outcomes(outcomes, hist_cache=hist_cache)
     outcomes = enrich_path_metrics(outcomes, hist_cache=hist_cache)
+    outcomes = enrich_market_exit_premiums(outcomes)
 
     # حفظ بترتيب الأعمدة القياسي
     for col in OUTCOMES_COLS:
