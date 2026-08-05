@@ -42,8 +42,12 @@ jobs:
       - name: Gemini advisor (BUY/WAIT notes only)
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        run: python gemini_advisor.py
-        continue-on-error: true
+        run: |
+          if [ -z "$GEMINI_API_KEY" ]; then
+            echo "GEMINI_API_KEY missing — skip"
+            exit 0
+          fi
+          python gemini_advisor.py
 
       - name: Send Telegram notifications
         env:

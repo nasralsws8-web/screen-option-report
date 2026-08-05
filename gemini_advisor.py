@@ -20,6 +20,16 @@ import requests
 
 RESULTS_FILE = "options_v3_results.csv"
 DEFAULT_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash").strip() or "gemini-2.0-flash"
+MODEL_FALLBACKS = [
+    DEFAULT_MODEL,
+    "gemini-2.0-flash",
+    "gemini-2.5-flash",
+    "gemini-1.5-flash",
+    "gemini-1.5-flash-latest",
+]
+# unique preserve order
+_seen = set()
+MODEL_FALLBACKS = [m for m in MODEL_FALLBACKS if m and not (m in _seen or _seen.add(m))]
 API_BASE = "https://generativelanguage.googleapis.com/v1beta"
 
 
@@ -89,6 +99,22 @@ def _build_prompt(payload: dict) -> str:
 الحد الأقصى: 3 أسطر قصيرة جداً."""
 
 
+def _extract_text(data: dict) -> str:
+    cands = data.get("candidates") or []
+    if not cands:
+        # غالباً safety / block
+        fb = data.get("promptFeedback") or {}
+        print(f"  ⚠ Gemini no candidates: {fb or list(data.keys())[:6]}")
+        return ""
+    parts = (cands[0].get("content") or {}).get("parts") or []
+    chunks = []
+    for p in parts:
+        t = p.get("text")
+        if t:
+            chunks.append(str(t).strip())
+    return " ".join(chunks).strip()
+
+
 def advise_row(row: Mapping[str, Any], api_key: Optional[str] = None,
                model: Optional[str] = None, timeout: int = 25) -> str:
     """يرجع نص المستشار أو سلسلة فارغة عند الفشل/غياب المفتاح."""
@@ -96,42 +122,45 @@ def advise_row(row: Mapping[str, Any], api_key: Optional[str] = None,
     if not key:
         return ""
 
-    model_id = (model or DEFAULT_MODEL).strip()
+    models = [model] if model else list(MODEL_FALLBACKS)
     payload = _row_payload(row)
-    url = f"{API_BASE}/models/{model_id}:generateContent"
     body = {
-        "contents": [{"role": "user", "parts": [{"text": _build_prompt(payload)}]}],
+        "contents": [{"parts": [{"text": _build_prompt(payload)}]}],
         "generationConfig": {
             "temperature": 0.3,
-            "maxOutputTokens": 220,
+            "maxOutputTokens": 280,
         },
     }
-    try:
-        resp = requests.post(
-            url,
-            params={"key": key},
-            headers={"Content-Type": "application/json"},
-            json=body,
-            timeout=timeout,
-        )
-        if resp.status_code >= 400:
-            print(f"  ⚠ Gemini HTTP {resp.status_code}: {resp.text[:180]}")
-            return ""
-        data = resp.json()
-        parts = (
-            data.get("candidates", [{}])[0]
-                .get("content", {})
-                .get("parts", [])
-        )
-        text = " ".join(str(p.get("text") or "").strip() for p in parts).strip()
-        # تنظيف خفيف
-        text = " ".join(text.split())
-        if len(text) > 500:
-            text = text[:497] + "…"
-        return text
-    except Exception as e:
-        print(f"  ⚠ Gemini error: {e}")
-        return ""
+    last_err = ""
+    for model_id in models:
+        if not model_id:
+            continue
+        url = f"{API_BASE}/models/{model_id}:generateContent"
+        try:
+            resp = requests.post(
+                url,
+                params={"key": key},
+                headers={"Content-Type": "application/json"},
+                json=body,
+                timeout=timeout,
+            )
+            if resp.status_code >= 400:
+                last_err = f"{model_id} HTTP {resp.status_code}: {resp.text[:160]}"
+                print(f"  ⚠ Gemini {last_err}")
+                continue
+            text = _extract_text(resp.json())
+            text = " ".join(text.split())
+            if len(text) > 500:
+                text = text[:497] + "…"
+            if text:
+                return text
+            last_err = f"{model_id} empty text"
+        except Exception as e:
+            last_err = f"{model_id} {e}"
+            print(f"  ⚠ Gemini error: {last_err}")
+    if last_err:
+        print(f"  ⚠ Gemini failed all models: {last_err}")
+    return ""
 
 
 def enrich_dataframe(df: pd.DataFrame, only_recs=("BUY", "WAIT"),

@@ -643,6 +643,41 @@ def save_results_csv(filtered_df, path="options_v3_results.csv"):
         print("  ⚠️  0 matches — no valid previous CSV to keep")
         return False
     out = filtered_df.copy()
+    # حافظ على ملاحظات Gemini السابقة عند إعادة المسح بدون المستشار (price_update)
+    if "gemini_note" not in out.columns:
+        out["gemini_note"] = ""
+    if os.path.exists(path):
+        try:
+            prev = pd.read_csv(path)
+            if "gemini_note" in prev.columns and "Ticker" in prev.columns:
+                prev_map = {}
+                for _, r in prev.iterrows():
+                    note = str(r.get("gemini_note") or "").strip()
+                    if not note or note.lower() == "nan":
+                        continue
+                    t = str(r.get("Ticker") or "").upper().strip()
+                    try:
+                        s = f"{float(r.get('strike') or 0):.4f}"
+                    except (TypeError, ValueError):
+                        s = ""
+                    e = str(r.get("expiry") or "")[:10]
+                    prev_map[(t, s, e)] = note
+                    prev_map.setdefault((t, "", ""), note)
+                for idx, r in out.iterrows():
+                    cur = str(r.get("gemini_note") or "").strip()
+                    if cur and cur.lower() != "nan":
+                        continue
+                    t = str(r.get("Ticker") or "").upper().strip()
+                    try:
+                        s = f"{float(r.get('strike') or 0):.4f}"
+                    except (TypeError, ValueError):
+                        s = ""
+                    e = str(r.get("expiry") or "")[:10]
+                    note = prev_map.get((t, s, e)) or prev_map.get((t, "", ""))
+                    if note:
+                        out.at[idx, "gemini_note"] = note
+        except Exception:
+            pass
     out["scanned_at"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
     out.to_csv(path, index=False)
     return True
