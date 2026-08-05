@@ -1403,10 +1403,11 @@ async function loadHistory(force) {
           <th style="padding:10px;text-align:right;color:#8b949e">vs Entry</th>
           <th style="padding:10px;text-align:right;color:#8b949e">TP1</th>
           <th style="padding:10px;text-align:right;color:#8b949e">Stop</th>
-          <th style="padding:10px;text-align:right;color:#8b949e">Premium</th>
+          <th style="padding:10px;text-align:right;color:#8b949e">Premium دخول</th>
+          <th style="padding:10px;text-align:right;color:#8b949e">Premium خروج</th>
           <th style="padding:10px;text-align:right;color:#8b949e">P&L العقد</th>
           <th style="padding:10px;text-align:right;color:#8b949e">حركة السهم</th>
-          <th style="padding:10px;text-align:right;color:#8b949e">سعر الخروج</th>
+          <th style="padding:10px;text-align:right;color:#8b949e">سعر السهم عند الخروج</th>
           <th style="padding:10px;text-align:right;color:#8b949e">→Entry</th>
           <th style="padding:10px;text-align:right;color:#8b949e">مسك</th>
           <th style="padding:10px;text-align:right;color:#8b949e">MFE</th>
@@ -1426,6 +1427,10 @@ async function loadHistory(force) {
             const optColor = isNaN(optPnl)?'#8b949e':optPnl>=0?'#3fb950':'#f85149';
             const prem = parseFloat(r.premium);
             const premStr = isNaN(prem) ? '—' : '$'+prem.toFixed(2);
+            const exitPrem = parseFloat(r.exit_premium);
+            const exitPremStr = isNaN(exitPrem) ? '—' : '$'+exitPrem.toFixed(2);
+            const exitPremColor = isNaN(exitPrem) || isNaN(prem) ? '#8b949e'
+              : exitPrem >= prem ? '#3fb950' : '#f85149';
             const dteN = parseFloat(r.days_to_entry);
             const heldN = parseFloat(r.days_held);
             const mfeN = parseFloat(r.mfe_pct);
@@ -1477,6 +1482,7 @@ async function loadHistory(force) {
               <td style="padding:10px;color:#3fb950">$${parseFloat(r.tp1_stock||0).toFixed(2)}</td>
               <td style="padding:10px;color:#f85149">$${parseFloat(r.stop_stock||0).toFixed(2)}</td>
               <td style="padding:10px;color:#e3b341">${premStr}</td>
+              <td style="padding:10px;font-weight:700;color:${exitPremColor}">${exitPremStr}</td>
               <td style="padding:10px;font-weight:700;color:${optColor}">${optStr}</td>
               <td style="padding:10px;color:${resColor}">${resStr}</td>
               <td style="padding:10px;line-height:1.25">${exitHtml}</td>

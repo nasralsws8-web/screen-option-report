@@ -39,7 +39,7 @@ OUTCOMES_COLS = [
     "price_at_rec", "entry_stock", "stop_stock",
     "tp1_stock", "tp2_stock", "tp3_stock", "expiry",
     "premium", "strike", "iv", "dte_num",
-    "entry_hit", "entry_hit_date", "exit_date", "exit_stock",
+    "entry_hit", "entry_hit_date", "exit_date", "exit_stock", "exit_premium",
     "status",   # open / tp1_hit / tp2_hit / tp3_hit / stop_hit / expired
     "result_pct",
     "option_pnl_pct",
@@ -48,7 +48,8 @@ OUTCOMES_COLS = [
 ]
 
 PATH_METRIC_COLS = [
-    "exit_date", "exit_stock", "days_to_entry", "days_held",
+    "exit_date", "exit_stock", "exit_premium",
+    "days_to_entry", "days_held",
     "mfe_pct", "mae_pct", "hold_expiry_pct",
 ]
 
@@ -114,14 +115,19 @@ def move_pct(entry, target, is_call):
     return round((entry - target) / entry * 100, 2)
 
 
-def calc_option_pnl_pct(row, stock_at_exit, exit_date):
-    """نسبة ربح/خسارة العقد عند سعر سهم معيّن وتاريخ خروج."""
+def calc_option_exit_price(row, stock_at_exit, exit_date):
+    """
+    تقدير سعر العقد ($) عند الخروج.
+    - يوم الانتهاء أو بعده: intrinsic فقط
+    - قبل الانتهاء: Black-Scholes بتقدير IV وقت التوصية
+    ليس سعراً من السوق الحي — تقدير تعليمي.
+    """
     try:
-        premium = float(row.get("premium") or 0)
-        strike  = float(row.get("strike") or 0)
+        strike = float(row.get("strike") or 0)
+        stock_at_exit = float(stock_at_exit)
     except (TypeError, ValueError):
         return None
-    if premium <= 0 or strike <= 0:
+    if strike <= 0 or stock_at_exit <= 0:
         return None
 
     iv_raw = row.get("iv")
@@ -140,10 +146,8 @@ def calc_option_pnl_pct(row, stock_at_exit, exit_date):
 
     if expiry:
         days_left = (expiry - exit_date).days
-        # يوم الانتهاء أو بعده → intrinsic فقط (T=0)
         T = 0.0 if days_left <= 0 else days_left / 365
     else:
-        # 0 يبقى 0 — لا تستخدم `or 7` لأنه يحوّل 0DTE إلى 7 أيام
         raw_dte = row.get("dte_num")
         if raw_dte is None or raw_dte == "":
             dte = 7
@@ -159,7 +163,20 @@ def calc_option_pnl_pct(row, stock_at_exit, exit_date):
         row.get("tp1_stock"), row.get("stop_stock"),
     )
     opt_type = "call" if is_call else "put"
-    exit_val = bs_price(float(stock_at_exit), strike, T, RISK_FREE_RATE, iv, opt_type)
+    return round(bs_price(stock_at_exit, strike, T, RISK_FREE_RATE, iv, opt_type), 4)
+
+
+def calc_option_pnl_pct(row, stock_at_exit, exit_date):
+    """نسبة ربح/خسارة العقد عند سعر سهم معيّن وتاريخ خروج."""
+    try:
+        premium = float(row.get("premium") or 0)
+    except (TypeError, ValueError):
+        return None
+    if premium <= 0:
+        return None
+    exit_val = calc_option_exit_price(row, stock_at_exit, exit_date)
+    if exit_val is None:
+        return None
     return round((exit_val - premium) / premium * 100, 2)
 
 
@@ -379,6 +396,9 @@ def compute_path_metrics(row, hist, today=None):
         if status == "expired" and expiry_date:
             out["exit_date"] = expiry_date.strftime("%Y-%m-%d")
         out["exit_stock"] = resolve_exit_stock(row, hist)
+        if out["exit_stock"] is not None:
+            exit_d = expiry_date if status == "expired" and expiry_date else parse_date(out.get("exit_date"))
+            out["exit_premium"] = calc_option_exit_price(row, out["exit_stock"], exit_d)
 
     if entry <= 0:
         return out
@@ -463,9 +483,14 @@ def compute_path_metrics(row, hist, today=None):
             if status == "expired" and out.get("exit_stock") is None:
                 out["exit_stock"] = round(expiry_close, 4)
 
-    # تأكيد exit_stock للحالات المغلقة
+    # تأكيد exit_stock / exit_premium للحالات المغلقة
     if status != "open" and out.get("exit_stock") is None:
         out["exit_stock"] = resolve_exit_stock(row, hist)
+    if status != "open" and out.get("exit_stock") is not None:
+        exit_d = parse_date(out.get("exit_date")) or parse_date(row.get("exit_date"))
+        if status == "expired" and expiry_date:
+            exit_d = expiry_date
+        out["exit_premium"] = calc_option_exit_price(row, out["exit_stock"], exit_d)
 
     return out
 
@@ -476,7 +501,7 @@ def apply_path_metrics(outcomes_df, idx, metrics):
 
 
 def apply_close(outcomes_df, idx, row, status, entry, stock_price, is_call, exit_date=None):
-    """يحدّث status + result_pct + option_pnl_pct + exit_date + exit_stock."""
+    """يحدّث status + result_pct + option_pnl_pct + exit_date + exit_stock + exit_premium."""
     outcomes_df.at[idx, "status"] = status
     outcomes_df.at[idx, "result_pct"] = move_pct(entry, stock_price, is_call)
     try:
@@ -490,7 +515,13 @@ def apply_close(outcomes_df, idx, row, status, entry, stock_price, is_call, exit
             outcomes_df.at[idx, "exit_date"] = exit_date.strftime("%Y-%m-%d")
         else:
             outcomes_df.at[idx, "exit_date"] = str(exit_date)[:10]
-    opt_pnl = calc_option_pnl_pct(row, stock_price, exit_date)
+    exit_d = exit_date
+    if exit_d is None:
+        exit_d = parse_date(outcomes_df.at[idx, "exit_date"]) if "exit_date" in outcomes_df.columns else None
+    exit_prem = calc_option_exit_price(row, stock_price, exit_d)
+    if exit_prem is not None:
+        outcomes_df.at[idx, "exit_premium"] = exit_prem
+    opt_pnl = calc_option_pnl_pct(row, stock_price, exit_d)
     if opt_pnl is not None:
         outcomes_df.at[idx, "option_pnl_pct"] = opt_pnl
 
@@ -770,6 +801,7 @@ def add_new_recommendations(outcomes_df):
             "entry_hit_date": "",
             "exit_date":      "",
             "exit_stock":     None,
+            "exit_premium":   None,
             "status":         "open",
             "result_pct":     None,
             "option_pnl_pct": None,
