@@ -230,7 +230,17 @@
 </div>
 
 <script>
-const CSV_URL = 'https://raw.githubusercontent.com/nasralsws8-web/screen-option-report/main/options_v3_results.csv';
+const CSV_URLS = [
+  'https://cdn.jsdelivr.net/gh/nasralsws8-web/screen-option-report@main/options_v3_results.csv',
+  'https://raw.githubusercontent.com/nasralsws8-web/screen-option-report/main/options_v3_results.csv',
+  './options_v3_results.csv',
+];
+const CSV_URL = CSV_URLS[0];
+const OUTCOMES_URLS = [
+  'https://cdn.jsdelivr.net/gh/nasralsws8-web/screen-option-report@main/outcomes.csv',
+  'https://raw.githubusercontent.com/nasralsws8-web/screen-option-report/main/outcomes.csv',
+  './outcomes.csv',
+];
 /** أثناء الجلسة: أقدم من هذا = قديم (price_update كل ~15د) */
 const STALE_SOFT_MS = 45 * 60 * 1000;
 /** أقصى عمر مقبول لنفس جلسة التداول */
@@ -246,6 +256,33 @@ let outcomeOpenTickers = [];
 let wsReconnectMs = 3000;
 let lastWsMsgAt = 0;
 let lastScanFreshness = { level: 'ok', ageMs: 0, scanDate: null };
+
+async function fetchTextNoCache(urls) {
+  const list = Array.isArray(urls) ? urls : [urls];
+  let lastErr = null;
+  for (const base of list) {
+    try {
+      const url = base + (base.includes('?') ? '&' : '?') + 't=' + Date.now();
+      const resp = await fetch(url, { cache: 'no-store' });
+      if (!resp.ok) {
+        lastErr = new Error(`HTTP ${resp.status} من ${base}`);
+        continue;
+      }
+      const text = await resp.text();
+      if (!text.trim()) {
+        lastErr = new Error(`ملف فاضي: ${base}`);
+        continue;
+      }
+      return { text, source: base };
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  const fileHint = (typeof location !== 'undefined' && location.protocol === 'file:')
+    ? ' — Safari يمنع التحميل من file://. افتح عبر: python3 -m http.server 8765 ثم http://localhost:8765/dashboard.html'
+    : '';
+  throw new Error((lastErr && lastErr.message ? lastErr.message : 'Load failed') + fileHint);
+}
 
 function parseScanDate(scannedAt) {
   if (!scannedAt) return null;
@@ -1133,10 +1170,7 @@ async function loadData() {
   document.getElementById('statsBar').style.display = 'none';
 
   try {
-    const url = CSV_URL + '?t=' + Date.now();
-    const resp = await fetch(url, { cache: 'no-store', headers: { 'Cache-Control': 'no-cache' } });
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    const text = await resp.text();
+    const { text } = await fetchTextNoCache(CSV_URLS);
     if (!text.trim() || text.trim().split('\n').length < 2) {
       throw new Error('الملف فاضي — شغّل الـ workflow من GitHub Actions أولاً');
     }
@@ -1199,7 +1233,8 @@ async function loadData() {
   } catch (err) {
     document.getElementById('loadingDiv').style.display = 'none';
     document.getElementById('errorDiv').style.display = 'block';
-    document.getElementById('errorDiv').innerHTML = `<div class="error-box">⚠️ ${err.message}</div>`;
+    const msg = (err && err.message) ? err.message : String(err);
+    document.getElementById('errorDiv').innerHTML = `<div class="error-box">⚠️ فشل التحميل<br><span style="font-weight:500;font-size:12px;opacity:.95">${msg}</span></div>`;
   }
 
   btn.disabled = false;
@@ -1216,7 +1251,7 @@ function showTab(tab) {
 }
 
 // ── Outcome History ──────────────────────────────────────────
-const OUTCOMES_URL = 'https://raw.githubusercontent.com/nasralsws8-web/screen-option-report/main/outcomes.csv';
+const OUTCOMES_URL = OUTCOMES_URLS[0];
 let historyLoaded = false;
 
 function outcomeToPlan(r) {
@@ -1292,9 +1327,7 @@ async function loadHistory(force) {
   const container = document.getElementById('historyContent');
   container.innerHTML = '<div class="loading"><div class="spinner"></div><br>جاري تحميل السجل...</div>';
   try {
-    const resp = await fetch(OUTCOMES_URL + '?t=' + Date.now(), { cache: 'no-store' });
-    if (!resp.ok) throw new Error('ما تم تحميل السجل');
-    const text = await resp.text();
+    const { text } = await fetchTextNoCache(OUTCOMES_URLS);
     const rows = parseCSV(text).filter(r => r.ticker);
     outcomeRows = rows;
     outcomeOpenTickers = rows.filter(r => r.status === 'open').map(r => r.ticker);
@@ -1529,9 +1562,8 @@ async function triggerAndWait() {
 
 async function prefetchOutcomes() {
   try {
-    const resp = await fetch(OUTCOMES_URL + '?t=' + Date.now(), { cache: 'no-store' });
-    if (!resp.ok) return;
-    const rows = parseCSV(await resp.text()).filter(r => r.ticker);
+    const { text } = await fetchTextNoCache(OUTCOMES_URLS);
+    const rows = parseCSV(text).filter(r => r.ticker);
     outcomeRows = rows;
     outcomeOpenTickers = rows.filter(r => r.status === 'open').map(r => r.ticker);
   } catch (e) { /* ignore */ }
