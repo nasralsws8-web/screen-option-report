@@ -9,6 +9,14 @@ outcome_tracker.py
 
 result_pct      = حركة السهم % (للمرجع)
 option_pnl_pct  = ربح/خسارة العقد % (Black-Scholes عند TP/Stop/Expiry)
+
+مقاييس فترة المراقبة:
+  days_to_entry   = أيام تقويمية من التوصية → لمس Entry
+  days_held       = أيام تقويمية من Entry → الخروج (أو حتى اليوم إن مفتوحة)
+  mfe_pct         = أقصى حركة مواتية % من Entry أثناء المسك (Max Favorable)
+  mae_pct         = أقصى تراجع معاكس % من Entry أثناء المسك (Max Adverse)
+  hold_expiry_pct = حركة السهم % لو انمسك من Entry حتى إغلاق يوم الانتهاء
+  exit_date       = تاريخ إغلاق الصفقة (TP/Stop/Expiry)
 """
 
 import math
@@ -31,10 +39,17 @@ OUTCOMES_COLS = [
     "price_at_rec", "entry_stock", "stop_stock",
     "tp1_stock", "tp2_stock", "tp3_stock", "expiry",
     "premium", "strike", "iv", "dte_num",
-    "entry_hit", "entry_hit_date",
+    "entry_hit", "entry_hit_date", "exit_date",
     "status",   # open / tp1_hit / tp2_hit / tp3_hit / stop_hit / expired
     "result_pct",
     "option_pnl_pct",
+    "days_to_entry", "days_held",
+    "mfe_pct", "mae_pct", "hold_expiry_pct",
+]
+
+PATH_METRIC_COLS = [
+    "exit_date", "days_to_entry", "days_held",
+    "mfe_pct", "mae_pct", "hold_expiry_pct",
 ]
 
 
@@ -55,7 +70,12 @@ def bs_price(S, K, T, r, sigma, opt):
 
 def parse_date(val):
     try:
-        return pd.to_datetime(val).date()
+        if val is None or val == "" or (isinstance(val, float) and math.isnan(val)):
+            return None
+        ts = pd.to_datetime(val, errors="coerce")
+        if pd.isna(ts):
+            return None
+        return ts.date()
     except Exception:
         return None
 
@@ -204,10 +224,210 @@ def resolve_first_touch(post, is_call, stop, tp1, tp2, tp3):
     return None
 
 
+def _as_ts(d):
+    if d is None:
+        return None
+    return pd.Timestamp(d).normalize()
+
+
+def hist_close_on_or_before(hist, target_date):
+    """آخر إغلاق في/قبل تاريخ معيّن."""
+    if hist is None or hist.empty or target_date is None:
+        return None
+    cutoff = _as_ts(target_date)
+    sub = hist[hist.index.normalize() <= cutoff]
+    if sub.empty:
+        return None
+    return float(sub["Close"].iloc[-1])
+
+
+def calc_mfe_mae(post, entry, is_call):
+    """أقصى حركة مواتية/معاكسة % من Entry على شموع يومية."""
+    if post is None or post.empty or entry <= 0:
+        return None, None
+    mfe = 0.0
+    mae = 0.0
+    for _, bar in post.iterrows():
+        h, l = float(bar["High"]), float(bar["Low"])
+        if is_call:
+            fav = (h - entry) / entry * 100.0
+            adv = (entry - l) / entry * 100.0
+        else:
+            fav = (entry - l) / entry * 100.0
+            adv = (h - entry) / entry * 100.0
+        if fav > mfe:
+            mfe = fav
+        if adv > mae:
+            mae = adv
+    return round(mfe, 2), round(mae, 2)
+
+
+def calendar_days(start, end):
+    if start is None or end is None:
+        return None
+    try:
+        return int((pd.Timestamp(end).date() - pd.Timestamp(start).date()).days)
+    except Exception:
+        return None
+
+
+def build_hist_cache(outcomes_df):
+    """تحميل يومي مرة واحدة لكل تيكر."""
+    today = datetime.now().date()
+    cache = {}
+    tickers = sorted({
+        str(t).strip()
+        for t in outcomes_df.get("ticker", pd.Series(dtype=str)).tolist()
+        if str(t).strip()
+    })
+    for ticker in tickers:
+        grp = outcomes_df[outcomes_df["ticker"].astype(str).str.strip() == ticker]
+        starts = [parse_date(d) for d in grp["date"].tolist()]
+        starts = [d for d in starts if d]
+        if not starts:
+            continue
+        start = min(starts) - timedelta(days=5)
+        end = today + timedelta(days=3)
+        try:
+            hist = yf.download(
+                ticker,
+                start=start.strftime("%Y-%m-%d"),
+                end=end.strftime("%Y-%m-%d"),
+                interval="1d",
+                progress=False,
+                auto_adjust=True,
+            )
+            if isinstance(hist.columns, pd.MultiIndex):
+                hist.columns = hist.columns.get_level_values(0)
+            cache[ticker] = hist if hist is not None else pd.DataFrame()
+        except Exception as e:
+            print(f"⚠️  {ticker}: فشل جلب التاريخ — {e}")
+            cache[ticker] = pd.DataFrame()
+    return cache
+
+
+def compute_path_metrics(row, hist, today=None):
+    """
+    يحسب مقاييس المراقبة لصف واحد.
+    يرجع dict بالحقول الجديدة (قد تكون None).
+    """
+    today = today or datetime.now().date()
+    out = {c: None for c in PATH_METRIC_COLS}
+
+    rec_date = parse_date(row.get("date"))
+    entry = float(row.get("entry_stock") or 0)
+    stop = float(row.get("stop_stock") or 0)
+    tp1 = float(row.get("tp1_stock") or 0)
+    tp2 = float(row.get("tp2_stock") or 0)
+    tp3 = float(row.get("tp3_stock") or 0)
+    expiry_date = parse_date(row.get("expiry"))
+    status = str(row.get("status") or "open")
+    is_call = resolve_is_call(row.get("direction"), entry, tp1, stop)
+
+    if entry <= 0 or hist is None or hist.empty or rec_date is None:
+        return out
+
+    # Entry hit من السجل أو إعادة اكتشاف — فقط داخل نافذة العقد
+    entry_hit = bool(row.get("entry_hit", False))
+    entry_hit_date = parse_date(row.get("entry_hit_date"))
+
+    def _entry_window(h):
+        w = h[h.index.normalize() >= _as_ts(rec_date)]
+        if expiry_date:
+            w = w[w.index.normalize() <= _as_ts(expiry_date)]
+        return w
+
+    # تجاهل دخول مسجّل بعد الانتهاء (بيانات قديمة خاطئة)
+    if entry_hit_date and expiry_date and entry_hit_date > expiry_date:
+        entry_hit = False
+        entry_hit_date = None
+
+    if not entry_hit or entry_hit_date is None:
+        post_rec = _entry_window(hist)
+        if is_call:
+            hit_days = post_rec[post_rec["High"] >= entry]
+        else:
+            hit_days = post_rec[post_rec["Low"] <= entry]
+        if not hit_days.empty:
+            entry_hit = True
+            entry_hit_date = hit_days.index[0].date()
+
+    if not entry_hit or entry_hit_date is None:
+        # بدون دخول داخل نافذة العقد
+        return out
+
+    # إذا لُمس Entry قبل/نفس يوم التوصية → 0 (جاهز فوراً)
+    dte = calendar_days(rec_date, entry_hit_date)
+    out["days_to_entry"] = 0 if dte is not None and dte < 0 else dte
+
+    # تاريخ الخروج
+    exit_date = parse_date(row.get("exit_date"))
+    if exit_date and expiry_date and exit_date > expiry_date:
+        exit_date = expiry_date
+    if exit_date is None and status != "open":
+        if status == "expired" and expiry_date:
+            exit_date = expiry_date
+        else:
+            post = hist[hist.index.normalize() >= _as_ts(entry_hit_date)]
+            if expiry_date:
+                post = post[post.index.normalize() <= _as_ts(expiry_date)]
+            touch = resolve_first_touch(post, is_call, stop, tp1, tp2, tp3)
+            if touch:
+                exit_date = touch[2]
+            elif status == "expired" and expiry_date:
+                exit_date = expiry_date
+
+    if status == "open":
+        hold_end = today
+        if expiry_date and today > expiry_date:
+            hold_end = expiry_date
+    else:
+        hold_end = exit_date or today
+
+    out["exit_date"] = exit_date.strftime("%Y-%m-%d") if exit_date else None
+    held = calendar_days(entry_hit_date, hold_end)
+    out["days_held"] = 0 if held is not None and held < 0 else held
+
+    # نافذة المسك لمقاييس MFE/MAE
+    window = hist[hist.index.normalize() >= _as_ts(entry_hit_date)]
+    if hold_end:
+        window = window[window.index.normalize() <= _as_ts(hold_end)]
+    mfe, mae = calc_mfe_mae(window, entry, is_call)
+    out["mfe_pct"] = mfe
+    out["mae_pct"] = mae
+
+    # نتيجة لو انمسك حتى إغلاق يوم الانتهاء
+    if expiry_date:
+        # لا نحسب قبل توفر شمعة الانتهاء (أو بعدها)
+        expiry_close = hist_close_on_or_before(hist, expiry_date)
+        have_expiry_bar = False
+        if not hist.empty:
+            have_expiry_bar = (hist.index.normalize() <= _as_ts(expiry_date)).any() and (
+                today >= expiry_date
+                or (hist.index.normalize() >= _as_ts(expiry_date)).any()
+            )
+        if expiry_close is not None and (today >= expiry_date or have_expiry_bar):
+            # إذا الانتهاء لم يأتِ بعد، لا تكتب قيمة نهائية
+            if today >= expiry_date:
+                out["hold_expiry_pct"] = move_pct(entry, expiry_close, is_call)
+
+    return out
+
+
+def apply_path_metrics(outcomes_df, idx, metrics):
+    for col, val in metrics.items():
+        outcomes_df.at[idx, col] = val
+
+
 def apply_close(outcomes_df, idx, row, status, entry, stock_price, is_call, exit_date=None):
-    """يحدّث status + result_pct + option_pnl_pct."""
+    """يحدّث status + result_pct + option_pnl_pct + exit_date."""
     outcomes_df.at[idx, "status"] = status
     outcomes_df.at[idx, "result_pct"] = move_pct(entry, stock_price, is_call)
+    if exit_date is not None:
+        if hasattr(exit_date, "strftime"):
+            outcomes_df.at[idx, "exit_date"] = exit_date.strftime("%Y-%m-%d")
+        else:
+            outcomes_df.at[idx, "exit_date"] = str(exit_date)[:10]
     opt_pnl = calc_option_pnl_pct(row, stock_price, exit_date)
     if opt_pnl is not None:
         outcomes_df.at[idx, "option_pnl_pct"] = opt_pnl
@@ -372,7 +592,10 @@ def repair_closed_option_estimates(outcomes_df):
 
 
 def load_outcomes():
-    STR_COLS = ["date", "ticker", "direction", "expiry", "entry_hit_date", "status"]
+    STR_COLS = [
+        "date", "ticker", "direction", "expiry",
+        "entry_hit_date", "exit_date", "status",
+    ]
     if os.path.exists(OUTCOMES_FILE):
         df = pd.read_csv(OUTCOMES_FILE)
         for col in OUTCOMES_COLS:
@@ -381,7 +604,9 @@ def load_outcomes():
         for col in STR_COLS:
             if col in df.columns:
                 df[col] = df[col].astype(object).where(df[col].notna(), None)
-        return df
+        ordered = [c for c in OUTCOMES_COLS if c in df.columns]
+        extra = [c for c in df.columns if c not in ordered]
+        return df[ordered + extra]
     return pd.DataFrame(columns=OUTCOMES_COLS)
 
 
@@ -481,9 +706,15 @@ def add_new_recommendations(outcomes_df):
             "dte_num":        r.get("dte_num"),
             "entry_hit":      False,
             "entry_hit_date": "",
+            "exit_date":      "",
             "status":         "open",
             "result_pct":     None,
             "option_pnl_pct": None,
+            "days_to_entry":  None,
+            "days_held":      None,
+            "mfe_pct":        None,
+            "mae_pct":        None,
+            "hold_expiry_pct": None,
         }
         outcomes_df = pd.concat(
             [outcomes_df, pd.DataFrame([new_row])],
@@ -496,7 +727,7 @@ def add_new_recommendations(outcomes_df):
     return outcomes_df
 
 
-def update_open_outcomes(outcomes_df):
+def update_open_outcomes(outcomes_df, hist_cache=None):
     open_mask = outcomes_df["status"] == "open"
     open_rows = outcomes_df[open_mask]
 
@@ -505,10 +736,12 @@ def update_open_outcomes(outcomes_df):
         return outcomes_df
 
     today = datetime.now().date()
+    if hist_cache is None:
+        hist_cache = build_hist_cache(outcomes_df)
 
     for idx, row in open_rows.iterrows():
         ticker     = str(row["ticker"]).strip()
-        rec_date   = pd.to_datetime(row["date"]).date()
+        rec_date   = parse_date(row["date"])
         entry      = float(row["entry_stock"] or 0)
         stop       = float(row["stop_stock"] or 0)
         tp1        = float(row["tp1_stock"] or 0)
@@ -517,22 +750,17 @@ def update_open_outcomes(outcomes_df):
         expiry_str = str(row.get("expiry", ""))
         is_call    = resolve_is_call(row.get("direction"), entry, tp1, stop)
 
-        if not ticker or entry <= 0:
+        if not ticker or entry <= 0 or rec_date is None:
             continue
 
         expiry_date = parse_date(expiry_str) or (today + timedelta(days=7))
-
-        try:
-            start = rec_date.strftime("%Y-%m-%d")
-            end   = (today + timedelta(days=2)).strftime("%Y-%m-%d")
-            hist  = yf.download(ticker, start=start, end=end,
-                                interval="1d", progress=False, auto_adjust=True)
-            if isinstance(hist.columns, pd.MultiIndex):
-                hist.columns = hist.columns.get_level_values(0)
-        except Exception as e:
-            print(f"⚠️  {ticker}: خطأ في جلب البيانات — {e}")
+        hist = hist_cache.get(ticker)
+        if hist is None or hist.empty:
+            print(f"⚠️  {ticker}: لا بيانات سعر")
             continue
 
+        # قص التاريخ من يوم التوصية فما بعد
+        hist = hist[hist.index.normalize() >= _as_ts(rec_date)]
         if hist.empty:
             continue
 
@@ -540,10 +768,11 @@ def update_open_outcomes(outcomes_df):
         entry_hit_date = row.get("entry_hit_date")
 
         if not entry_hit:
+            win = hist[hist.index.normalize() <= _as_ts(expiry_date)] if expiry_date else hist
             if is_call:
-                hit_days = hist[hist["High"] >= entry]
+                hit_days = win[win["High"] >= entry]
             else:
-                hit_days = hist[hist["Low"] <= entry]
+                hit_days = win[win["Low"] <= entry]
             if not hit_days.empty:
                 entry_hit      = True
                 entry_hit_date = hit_days.index[0].strftime("%Y-%m-%d")
@@ -551,7 +780,9 @@ def update_open_outcomes(outcomes_df):
                 outcomes_df.at[idx, "entry_hit_date"] = entry_hit_date
 
         if entry_hit and entry_hit_date:
-            post = hist[hist.index >= pd.to_datetime(entry_hit_date)]
+            post = hist[hist.index.normalize() >= _as_ts(entry_hit_date)]
+            if expiry_date:
+                post = post[post.index.normalize() <= _as_ts(expiry_date)]
             if not post.empty:
                 touch = resolve_first_touch(post, is_call, stop, tp1, tp2, tp3)
                 if touch:
@@ -559,13 +790,83 @@ def update_open_outcomes(outcomes_df):
                     apply_close(outcomes_df, idx, row, status, entry, exit_price, is_call, exit_d)
 
         if today > expiry_date and outcomes_df.at[idx, "status"] == "open":
-            last_close = float(hist["Close"].iloc[-1])
-            apply_close(outcomes_df, idx, row, "expired", entry, last_close, is_call, today)
+            # إغلاق بانتهاء العقد — استخدم إغلاق يوم الانتهاء إن وُجد
+            exp_close = hist_close_on_or_before(hist, expiry_date)
+            last_close = exp_close if exp_close is not None else float(hist["Close"].iloc[-1])
+            apply_close(
+                outcomes_df, idx, row, "expired", entry, last_close, is_call, expiry_date,
+            )
+
+        # حدّث مقاييس المسار للصف (مفتوح أو أُغلق الآن)
+        row_now = outcomes_df.loc[idx]
+        metrics = compute_path_metrics(row_now, hist_cache.get(ticker), today=today)
+        apply_path_metrics(outcomes_df, idx, metrics)
 
         opt_s = outcomes_df.at[idx, "option_pnl_pct"]
         opt_str = f" opt={opt_s:+.1f}%" if opt_s is not None and not pd.isna(opt_s) else ""
-        print(f"  {ticker}: {outcomes_df.at[idx, 'status']}{opt_str}")
+        mfe = outcomes_df.at[idx, "mfe_pct"]
+        mae = outcomes_df.at[idx, "mae_pct"]
+        path_str = ""
+        if mfe is not None and not pd.isna(mfe):
+            path_str = f" MFE={mfe:+.1f}% MAE={mae:+.1f}%"
+        print(f"  {ticker}: {outcomes_df.at[idx, 'status']}{opt_str}{path_str}")
 
+    return outcomes_df
+
+
+def enrich_path_metrics(outcomes_df, hist_cache=None):
+    """يملأ/يحدّث مقاييس المراقبة لكل الصفوف (مغلق ومفتوح)."""
+    if outcomes_df is None or outcomes_df.empty:
+        return outcomes_df
+
+    today = datetime.now().date()
+    if hist_cache is None:
+        print("📥 جلب أسعار يومية لمقاييس المسار...")
+        hist_cache = build_hist_cache(outcomes_df)
+
+    filled = 0
+    for idx, row in outcomes_df.iterrows():
+        ticker = str(row.get("ticker") or "").strip()
+        hist = hist_cache.get(ticker)
+        if hist is None or hist.empty:
+            continue
+        metrics = compute_path_metrics(row, hist, today=today)
+        # زامن entry_hit_date من المقاييس/النافذة الصحيحة
+        metrics_probe = compute_path_metrics(row, hist, today=today)
+        # أعد اكتشاف الدخول داخل نافذة العقد فقط
+        rec_date = parse_date(row.get("date"))
+        expiry_date = parse_date(row.get("expiry"))
+        entry = float(row.get("entry_stock") or 0)
+        tp1 = float(row.get("tp1_stock") or 0)
+        stop = float(row.get("stop_stock") or 0)
+        is_call = resolve_is_call(row.get("direction"), entry, tp1, stop)
+        if rec_date and entry > 0:
+            post_rec = hist[hist.index.normalize() >= _as_ts(rec_date)]
+            if expiry_date:
+                post_rec = post_rec[post_rec.index.normalize() <= _as_ts(expiry_date)]
+            hit_days = (
+                post_rec[post_rec["High"] >= entry]
+                if is_call else
+                post_rec[post_rec["Low"] <= entry]
+            )
+            old_hit = parse_date(row.get("entry_hit_date"))
+            if not hit_days.empty:
+                new_hit = hit_days.index[0].date()
+                outcomes_df.at[idx, "entry_hit"] = True
+                outcomes_df.at[idx, "entry_hit_date"] = new_hit.strftime("%Y-%m-%d")
+            elif old_hit and expiry_date and old_hit > expiry_date:
+                outcomes_df.at[idx, "entry_hit"] = False
+                outcomes_df.at[idx, "entry_hit_date"] = ""
+            row = outcomes_df.loc[idx]
+            metrics = compute_path_metrics(row, hist, today=today)
+        else:
+            metrics = metrics_probe
+
+        apply_path_metrics(outcomes_df, idx, metrics)
+        if metrics.get("days_to_entry") is not None or metrics.get("mfe_pct") is not None:
+            filled += 1
+
+    print(f"✅ مقاييس المسار: {filled}/{len(outcomes_df)} صف")
     return outcomes_df
 
 
@@ -587,6 +888,25 @@ def print_summary(outcomes_df):
     print(f"   Win Rate    : {win_rate:.1f}%")
     print(f"   Avg Win     : {avg_win:+.2f}%")
     print(f"   Avg Loss    : {avg_loss:+.2f}%")
+
+    path = outcomes_df.dropna(subset=["mfe_pct"], how="all") if "mfe_pct" in outcomes_df.columns else pd.DataFrame()
+    if not path.empty:
+        dte = pd.to_numeric(path.get("days_to_entry"), errors="coerce")
+        held = pd.to_numeric(path.get("days_held"), errors="coerce")
+        mfe = pd.to_numeric(path.get("mfe_pct"), errors="coerce")
+        mae = pd.to_numeric(path.get("mae_pct"), errors="coerce")
+        hx = pd.to_numeric(path.get("hold_expiry_pct"), errors="coerce")
+        print(f"\n⏱ مقاييس فترة المراقبة ({len(path)} صف):")
+        if dte.notna().any():
+            print(f"   Avg days→Entry : {dte.mean():.1f}")
+        if held.notna().any():
+            print(f"   Avg days held  : {held.mean():.1f}")
+        if mfe.notna().any():
+            print(f"   Avg MFE        : {mfe.mean():+.2f}%")
+        if mae.notna().any():
+            print(f"   Avg MAE        : {mae.mean():+.2f}%")
+        if hx.notna().any():
+            print(f"   Avg hold→expiry: {hx.mean():+.2f}%  ({hx.notna().sum()} صف)")
 
     with_opt = closed[closed["option_pnl_pct"].notna()]
     if not with_opt.empty:
@@ -615,7 +935,17 @@ if __name__ == "__main__":
         outcomes = add_new_recommendations(outcomes)
     else:
         print("  (EOD: تحديث النتائج فقط — بدون إضافة BUY جديدة)")
-    outcomes = update_open_outcomes(outcomes)
+
+    print("📥 جلب أسعار يومية...")
+    hist_cache = build_hist_cache(outcomes)
+    outcomes = update_open_outcomes(outcomes, hist_cache=hist_cache)
+    outcomes = enrich_path_metrics(outcomes, hist_cache=hist_cache)
+
+    # حفظ بترتيب الأعمدة القياسي
+    for col in OUTCOMES_COLS:
+        if col not in outcomes.columns:
+            outcomes[col] = None
+    outcomes = outcomes[[c for c in OUTCOMES_COLS if c in outcomes.columns]]
     outcomes.to_csv(OUTCOMES_FILE, index=False)
     print_summary(outcomes)
 

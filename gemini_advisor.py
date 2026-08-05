@@ -5,7 +5,7 @@ gemini_advisor.py
 لا يغيّر BUY/WAIT/AVOID — يضيف ملاحظة تحليلية قصيرة (عربي).
 
 المتغير: GEMINI_API_KEY من Google AI Studio
-اختياري: GEMINI_MODEL (افتراضي gemini-2.0-flash)
+اختياري: GEMINI_MODEL (افتراضي gemini-3.1-flash-lite)
 """
 
 from __future__ import annotations
@@ -19,13 +19,18 @@ import pandas as pd
 import requests
 
 RESULTS_FILE = "options_v3_results.csv"
-DEFAULT_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash").strip() or "gemini-2.0-flash"
+# 2.0/1.5 Flash أُغلقت mid-2026 — الافتراضي موديلات حالية قصيرة وسريعة
+DEFAULT_MODEL = (
+    os.environ.get("GEMINI_MODEL", "gemini-3.1-flash-lite").strip()
+    or "gemini-3.1-flash-lite"
+)
 MODEL_FALLBACKS = [
     DEFAULT_MODEL,
-    "gemini-2.0-flash",
+    "gemini-3.1-flash-lite",
+    "gemini-3.5-flash-lite",
+    "gemini-3.5-flash",
+    "gemini-2.5-flash-lite",
     "gemini-2.5-flash",
-    "gemini-1.5-flash",
-    "gemini-1.5-flash-latest",
 ]
 # unique preserve order
 _seen = set()
@@ -124,11 +129,13 @@ def advise_row(row: Mapping[str, Any], api_key: Optional[str] = None,
 
     models = [model] if model else list(MODEL_FALLBACKS)
     payload = _row_payload(row)
+    # maxOutputTokens مرتفع: موديلات Thinking (مثل 2.5/3.5 Flash) تستهلك الميزانية داخلياً
+    # لو الحد صغير يرجع candidates بدون نص ظاهر
     body = {
         "contents": [{"parts": [{"text": _build_prompt(payload)}]}],
         "generationConfig": {
             "temperature": 0.3,
-            "maxOutputTokens": 280,
+            "maxOutputTokens": 1024,
         },
     }
     last_err = ""
@@ -136,28 +143,46 @@ def advise_row(row: Mapping[str, Any], api_key: Optional[str] = None,
         if not model_id:
             continue
         url = f"{API_BASE}/models/{model_id}:generateContent"
-        try:
-            resp = requests.post(
-                url,
-                params={"key": key},
-                headers={"Content-Type": "application/json"},
-                json=body,
-                timeout=timeout,
-            )
-            if resp.status_code >= 400:
-                last_err = f"{model_id} HTTP {resp.status_code}: {resp.text[:160]}"
+        # جرّب بدون thinking أولاً (إن دعمه الموديل)، ثم بدون الحقل
+        payloads = [
+            {**body, "generationConfig": {
+                **body["generationConfig"],
+                "thinkingConfig": {"thinkingBudget": 0},
+            }},
+            body,
+        ]
+        for req_body in payloads:
+            try:
+                resp = requests.post(
+                    url,
+                    params={"key": key},
+                    headers={"Content-Type": "application/json"},
+                    json=req_body,
+                    timeout=timeout,
+                )
+                if resp.status_code >= 400:
+                    # thinkingConfig غير مدعوم → جرّب الطلب البسيط
+                    last_err = f"{model_id} HTTP {resp.status_code}: {resp.text[:180]}"
+                    if resp.status_code in (400, 404) and "thinkingConfig" in str(req_body):
+                        continue
+                    print(f"  ⚠ Gemini {last_err}")
+                    break
+                data = resp.json()
+                text = _extract_text(data)
+                text = " ".join(text.split())
+                if len(text) > 500:
+                    text = text[:497] + "…"
+                if text:
+                    print(f"  ✓ model={model_id}")
+                    return text
+                finish = ((data.get("candidates") or [{}])[0]).get("finishReason")
+                last_err = f"{model_id} empty text (finish={finish})"
                 print(f"  ⚠ Gemini {last_err}")
-                continue
-            text = _extract_text(resp.json())
-            text = " ".join(text.split())
-            if len(text) > 500:
-                text = text[:497] + "…"
-            if text:
-                return text
-            last_err = f"{model_id} empty text"
-        except Exception as e:
-            last_err = f"{model_id} {e}"
-            print(f"  ⚠ Gemini error: {last_err}")
+                break
+            except Exception as e:
+                last_err = f"{model_id} {e}"
+                print(f"  ⚠ Gemini error: {last_err}")
+                break
     if last_err:
         print(f"  ⚠ Gemini failed all models: {last_err}")
     return ""
@@ -206,6 +231,10 @@ def enrich_results_csv(path: str = RESULTS_FILE) -> bool:
         print("Gemini: لا يوجد GEMINI_API_KEY — تخطي المستشار")
         return True
     enriched = enrich_dataframe(df)
+    # أجبر العمود نصاً حتى لو فاضي — وإلا pandas يحفظه float64/NaN
+    enriched["gemini_note"] = (
+        enriched["gemini_note"].fillna("").astype(str).replace({"nan": "", "None": ""})
+    )
     enriched.to_csv(path, index=False)
     n = enriched["gemini_note"].fillna("").astype(str).str.strip()
     n = n[n.ne("") & n.str.lower().ne("nan")].shape[0]

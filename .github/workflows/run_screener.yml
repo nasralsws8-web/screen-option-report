@@ -42,11 +42,13 @@ jobs:
       - name: Gemini advisor (BUY/WAIT notes only)
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
         run: |
           if [ -z "${GEMINI_API_KEY:-}" ]; then
             echo "GEMINI_API_KEY missing — skip advisor"
             exit 0
           fi
+          echo "Using GEMINI_MODEL=${GEMINI_MODEL:-gemini-3.1-flash-lite (default)}"
           python gemini_advisor.py || echo "Gemini advisor soft-failed (continuing)"
 
       - name: Send Telegram notifications
