@@ -39,6 +39,12 @@ jobs:
       - name: Run outcome tracker
         run: python outcome_tracker.py
 
+      - name: Gemini advisor (BUY/WAIT notes only)
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: python gemini_advisor.py
+        continue-on-error: true
+
       - name: Send Telegram notifications
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}

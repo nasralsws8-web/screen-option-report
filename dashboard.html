@@ -1047,9 +1047,14 @@ function buildCard(r) {
         ${spyRegime ? `<div style="font-size:10px;color:#58a6ff;margin-top:2px">SPY: ${spyRegime}</div>` : ''}
       </div>
     </div>
-    ${recNote || againstSpy || premWarn ? `
+      ${recNote || againstSpy || premWarn ? `
     <div style="font-size:11px;color:#e3b341;background:#3d2d00;border-radius:6px;padding:6px 8px;margin-bottom:8px">
       ${recNote || (againstSpy ? 'تعارض مع اتجاه SPY — مراقبة فقط' : '')}${premWarn ? (recNote ? ' · ' : '') + 'Premium تحت $1' : ''}
+    </div>` : ''}
+    ${r.gemini_note ? `
+    <div style="font-size:11px;color:#c9d1d9;background:#1a2a40;border:1px solid #388bfd66;border-radius:6px;padding:8px 10px;margin-bottom:8px;line-height:1.55">
+      <div style="font-size:10px;color:#58a6ff;font-weight:700;margin-bottom:4px">🤖 مستشار Gemini (بعد القواعد)</div>
+      ${String(r.gemini_note).replace(/</g,'&lt;')}
     </div>` : ''}
     <div class="live-status status-entry-wait" id="live-status-${r.Ticker}">
       ⏳ ربط السعر اللحظي...

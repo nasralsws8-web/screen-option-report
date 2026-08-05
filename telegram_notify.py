@@ -205,6 +205,8 @@ def build_caption(row) -> str:
     conf      = row.get("confidence",      "N/A")
 
     symbol = contract_symbol(ticker, direction, expiry, strike)
+    gemini = str(row.get("gemini_note") or "").strip()
+    gemini_block = f"\n🤖 <b>مستشار Gemini</b>\n{gemini}\n" if gemini else ""
 
     return (
         f"<code>{symbol}</code>\n"
@@ -219,6 +221,7 @@ def build_caption(row) -> str:
         f"━━━━━━━━━━━━━━━━━━\n"
         f"📊 Score: <b>{score}</b>  |  Confidence: <b>{conf}%</b>\n"
         f"💰 Premium: <b>{fmt(premium)}</b>  |  OI: <b>{fmt_oi(oi)}</b>\n"
+        f"{gemini_block}"
         f"⚠️ <i>للأغراض التعليمية فقط</i>"
     )
 

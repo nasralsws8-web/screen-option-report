@@ -1684,7 +1684,7 @@ SAVE_COLS = [
     "entry_stock", "stop_stock", "tp1_stock", "tp2_stock", "tp3_stock", "tp1_rr",
     "tp1_rr_live", "entry_chased",
     "entry_note", "fh_gap_pct", "fh_pm_bullish", "fh_pm_strong", "fh_pm_note",
-    "spy_regime", "rec_note",
+    "spy_regime", "rec_note", "gemini_note",
     "Score", "recommendation", "confidence", "Notes", "scanned_at",
 ]
 
