@@ -15,6 +15,7 @@ if ROOT not in sys.path:
 
 from cheap_options_screener_v3 import entry_is_chased, is_exec_window  # noqa: E402
 from data_quality import classify_data_quality  # noqa: E402
+from outcome_tracker import resolve_first_touch  # noqa: E402
 from telegram_notify import (  # noqa: E402
     alert_key,
     load_sent,
@@ -109,6 +110,30 @@ class TestDataQuality(unittest.TestCase):
             "option_pnl_pct": -55,
         })
         self.assertEqual(q, "partial")
+
+
+class TestPreexistingTP(unittest.TestCase):
+    def _bar(self, o, h, l, c):
+        return pd.DataFrame(
+            {"Open": [o], "High": [h], "Low": [l], "Close": [c]},
+            index=pd.to_datetime(["2026-08-05"]),
+        )
+
+    def test_skips_tp_when_open_already_above_target(self):
+        # مثل AMZN: افتتاح 281 فوق TP1 275 مع لمس Entry 271 في نفس اليوم
+        post = self._bar(281.59, 282.79, 270.74, 272.65)
+        touch = resolve_first_touch(
+            post, True, stop=269.08, tp1=275.15, tp2=281.07, tp3=287.2, entry=271.61,
+        )
+        self.assertIsNone(touch)
+
+    def test_allows_tp_when_open_below_target(self):
+        post = self._bar(272.0, 276.0, 271.0, 275.5)
+        touch = resolve_first_touch(
+            post, True, stop=269.08, tp1=275.15, tp2=281.07, tp3=287.2, entry=271.61,
+        )
+        self.assertIsNotNone(touch)
+        self.assertEqual(touch[0], "tp1_hit")
 
 
 class TestTelegramDedupe(unittest.TestCase):

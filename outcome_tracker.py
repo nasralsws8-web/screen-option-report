@@ -266,10 +266,13 @@ def first_hit_date(post, level, is_call, hit_type="tp"):
     return None
 
 
-def resolve_first_touch(post, is_call, stop, tp1, tp2, tp3):
+def resolve_first_touch(post, is_call, stop, tp1, tp2, tp3, entry=None):
     """
     أول لمسة زمنية: يمشي يوم بيوم.
     إذا Stop و TP في نفس الشمعة اليومية → Stop يفوز (محافظة).
+    إذا افتتاح اليوم أصلاً عند/فوق TP (CALL) أو عند/تحت TP (PUT)
+    مع لمس Entry في نفس الشمعة → لا تُحتسب TP: الهدف كان محققاً قبل مسار الدخول
+    (شائع مع شموع يومية عندما يُطرح العقد والسعر فوق الهدف).
     يرجع (status, exit_price, exit_date) أو None.
     """
     levels = []
@@ -284,7 +287,15 @@ def resolve_first_touch(post, is_call, stop, tp1, tp2, tp3):
     if not levels:
         return None
 
+    try:
+        entry_f = float(entry) if entry is not None else None
+        if entry_f is not None and entry_f <= 0:
+            entry_f = None
+    except (TypeError, ValueError):
+        entry_f = None
+
     for dt, bar in post.iterrows():
+        o = float(bar["Open"]) if "Open" in bar.index and pd.notna(bar["Open"]) else None
         h, l = float(bar["High"]), float(bar["Low"])
         stop_hit = False
         tp_hits = []
@@ -305,6 +316,16 @@ def resolve_first_touch(post, is_call, stop, tp1, tp2, tp3):
             order = {"tp1_hit": 1, "tp2_hit": 2, "tp3_hit": 3}
             tp_hits.sort(key=lambda x: order.get(x[0], 9))
             status, level = tp_hits[0]
+            # هدف مُسبق على الافتتاح + دخول لاحق في نفس اليوم → مسار مضلل
+            if (
+                entry_f is not None
+                and o is not None
+                and (
+                    (is_call and o >= level and l <= entry_f)
+                    or ((not is_call) and o <= level and h >= entry_f)
+                )
+            ):
+                continue
             return status, level, dt.date()
     return None
 
@@ -513,7 +534,7 @@ def compute_path_metrics(row, hist, today=None):
             post = hist[hist.index.normalize() >= _as_ts(entry_hit_date)]
             if expiry_date:
                 post = post[post.index.normalize() <= _as_ts(expiry_date)]
-            touch = resolve_first_touch(post, is_call, stop, tp1, tp2, tp3)
+            touch = resolve_first_touch(post, is_call, stop, tp1, tp2, tp3, entry=entry)
             if touch:
                 exit_date = touch[2]
                 # سعر اللمس الفعلي من الشمعة إن أمكن أدق من المستوى
@@ -688,6 +709,72 @@ def recalculate_all_outcomes(outcomes_df):
         print(f"✅ أعيد حساب result_pct لـ {fixed_stock} صف")
     if fixed_opt:
         print(f"✅ أعيد حساب option_pnl_pct لـ {fixed_opt} صف")
+    return outcomes_df
+
+
+def repair_preexisting_tp_hits(outcomes_df, hist_cache=None):
+    """
+    يلغي إغلاق TP إذا كان افتتاح يوم الدخول أصلاً عند/فوق الهدف
+    مع لمس Entry في نفس الشمعة (الهدف تحقق قبل مسار الصفقة).
+    يعيد الصف إلى open ليعاد تقييمه من اليوم التالي.
+    """
+    if outcomes_df is None or outcomes_df.empty:
+        return outcomes_df
+    if hist_cache is None:
+        hist_cache = build_hist_cache(outcomes_df)
+
+    fixed = 0
+    for idx, row in outcomes_df.iterrows():
+        status = str(row.get("status") or "")
+        if not status.startswith("tp"):
+            continue
+        entry_d = parse_date(row.get("entry_hit_date"))
+        exit_d = parse_date(row.get("exit_date"))
+        if entry_d is None or exit_d is None or entry_d != exit_d:
+            continue
+
+        entry = float(row.get("entry_stock") or 0)
+        tp1 = float(row.get("tp1_stock") or 0)
+        tp2 = float(row.get("tp2_stock") or 0)
+        tp3 = float(row.get("tp3_stock") or 0)
+        stop = float(row.get("stop_stock") or 0)
+        is_call = resolve_is_call(row.get("direction"), entry, tp1, stop)
+        level = {"tp1_hit": tp1, "tp2_hit": tp2, "tp3_hit": tp3}.get(status, 0)
+        if entry <= 0 or level <= 0:
+            continue
+
+        ticker = str(row.get("ticker") or "").strip()
+        hist = hist_cache.get(ticker)
+        if hist is None or hist.empty:
+            continue
+        day = hist[hist.index.normalize() == _as_ts(entry_d)]
+        if day.empty:
+            continue
+        bar = day.iloc[0]
+        try:
+            o, h, l = float(bar["Open"]), float(bar["High"]), float(bar["Low"])
+        except (TypeError, ValueError, KeyError):
+            continue
+
+        preexisting = (
+            (is_call and o >= level and l <= entry)
+            or ((not is_call) and o <= level and h >= entry)
+        )
+        if not preexisting:
+            continue
+
+        outcomes_df.at[idx, "status"] = "open"
+        outcomes_df.at[idx, "exit_date"] = None
+        outcomes_df.at[idx, "exit_stock"] = None
+        outcomes_df.at[idx, "exit_premium"] = None
+        outcomes_df.at[idx, "exit_premium_source"] = None
+        outcomes_df.at[idx, "result_pct"] = None
+        outcomes_df.at[idx, "option_pnl_pct"] = None
+        fixed += 1
+        print(f"  ↺ {ticker}: أُلغي {status} — الهدف كان على الافتتاح قبل الدخول ({entry_d})")
+
+    if fixed:
+        print(f"✅ إصلاح TP مُسبق: {fixed} صف أُعيد فتحه")
     return outcomes_df
 
 
@@ -980,7 +1067,7 @@ def update_open_outcomes(outcomes_df, hist_cache=None):
             if expiry_date:
                 post = post[post.index.normalize() <= _as_ts(expiry_date)]
             if not post.empty:
-                touch = resolve_first_touch(post, is_call, stop, tp1, tp2, tp3)
+                touch = resolve_first_touch(post, is_call, stop, tp1, tp2, tp3, entry=entry)
                 if touch:
                     status, exit_price, exit_d = touch
                     apply_close(outcomes_df, idx, row, status, entry, exit_price, is_call, exit_d)
@@ -1341,6 +1428,7 @@ if __name__ == "__main__":
 
     print("📥 جلب أسعار يومية...")
     hist_cache = build_hist_cache(outcomes)
+    outcomes = repair_preexisting_tp_hits(outcomes, hist_cache=hist_cache)
     outcomes = update_open_outcomes(outcomes, hist_cache=hist_cache)
     outcomes = enrich_path_metrics(outcomes, hist_cache=hist_cache)
     outcomes = enrich_market_exit_premiums(outcomes)
