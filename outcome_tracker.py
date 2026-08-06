@@ -18,7 +18,10 @@ exit_premium_source = market | intrinsic | estimate
   mfe_pct         = أقصى حركة مواتية % من Entry أثناء المسك (Max Favorable)
   mae_pct         = أقصى تراجع معاكس % من Entry أثناء المسك (Max Adverse)
   hold_expiry_pct = حركة السهم % لو انمسك من Entry حتى إغلاق يوم الانتهاء
-  exit_date       = تاريخ إغلاق الصفقة (TP/Stop/Expiry)
+  expiry_premium  = سعر العقد عند/قرب يوم الانتهاء (حتى لو أُغلقت الصفقة عند TP/Stop)
+  expiry_premium_source = market | intrinsic | estimate
+  option_pnl_expiry_pct = P&L العقد % لو انمسك من premium الدخول حتى الانتهاء
+  exit_date       = تاريخ إغلاق الصفقة المدارة (TP/Stop/Expiry)
 """
 
 import math
@@ -50,6 +53,7 @@ OUTCOMES_COLS = [
     "option_pnl_pct",
     "days_to_entry", "days_held",
     "mfe_pct", "mae_pct", "hold_expiry_pct",
+    "expiry_premium", "expiry_premium_source", "option_pnl_expiry_pct",
     "data_quality",       # reliable | partial | unreliable | open
     "data_quality_note",
 ]
@@ -1140,6 +1144,103 @@ def enrich_market_exit_premiums(outcomes_df, cache=None):
     return outcomes_df
 
 
+def enrich_expiry_option_premiums(outcomes_df, hist_cache=None, cache=None):
+    """
+    يتابع سعر العقد يومياً حتى يوم الانتهاء — حتى لو أُغلقت الصفقة مبكراً عند TP/Stop.
+    asof = min(اليوم، expiry):
+      - قبل الانتهاء: آخر إغلاق سوق متاح (mark) → المصدر market
+      - يوم الانتهاء أو بعده: إغلاق الانتهاء أو intrinsic
+    يملأ: expiry_premium / expiry_premium_source / option_pnl_expiry_pct
+    ويحدّث hold_expiry_pct (سهم) بعد اكتمال يوم الانتهاء.
+    """
+    if outcomes_df is None or outcomes_df.empty:
+        return outcomes_df
+
+    for col in ("expiry_premium", "expiry_premium_source", "option_pnl_expiry_pct"):
+        if col not in outcomes_df.columns:
+            outcomes_df[col] = None
+
+    if cache is None:
+        cache = _OPTION_PRICE_CACHE
+    if hist_cache is None:
+        hist_cache = {}
+
+    today = datetime.now().date()
+    market_n = intrinsic_n = estimate_n = skip_n = fail_n = 0
+    print("📥 متابعة أسعار العقود حتى الانتهاء (يومياً)...")
+
+    for idx, row in outcomes_df.iterrows():
+        expiry_d = parse_date(row.get("expiry"))
+        if expiry_d is None:
+            fail_n += 1
+            continue
+
+        # لا نحدّث قبل يوم التوصية / بدون بيانات عقد
+        rec_d = parse_date(row.get("date"))
+        asof = min(today, expiry_d)
+        if rec_d and asof < rec_d:
+            skip_n += 1
+            continue
+
+        ticker = str(row.get("ticker") or "").strip()
+        strike = row.get("strike")
+        entry = float(row.get("entry_stock") or 0)
+        tp1 = float(row.get("tp1_stock") or 0)
+        stop = float(row.get("stop_stock") or 0)
+        is_call = resolve_is_call(row.get("direction"), entry, tp1, stop)
+        expired = today >= expiry_d
+
+        try:
+            prem = float(row.get("premium") or 0)
+        except (TypeError, ValueError):
+            prem = 0.0
+
+        hist = hist_cache.get(ticker)
+        stock_asof = (
+            hist_close_on_or_before(hist, asof)
+            if hist is not None and not getattr(hist, "empty", True)
+            else None
+        )
+
+        # حركة السهم لين الانتهاء — فقط بعد اكتمال يوم الـ expiry
+        if expired and stock_asof is not None and entry > 0:
+            outcomes_df.at[idx, "hold_expiry_pct"] = move_pct(entry, stock_asof, is_call)
+
+        mkt = market_option_close(ticker, row.get("expiry"), strike, is_call, asof, cache)
+        if mkt is not None:
+            outcomes_df.at[idx, "expiry_premium"] = mkt
+            outcomes_df.at[idx, "expiry_premium_source"] = "market"
+            if prem > 0:
+                outcomes_df.at[idx, "option_pnl_expiry_pct"] = round((mkt - prem) / prem * 100, 2)
+            market_n += 1
+            continue
+
+        if stock_asof is None or stock_asof <= 0:
+            fail_n += 1
+            continue
+
+        est = calc_option_exit_price(row, stock_asof, asof)
+        if est is None:
+            fail_n += 1
+            continue
+        # عند/بعد الانتهاء بدون سوق → intrinsic؛ قبلها تقدير BS
+        src = "intrinsic" if expired else "estimate"
+        outcomes_df.at[idx, "expiry_premium"] = est
+        outcomes_df.at[idx, "expiry_premium_source"] = src
+        if prem > 0:
+            outcomes_df.at[idx, "option_pnl_expiry_pct"] = round((est - prem) / prem * 100, 2)
+        if src == "intrinsic":
+            intrinsic_n += 1
+        else:
+            estimate_n += 1
+
+    print(
+        f"✅ عقد→انتهاء: سوق={market_n} | ذاتي={intrinsic_n} | "
+        f"تقدير={estimate_n} | تخطي={skip_n} | فشل={fail_n}"
+    )
+    return outcomes_df
+
+
 def apply_data_quality(outcomes_df):
     """يملأ data_quality / data_quality_note لكل الصفوف."""
     if outcomes_df is None or outcomes_df.empty:
@@ -1216,7 +1317,11 @@ def print_summary(outcomes_df):
         if mae.notna().any():
             print(f"   Avg MAE        : {mae.mean():+.2f}%")
         if hx.notna().any():
-            print(f"   Avg hold→expiry: {hx.mean():+.2f}%  ({hx.notna().sum()} صف)")
+            print(f"   Avg hold→expiry سهم: {hx.mean():+.2f}%  ({hx.notna().sum()} صف)")
+    if "option_pnl_expiry_pct" in outcomes_df.columns:
+        ox = pd.to_numeric(outcomes_df["option_pnl_expiry_pct"], errors="coerce")
+        if ox.notna().any():
+            print(f"   Avg عقد→انتهاء : {ox.mean():+.1f}%  ({ox.notna().sum()} صف)")
 
 
 if __name__ == "__main__":
@@ -1239,6 +1344,7 @@ if __name__ == "__main__":
     outcomes = update_open_outcomes(outcomes, hist_cache=hist_cache)
     outcomes = enrich_path_metrics(outcomes, hist_cache=hist_cache)
     outcomes = enrich_market_exit_premiums(outcomes)
+    outcomes = enrich_expiry_option_premiums(outcomes, hist_cache=hist_cache)
     outcomes = apply_data_quality(outcomes)
 
     # حفظ بترتيب الأعمدة القياسي

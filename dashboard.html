@@ -1542,7 +1542,7 @@ async function loadHistory(force) {
           <th style="padding:10px;text-align:right;color:#8b949e">مسك</th>
           <th style="padding:10px;text-align:right;color:#8b949e">MFE</th>
           <th style="padding:10px;text-align:right;color:#8b949e">MAE</th>
-          <th style="padding:10px;text-align:right;color:#8b949e">لو للانتهاء</th>
+          <th style="padding:10px;text-align:right;color:#8b949e">عقد→انتهاء</th>
           <th style="padding:10px;text-align:right;color:#8b949e">سجل CSV</th>
           <th style="padding:10px;text-align:right;color:#8b949e">الحالة الحية</th>
         </tr></thead>
@@ -1578,11 +1578,32 @@ async function loadHistory(force) {
             const mfeN = parseFloat(r.mfe_pct);
             const maeN = parseFloat(r.mae_pct);
             const hxN = parseFloat(r.hold_expiry_pct);
+            const expOptN = parseFloat(r.option_pnl_expiry_pct);
+            const expPremN = parseFloat(r.expiry_premium);
+            const expSrc = String(r.expiry_premium_source || '').toLowerCase();
+            const expSrcLabel = expSrc === 'market' ? 'سوق'
+              : expSrc === 'intrinsic' ? 'ذاتي'
+              : expSrc === 'estimate' ? 'تقدير'
+              : '';
             const dteStr = isNaN(dteN) ? '—' : (Math.round(dteN) + 'ي');
             const heldStr = isNaN(heldN) ? '—' : (Math.round(heldN) + 'ي');
             const mfeStr = isNaN(mfeN) ? '—' : (mfeN>=0?'+':'')+mfeN.toFixed(1)+'%';
             const maeStr = isNaN(maeN) ? '—' : (maeN>=0?'+':'')+maeN.toFixed(1)+'%';
-            const hxStr = isNaN(hxN) ? '—' : (hxN>=0?'+':'')+hxN.toFixed(1)+'%';
+            const expOptColor = isNaN(expOptN) ? '#8b949e' : expOptN >= 0 ? '#3fb950' : '#f85149';
+            const expOptStr = isNaN(expOptN) ? '—' : ((expOptN>=0?'+':'')+expOptN.toFixed(1)+'%');
+            const expPremStr = isNaN(expPremN) ? '' : ('$'+expPremN.toFixed(2));
+            const hxStockStr = isNaN(hxN) ? '' : ('سهم '+(hxN>=0?'+':'')+hxN.toFixed(1)+'%');
+            const expDateStr = String(r.expiry || '').slice(0, 10);
+            let expPhase = '';
+            if (expDateStr && /^\d{4}-\d{2}-\d{2}$/.test(expDateStr)) {
+              const expMs = Date.parse(expDateStr + 'T23:59:59Z');
+              expPhase = (!isNaN(expMs) && Date.now() < expMs) ? 'حتى الآن' : 'عند الانتهاء';
+            }
+            const hxHtml = isNaN(expOptN) && !hxStockStr
+              ? '<span style="color:#8b949e">—</span>'
+              : `<div style="font-weight:700;color:${expOptColor}">${expOptStr}</div>`
+                + (expPremStr ? `<div style="font-size:10px;color:#8b949e;margin-top:2px">${expPremStr}${expSrcLabel ? ' · '+expSrcLabel : ''}${expPhase ? ' · '+expPhase : ''}</div>` : '')
+                + (hxStockStr ? `<div style="font-size:10px;color:#8b949e;margin-top:2px">${hxStockStr}</div>` : '');
             const st = r.status || 'open';
             const isOpen = st === 'open';
             const entryHit = String(r.entry_hit).toLowerCase() === 'true';
@@ -1667,7 +1688,7 @@ async function loadHistory(force) {
               <td style="padding:10px;color:#8b949e">${heldStr}</td>
               <td style="padding:10px;color:#3fb950">${mfeStr}</td>
               <td style="padding:10px;color:#f85149">${maeStr}</td>
-              <td style="padding:10px;color:${isNaN(hxN)?'#8b949e':hxN>=0?'#3fb950':'#f85149'}">${hxStr}</td>
+              <td style="padding:10px;line-height:1.25">${hxHtml}</td>
               <td style="padding:10px;font-weight:700;color:${statusColor[st]||'#8b949e'}">${statusLabel[st]||st}</td>
               <td id="hist-live-${key}" style="padding:10px;font-size:12px;color:${liveSt ? (liveSt.cls==='status-stop'?'#f85149':liveSt.cls==='status-tp'?'#58a6ff':liveSt.cls==='status-in-trade'?'#3fb950':'#e3b341') : '#8b949e'}">${liveSt ? liveSt.label + (liveSt.dist ? ' · '+liveSt.dist : '') : (isOpen ? 'بانتظار سعر…' : '—')}</td>
             </tr>`;
