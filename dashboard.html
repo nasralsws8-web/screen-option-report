@@ -1026,6 +1026,17 @@ function buildCard(r) {
        (String(spyRegime).toUpperCase() === 'BEAR' && dir.includes('CALL')));
   const planRr = parseFloat(r.tp1_rr) || 0;
   const liveRrScan = parseFloat(r.tp1_rr_live) || 0;
+  const gapPct = parseFloat(r.gap_pct);
+  const fhGap = parseFloat(r.fh_gap_pct);
+  const earningsRaw = String(r.earnings || '').trim();
+  const hasEarnings = earningsRaw && earningsRaw.toLowerCase() !== 'nan' && earningsRaw !== 'None';
+  const notesRaw = String(r.Notes || r.notes || '').trim();
+  const hasNotes = notesRaw && notesRaw.toLowerCase() !== 'nan';
+  const chasedFlag = String(r.entry_chased || '').toLowerCase() === 'true';
+  const geminiRaw = String(r.gemini_note || '').trim();
+  const hasGemini = geminiRaw && geminiRaw.toLowerCase() !== 'nan' && geminiRaw !== 'None';
+  const be = calcBreakEven(r);
+  const optVol = parseInt(r.opt_vol || 0, 10) || 0;
 
   const staleCls = (lastScanFreshness && lastScanFreshness.level !== 'ok') ? ' stale-muted' : '';
 
@@ -1045,17 +1056,34 @@ function buildCard(r) {
           R:R خطة 1:${planRr.toFixed(1)}${Number.isFinite(liveRrScan) ? ` · حي 1:${liveRrScan.toFixed(1)}` : ''}
         </div>
         ${spyRegime ? `<div style="font-size:10px;color:#58a6ff;margin-top:2px">SPY: ${spyRegime}</div>` : ''}
+        ${chasedFlag ? `<div style="font-size:10px;color:#f85149;margin-top:2px;font-weight:700">⚠ مطاردة Entry</div>` : ''}
       </div>
     </div>
       ${recNote || againstSpy || premWarn ? `
     <div style="font-size:11px;color:#e3b341;background:#3d2d00;border-radius:6px;padding:6px 8px;margin-bottom:8px">
       ${recNote || (againstSpy ? 'تعارض مع اتجاه SPY — مراقبة فقط' : '')}${premWarn ? (recNote ? ' · ' : '') + 'Premium تحت $1' : ''}
     </div>` : ''}
-    ${r.gemini_note ? `
+    ${hasEarnings ? `
+    <div style="font-size:11px;color:#f85149;background:#2a1515;border:1px solid #f8514966;border-radius:6px;padding:6px 8px;margin-bottom:8px">
+      📅 Earnings: <strong>${earningsRaw}</strong> — راقب خطر قبل الانتهاء
+    </div>` : ''}
+    ${(!isNaN(gapPct) || !isNaN(fhGap)) ? `
+    <div style="font-size:11px;color:#c9d1d9;background:#21262d;border-radius:6px;padding:6px 8px;margin-bottom:8px">
+      فجوة السعر:
+      ${!isNaN(gapPct) ? `<strong style="color:${gapPct>=0?'#3fb950':'#f85149'}">${gapPct>=0?'+':''}${gapPct.toFixed(2)}%</strong>` : '—'}
+      ${!isNaN(fhGap) ? `<span style="color:#8b949e"> · Finnhub ${fhGap>=0?'+':''}${fhGap.toFixed(1)}%</span>` : ''}
+    </div>` : ''}
+    ${hasNotes ? `
+    <div style="font-size:10px;color:#8b949e;background:#161b22;border:1px solid #30363d;border-radius:6px;padding:6px 8px;margin-bottom:8px;line-height:1.5">
+      <div style="font-size:10px;color:#58a6ff;font-weight:700;margin-bottom:3px">مكونات الـ Score</div>
+      ${notesRaw.replace(/</g,'&lt;')}
+    </div>` : ''}
+    ${hasGemini ? `
     <div style="font-size:11px;color:#c9d1d9;background:#1a2a40;border:1px solid #388bfd66;border-radius:6px;padding:8px 10px;margin-bottom:8px;line-height:1.55">
       <div style="font-size:10px;color:#58a6ff;font-weight:700;margin-bottom:4px">🤖 مستشار Gemini (بعد القواعد)</div>
-      ${String(r.gemini_note).replace(/</g,'&lt;')}
-    </div>` : ''}
+      ${geminiRaw.replace(/</g,'&lt;')}
+    </div>` : ((rec === 'BUY' || rec === 'WAIT') ? `
+    <div style="font-size:10px;color:#8b949e;margin-bottom:8px">Gemini: لا ملاحظة بعد (تحقق من المفتاح/المسح الكامل)</div>` : '')}
     <div class="live-status status-entry-wait" id="live-status-${r.Ticker}">
       ⏳ ربط السعر اللحظي...
       <div class="live-dist">Finnhub → Entry / Stop / TP</div>
@@ -1064,11 +1092,10 @@ function buildCard(r) {
     <div style="font-size:11px;color:#58a6ff;font-weight:700;margin:4px 0 6px">📈 خطة السهم (الأساس)</div>
     ${entryNote ? `<div style="font-size:10px;color:#8b949e;margin-bottom:6px">${entryNote}</div>` : ''}
     ${String(r.fh_pm_bullish).toLowerCase()==='true' || r.fh_pm_bullish===true || r.fh_pm_bullish==='True' ? `
-    <div style="background:linear-gradient(90deg,#1a3a2a,#161b22);border:1px solid #3fb950;border-radius:8px;padding:8px 10px;margin-bottom:8px">
+    <div style="background:#1a3a2a;border:1px solid #3fb950;border-radius:8px;padding:8px 10px;margin-bottom:8px">
       <div style="font-size:12px;font-weight:700;color:#3fb950">✓ صعود بريماركت (Finnhub)</div>
       <div style="font-size:10px;color:#8b949e;margin-top:2px">${r.fh_pm_note || ('فجوة ' + (r.fh_gap_pct || '') + '%')}${String(r.fh_pm_strong).toLowerCase()==='true' || r.fh_pm_strong===true ? ' · قوي' : ''}</div>
-    </div>` : (r.fh_gap_pct !== undefined && r.fh_gap_pct !== '' && r.fh_gap_pct != null ? `
-    <div style="font-size:10px;color:#8b949e;margin-bottom:6px">Finnhub gap: ${parseFloat(r.fh_gap_pct).toFixed(1)}% — بدون تأكيد صعود</div>` : '')}
+    </div>` : ''}
     <div style="display:flex;gap:8px;margin-bottom:6px">
       <div style="flex:1;background:#1a2a1a;border:1px solid #238636;border-radius:6px;padding:8px 10px">
         <div style="font-size:10px;color:#8b949e">🚀 Entry</div>
@@ -1124,6 +1151,14 @@ function buildCard(r) {
           <div class="card-item-label">Spread</div>
           <div class="card-item-value ${spreadOk}">${spread ? (spread*100).toFixed(1)+'%' : 'N/A'}</div>
         </div>
+        <div class="card-item">
+          <div class="card-item-label">OptVol</div>
+          <div class="card-item-value">${optVol ? optVol.toLocaleString() : 'N/A'}</div>
+        </div>
+        <div class="card-item">
+          <div class="card-item-label">BreakEven</div>
+          <div class="card-item-value" style="color:#e3b341">${be}</div>
+        </div>
       </div>` : `
       <div style="background:#21262d;border:1px dashed #30363d;border-radius:8px;padding:12px;text-align:center;color:#8b949e;font-size:12px">
         ⚠️ لا عقد موثوق اليوم — ركّز على خطة السهم
@@ -1138,8 +1173,7 @@ function buildCard(r) {
 function renderTable(rows) {
   const thead = document.querySelector('#mainTable thead');
   const tbody = document.querySelector('#mainTable tbody');
-  const cols = ['Ticker','Price','strike','Entry','stop_stock','tp1_stock','tp2_stock','tp3_stock','BreakEven','premium','iv','oi','opt_vol','spread_pct','atr_pct','RVOL','pm_high','direction','Score','recommendation','confidence'];
-  const labels = ['Ticker','Price','Strike','Entry','Stop 🛑','TP1 🎯','TP2 🎯','TP3 🏆','BreakEven ⚖️','Premium','IV','OI','OptVol','Spread%','ATR%','RVOL','PM High','Direction','Score','Rec','Conf%'];
+  const labels = ['Ticker','Price','Strike','Entry','Stop','TP1','TP2','TP3','BreakEven','Premium','IV','OI','OptVol','Spread%','Gap%','ATR%','RVOL','Earnings','Direction','Score','Rec','Conf%','Notes'];
 
   thead.innerHTML = '<tr>' + labels.map(l => `<th>${l}</th>`).join('') + '</tr>';
   tbody.innerHTML = rows.map(r => {
@@ -1151,6 +1185,13 @@ function renderTable(rows) {
     const stk = parseFloat(r.strike||0);
     const entry = calcEntry(r);
     const be = calcBreakEven(r);
+    const gap = parseFloat(r.gap_pct);
+    const earn = String(r.earnings || '').trim();
+    const earnStr = earn && earn.toLowerCase() !== 'nan' ? earn : '—';
+    const notes = String(r.Notes || '').trim();
+    const notesShort = notes && notes.toLowerCase() !== 'nan'
+      ? (notes.length > 48 ? notes.slice(0, 48) + '…' : notes)
+      : '—';
     return `<tr>
       <td class="tbl-ticker">${r.Ticker}</td>
       <td>$${parsePrice(r.Price || r.price_num).toFixed(2)}</td>
@@ -1166,13 +1207,15 @@ function renderTable(rows) {
       <td>${parseInt(r.oi||0).toLocaleString()}</td>
       <td>${parseInt(r.opt_vol||0).toLocaleString()}</td>
       <td class="${sp<0.08?'tbl-buy':sp<0.15?'tbl-wait':'tbl-avoid'}">${sp ? (sp*100).toFixed(1)+'%' : 'N/A'}</td>
+      <td style="color:${isNaN(gap)?'#8b949e':gap>=0?'#3fb950':'#f85149'}">${isNaN(gap)?'—':(gap>=0?'+':'')+gap.toFixed(2)+'%'}</td>
       <td>${r.atr_pct ? parseFloat(r.atr_pct).toFixed(1)+'%' : 'N/A'}</td>
       <td>${r.RVOL||'N/A'}</td>
-      <td>${r.pm_high ? '$'+parseFloat(r.pm_high).toFixed(2) : 'N/A'}</td>
+      <td style="color:${earnStr==='—'?'#8b949e':'#f85149'};font-size:11px">${earnStr}</td>
       <td class="${dirClass(r.direction)}">${(r.direction||'').replace('📈','↑').replace('📉','↓')}</td>
       <td><span class="score-badge ${scoreClass(sc)}">${sc}</span></td>
       <td class="${recCls}">${rec}</td>
       <td style="color:${confColor(r.confidence)}">${r.confidence||0}%</td>
+      <td style="font-size:10px;color:#8b949e;max-width:160px" title="${notes.replace(/"/g,'&quot;')}">${notesShort}</td>
     </tr>`;
   }).join('');
 }
@@ -1397,11 +1440,18 @@ async function loadHistory(force) {
           <th style="padding:10px;text-align:right;color:#8b949e">التاريخ</th>
           <th style="padding:10px;text-align:right;color:#8b949e">العقد</th>
           <th style="padding:10px;text-align:right;color:#8b949e">الاتجاه</th>
+          <th style="padding:10px;text-align:right;color:#8b949e">Score</th>
           <th style="padding:10px;text-align:right;color:#8b949e">ثقة</th>
+          <th style="padding:10px;text-align:right;color:#8b949e">DTE</th>
+          <th style="padding:10px;text-align:right;color:#8b949e">IV</th>
           <th style="padding:10px;text-align:right;color:#8b949e">Entry</th>
+          <th style="padding:10px;text-align:right;color:#8b949e">دخول تحقق</th>
+          <th style="padding:10px;text-align:right;color:#8b949e">خروج</th>
           <th style="padding:10px;text-align:right;color:#8b949e">السعر الحالي</th>
           <th style="padding:10px;text-align:right;color:#8b949e">vs Entry</th>
           <th style="padding:10px;text-align:right;color:#8b949e">TP1</th>
+          <th style="padding:10px;text-align:right;color:#8b949e">TP2</th>
+          <th style="padding:10px;text-align:right;color:#8b949e">TP3</th>
           <th style="padding:10px;text-align:right;color:#8b949e">Stop</th>
           <th style="padding:10px;text-align:right;color:#8b949e">Premium دخول</th>
           <th style="padding:10px;text-align:right;color:#8b949e">Premium خروج</th>
@@ -1483,15 +1533,36 @@ async function loadHistory(force) {
               <div style="font-weight:700;color:#58a6ff">${r.ticker || '—'}</div>
               <div style="font-size:11px;color:#e3b341;margin-top:2px">Strike ${strikeStr}</div>
               <div style="font-size:11px;color:#8b949e">Exp ${expShort}</div>`;
+            const scoreN = parseFloat(r.score);
+            const scoreStr = isNaN(scoreN) ? '—' : String(Math.round(scoreN));
+            const ivN = parseFloat(r.iv);
+            const ivStr = isNaN(ivN) ? '—' : ((ivN <= 2 ? ivN * 100 : ivN).toFixed(1) + '%');
+            const dteRec = parseFloat(r.dte_num);
+            const dteRecStr = isNaN(dteRec) ? '—' : String(Math.round(dteRec));
+            const entryHitDate = String(r.entry_hit_date || '').slice(0, 10);
+            const entryHitDateStr = entryHit && entryHitDate && entryHitDate !== 'nan' ? entryHitDate : (entryHit ? '✓' : '—');
+            const exitDateRaw = String(r.exit_date || '').slice(0, 10);
+            const exitDateStr = (!isOpen && exitDateRaw && exitDateRaw !== 'nan') ? exitDateRaw : (isOpen ? '—' : '—');
+            const tp2 = parseFloat(r.tp2_stock);
+            const tp3 = parseFloat(r.tp3_stock);
+            const tp2Str = isNaN(tp2) || tp2 <= 0 ? '—' : ('$' + tp2.toFixed(2));
+            const tp3Str = isNaN(tp3) || tp3 <= 0 ? '—' : ('$' + tp3.toFixed(2));
             return `<tr style="border-bottom:1px solid #21262d">
               <td style="padding:10px;color:#8b949e">${r.date||'—'}</td>
               <td style="padding:10px;line-height:1.25">${contractHtml}</td>
               <td style="padding:10px;color:${dirColor}">${dirLabel}</td>
+              <td style="padding:10px"><span class="score-badge ${scoreClass(scoreN)}">${scoreStr}</span></td>
               <td style="padding:10px;color:${confColor(r.confidence)}">${r.confidence||0}%</td>
+              <td style="padding:10px;color:#8b949e">${dteRecStr}</td>
+              <td style="padding:10px;color:#8b949e">${ivStr}</td>
               <td style="padding:10px">$${parseFloat(r.entry_stock||0).toFixed(2)}${entryHit ? ' ✓' : ''}</td>
+              <td style="padding:10px;color:#8b949e;font-size:12px">${entryHitDateStr}</td>
+              <td style="padding:10px;color:#8b949e;font-size:12px">${exitDateStr}</td>
               <td id="hist-price-${key}" style="padding:10px;color:${isOpen ? '#58a6ff' : '#8b949e'}">${liveP > 0 ? '$'+liveP.toFixed(2) : '—'}</td>
               <td id="hist-move-${key}" style="padding:10px;font-weight:700;color:${moveColor}">${moveStr}</td>
               <td style="padding:10px;color:#3fb950">$${parseFloat(r.tp1_stock||0).toFixed(2)}</td>
+              <td style="padding:10px;color:#3fb950">${tp2Str}</td>
+              <td style="padding:10px;color:#58a6ff">${tp3Str}</td>
               <td style="padding:10px;color:#f85149">$${parseFloat(r.stop_stock||0).toFixed(2)}</td>
               <td style="padding:10px;color:#e3b341">${premStr}</td>
               <td style="padding:10px;line-height:1.25">${exitPremHtml}</td>
