@@ -1549,19 +1549,34 @@ async function loadHistory(force) {
         <tbody>
           ${rows.sort((a,b)=>b.date>a.date?1:-1).map(r=>{
             const key = historyRowKey(r);
-            const res = parseFloat(r.result_pct);
-            const resStr = isNaN(res) ? '—' : (res>=0?'+':'')+res.toFixed(2)+'%';
-            const resColor = isNaN(res)?'#8b949e':res>=0?'#3fb950':'#f85149';
-            const optPnl = parseFloat(r.option_pnl_pct);
-            const optStr = isNaN(optPnl) ? '—' : (optPnl>=0?'+':'')+optPnl.toFixed(1)+'%';
-            const optColor = isNaN(optPnl)?'#8b949e':optPnl>=0?'#3fb950':'#f85149';
+            const st = r.status || 'open';
+            const isOpen = st === 'open';
             const prem = parseFloat(r.premium);
             const premStr = isNaN(prem) ? '—' : '$'+prem.toFixed(2);
-            const exitPrem = parseFloat(r.exit_premium);
+            const expOptN = parseFloat(r.option_pnl_expiry_pct);
+            const expPremN = parseFloat(r.expiry_premium);
+            const expSrc = String(r.expiry_premium_source || '').toLowerCase();
+            const expSrcLabel = expSrc === 'market' ? 'سوق'
+              : expSrc === 'intrinsic' ? 'ذاتي'
+              : expSrc === 'estimate' ? 'تقدير'
+              : '';
+            // صف مفتوح: أعمدة الخروج كانت — ؛ نعرض mark غير محقق من متابعة العقد
+            const optPnlClosed = parseFloat(r.option_pnl_pct);
+            const optPnl = isOpen
+              ? (isNaN(expOptN) ? optPnlClosed : expOptN)
+              : optPnlClosed;
+            const optStr = isNaN(optPnl) ? '—' : (optPnl>=0?'+':'')+optPnl.toFixed(1)+'%';
+            const optColor = isNaN(optPnl)?'#8b949e':optPnl>=0?'#3fb950':'#f85149';
+            const exitPremClosed = parseFloat(r.exit_premium);
+            const exitPrem = isOpen
+              ? (isNaN(expPremN) ? exitPremClosed : expPremN)
+              : exitPremClosed;
             const exitPremStr = isNaN(exitPrem) ? '—' : '$'+exitPrem.toFixed(2);
             const exitPremColor = isNaN(exitPrem) || isNaN(prem) ? '#8b949e'
               : exitPrem >= prem ? '#3fb950' : '#f85149';
-            const premSrc = String(r.exit_premium_source || '').toLowerCase();
+            const premSrc = isOpen
+              ? expSrc
+              : String(r.exit_premium_source || '').toLowerCase();
             const premSrcLabel = premSrc === 'market' ? 'سوق'
               : premSrc === 'intrinsic' ? 'ذاتي'
               : premSrc === 'estimate' ? 'تقدير'
@@ -1571,20 +1586,34 @@ async function loadHistory(force) {
               : '#8b949e';
             const exitPremHtml = isNaN(exitPrem)
               ? '<span style="color:#8b949e">—</span>'
-              : `<div style="font-weight:700;color:${exitPremColor}">${exitPremStr}</div>`
-                + (premSrcLabel ? `<div style="font-size:10px;color:${premSrcColor};margin-top:2px">${premSrcLabel}</div>` : '');
+              : (isOpen
+                ? `<div style="font-weight:700;color:${exitPremColor}">${exitPremStr}</div>
+                   <div style="font-size:10px;color:${premSrcColor};margin-top:2px">غير محقق${premSrcLabel ? ' · '+premSrcLabel : ''} · حتى الآن</div>`
+                : `<div style="font-weight:700;color:${exitPremColor}">${exitPremStr}</div>`
+                  + (premSrcLabel ? `<div style="font-size:10px;color:${premSrcColor};margin-top:2px">${premSrcLabel}</div>` : ''));
+            const entryHit = String(r.entry_hit).toLowerCase() === 'true';
+            const fallbackPrice = parseFloat(String(r.price_at_rec || '').replace('$', '')) || 0;
+            const liveP = livePrices[r.ticker]?.price || fallbackPrice;
+            const plan = outcomeToPlan(r);
+            const liveSt = isOpen && liveP > 0 ? evalLiveStatus(plan, liveP) : null;
+            const isCall = planIsCall(plan);
+            const moveLive = isOpen && liveP > 0 ? movePctFromEntry(plan.entry, liveP, isCall) : null;
+            const resClosed = parseFloat(r.result_pct);
+            const res = isOpen ? (moveLive === null ? resClosed : moveLive) : resClosed;
+            const resOk = Number.isFinite(res);
+            const resStr = resOk ? ((res>=0?'+':'')+Number(res).toFixed(2)+'%') : '—';
+            const resColor = !resOk ? '#8b949e' : res>=0 ? '#3fb950' : '#f85149';
+            const vsEntryStr = isOpen
+              ? (moveLive === null ? '—' : ((moveLive >= 0 ? '+' : '') + moveLive.toFixed(1) + '%'))
+              : '—';
+            const vsEntryColor = isOpen
+              ? (moveLive === null ? '#8b949e' : moveLive >= 0 ? '#3fb950' : '#f85149')
+              : '#8b949e';
             const dteN = parseFloat(r.days_to_entry);
             const heldN = parseFloat(r.days_held);
             const mfeN = parseFloat(r.mfe_pct);
             const maeN = parseFloat(r.mae_pct);
             const hxN = parseFloat(r.hold_expiry_pct);
-            const expOptN = parseFloat(r.option_pnl_expiry_pct);
-            const expPremN = parseFloat(r.expiry_premium);
-            const expSrc = String(r.expiry_premium_source || '').toLowerCase();
-            const expSrcLabel = expSrc === 'market' ? 'سوق'
-              : expSrc === 'intrinsic' ? 'ذاتي'
-              : expSrc === 'estimate' ? 'تقدير'
-              : '';
             const dteStr = isNaN(dteN) ? '—' : (Math.round(dteN) + 'ي');
             const heldStr = isNaN(heldN) ? '—' : (Math.round(heldN) + 'ي');
             const mfeStr = isNaN(mfeN) ? '—' : (mfeN>=0?'+':'')+mfeN.toFixed(1)+'%';
@@ -1604,17 +1633,6 @@ async function loadHistory(force) {
               : `<div style="font-weight:700;color:${expOptColor}">${expOptStr}</div>`
                 + (expPremStr ? `<div style="font-size:10px;color:#8b949e;margin-top:2px">${expPremStr}${expSrcLabel ? ' · '+expSrcLabel : ''}${expPhase ? ' · '+expPhase : ''}</div>` : '')
                 + (hxStockStr ? `<div style="font-size:10px;color:#8b949e;margin-top:2px">${hxStockStr}</div>` : '');
-            const st = r.status || 'open';
-            const isOpen = st === 'open';
-            const entryHit = String(r.entry_hit).toLowerCase() === 'true';
-            const fallbackPrice = parseFloat(String(r.price_at_rec || '').replace('$', '')) || 0;
-            const liveP = livePrices[r.ticker]?.price || fallbackPrice;
-            const plan = outcomeToPlan(r);
-            const liveSt = isOpen && liveP > 0 ? evalLiveStatus(plan, liveP) : null;
-            const isCall = planIsCall(plan);
-            const move = isOpen && liveP > 0 ? movePctFromEntry(plan.entry, liveP, isCall) : null;
-            const moveStr = move === null ? '—' : (move >= 0 ? '+' : '') + move.toFixed(1) + '%';
-            const moveColor = move === null ? '#8b949e' : move >= 0 ? '#3fb950' : '#f85149';
             const dir = (r.direction || '').toUpperCase();
             const dirColor = dir.includes('CALL') ? '#3fb950' : dir.includes('PUT') ? '#f85149' : '#8b949e';
             const dirLabel = dir.includes('CALL') ? 'CALL ↑' : dir.includes('PUT') ? 'PUT ↓' : 'NEUTRAL';
@@ -1626,10 +1644,23 @@ async function loadHistory(force) {
             const exitLabel = st === 'expired' ? 'عند الانتهاء'
               : st === 'stop_hit' ? 'عند Stop'
               : (st.startsWith('tp') ? 'عند ' + st.replace('_hit','').toUpperCase() : 'خروج');
-            const exitHtml = isOpen || isNaN(exitPx)
+            const exitHtml = isOpen
+              ? (liveP > 0
+                ? `<div style="font-weight:700;color:#58a6ff">$${liveP.toFixed(2)}</div>
+                   <div style="font-size:10px;color:#8b949e;margin-top:2px">حي الآن</div>`
+                : '<span style="color:#8b949e">—</span>')
+              : (isNaN(exitPx)
+                ? '<span style="color:#8b949e">—</span>'
+                : `<div style="font-weight:700;color:#c9d1d9">$${exitPx.toFixed(2)}</div>
+                   <div style="font-size:10px;color:#8b949e;margin-top:2px">${exitLabel}</div>`);
+            const optHtml = isNaN(optPnl)
               ? '<span style="color:#8b949e">—</span>'
-              : `<div style="font-weight:700;color:#c9d1d9">$${exitPx.toFixed(2)}</div>
-                 <div style="font-size:10px;color:#8b949e;margin-top:2px">${exitLabel}</div>`;
+              : `<div style="font-weight:700;color:${optColor}">${optStr}</div>`
+                + (isOpen ? `<div style="font-size:10px;color:#8b949e;margin-top:2px">غير محقق</div>` : '');
+            const resHtml = !resOk
+              ? '<span style="color:#8b949e">—</span>'
+              : `<div style="font-weight:700;color:${resColor}">${resStr}</div>`
+                + (isOpen ? `<div style="font-size:10px;color:#8b949e;margin-top:2px">حي</div>` : '');
             const contractHtml = `
               <div style="font-weight:700;color:#58a6ff">${r.ticker || '—'}</div>
               <div style="font-size:11px;color:#e3b341;margin-top:2px">Strike ${strikeStr}</div>
@@ -1674,15 +1705,15 @@ async function loadHistory(force) {
               <td style="padding:10px;color:#8b949e;font-size:12px">${entryHitDateStr}</td>
               <td style="padding:10px;color:#8b949e;font-size:12px">${exitDateStr}</td>
               <td id="hist-price-${key}" style="padding:10px;color:${isOpen ? '#58a6ff' : '#8b949e'}">${liveP > 0 ? '$'+liveP.toFixed(2) : '—'}</td>
-              <td id="hist-move-${key}" style="padding:10px;font-weight:700;color:${moveColor}">${moveStr}</td>
+              <td id="hist-move-${key}" style="padding:10px;font-weight:700;color:${isOpen ? vsEntryColor : '#8b949e'}">${isOpen ? vsEntryStr : '—'}</td>
               <td style="padding:10px;color:#3fb950">$${parseFloat(r.tp1_stock||0).toFixed(2)}</td>
               <td style="padding:10px;color:#3fb950">${tp2Str}</td>
               <td style="padding:10px;color:#58a6ff">${tp3Str}</td>
               <td style="padding:10px;color:#f85149">$${parseFloat(r.stop_stock||0).toFixed(2)}</td>
               <td style="padding:10px;color:#e3b341">${premStr}</td>
               <td style="padding:10px;line-height:1.25">${exitPremHtml}</td>
-              <td style="padding:10px;font-weight:700;color:${optColor}">${optStr}</td>
-              <td style="padding:10px;color:${resColor}">${resStr}</td>
+              <td style="padding:10px;line-height:1.25">${optHtml}</td>
+              <td style="padding:10px;line-height:1.25">${resHtml}</td>
               <td style="padding:10px;line-height:1.25">${exitHtml}</td>
               <td style="padding:10px;color:#8b949e">${dteStr}</td>
               <td style="padding:10px;color:#8b949e">${heldStr}</td>
