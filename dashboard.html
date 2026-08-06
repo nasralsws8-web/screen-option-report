@@ -344,16 +344,35 @@ async function fetchTextNoCache(urls, opts = {}) {
   throw new Error((lastErr && lastErr.message ? lastErr.message : 'Load failed') + fileHint);
 }
 
+/** يمنع file:// بالكامل — هو سبب تكرار CSV القديم و«اختفاء» الفرص */
+function blockFileProtocol() {
+  if (typeof location === 'undefined' || location.protocol !== 'file:') return false;
+  const shared = 'https://nasralsws8-web.github.io/screen-option-report/dashboard.html';
+  const local = 'http://127.0.0.1:8766/dashboard.html';
+  document.body.innerHTML = `
+    <div style="min-height:100vh;display:flex;align-items:center;justify-content:center;background:#0d1117;color:#e6edf3;font-family:system-ui,sans-serif;padding:24px;text-align:center;direction:rtl">
+      <div style="max-width:520px;line-height:1.7">
+        <div style="font-size:22px;font-weight:800;color:#f85149;margin-bottom:12px">⛔ لا تفتح الداشبورد كملف (file://)</div>
+        <p style="color:#c9d1d9;margin-bottom:14px">
+          لهذا السبب تحس إن الفرص «تروح»: المتصفح يقرأ CSV قديم من جهازك، بينما GitHub عنده مسح أحدث.
+        </p>
+        <p style="margin-bottom:18px">سيُحوَّل تلقائياً خلال ثوانٍ إلى الرابط المشترك:</p>
+        <p style="margin-bottom:10px">
+          <a href="${shared}" style="color:#58a6ff;font-size:16px;font-weight:700">${shared}</a>
+        </p>
+        <p style="font-size:13px;color:#8b949e;margin-bottom:16px">
+          أو محلياً بعد تشغيل السيرفر:<br>
+          <a href="${local}" style="color:#3fb950">${local}</a>
+        </p>
+        <a href="${shared}" style="display:inline-block;background:#238636;color:#fff;text-decoration:none;padding:10px 18px;border-radius:8px;font-weight:700">افتح الرابط الصحيح الآن</a>
+      </div>
+    </div>`;
+  setTimeout(() => { location.replace(shared); }, 2500);
+  return true;
+}
+
 function warnIfFileProtocol() {
-  if (typeof location === 'undefined' || location.protocol !== 'file:') return;
-  const el = document.getElementById('staleBanner');
-  if (!el) return;
-  el.className = 'stale-banner show hard';
-  el.innerHTML = `
-    ⛔ فتحت الداشبورد كملف محلي (file://) — Safari قد يجلب CSV قديم من الكاش
-    <div class="stale-sub">افتح بدلها:
-    <a href="http://127.0.0.1:8766/dashboard.html" style="color:#fff;text-decoration:underline">http://127.0.0.1:8766/dashboard.html</a>
-    (شغّل أولاً من مجلد المشروع: <code style="background:#21262d;padding:2px 6px;border-radius:4px">python3 -m http.server 8766</code>)</div>`;
+  blockFileProtocol();
 }
 
 function parseScanDate(scannedAt) {
@@ -1921,13 +1940,14 @@ async function prefetchOutcomes() {
   } catch (e) { /* ignore */ }
 }
 
-warnIfFileProtocol();
-loadData();
-if (document.getElementById('autoRefresh').checked) {
-  autoTimer = setInterval(loadData, 2*60*1000);
+if (!blockFileProtocol()) {
+  loadData();
+  if (document.getElementById('autoRefresh').checked) {
+    autoTimer = setInterval(loadData, 2*60*1000);
+  }
+  updateMarketBadge();
+  setInterval(updateMarketBadge, 60*1000);
 }
-updateMarketBadge();
-setInterval(updateMarketBadge, 60*1000);
 </script>
 </body>
 </html>
