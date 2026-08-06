@@ -266,13 +266,32 @@ def first_hit_date(post, level, is_call, hit_type="tp"):
     return None
 
 
+def _level_preexisting_at_open(is_call, open_px, high, low, entry, level, kind):
+    """
+    True إذا مستوى Stop/TP كان متحققاً على الافتتاح قبل مسار دخول نظيف
+    في نفس الشمعة اليومية (لمس Entry لاحقاً في اليوم).
+    kind: 'stop' | 'tp'
+    """
+    if open_px is None or entry is None or level is None:
+        return False
+    try:
+        o, h, l, e, lvl = float(open_px), float(high), float(low), float(entry), float(level)
+    except (TypeError, ValueError):
+        return False
+    if e <= 0 or lvl <= 0:
+        return False
+    if kind == "tp":
+        return (is_call and o >= lvl and l <= e) or ((not is_call) and o <= lvl and h >= e)
+    # stop
+    return (is_call and o <= lvl and h >= e) or ((not is_call) and o >= lvl and l <= e)
+
+
 def resolve_first_touch(post, is_call, stop, tp1, tp2, tp3, entry=None):
     """
     أول لمسة زمنية: يمشي يوم بيوم.
-    إذا Stop و TP في نفس الشمعة اليومية → Stop يفوز (محافظة).
-    إذا افتتاح اليوم أصلاً عند/فوق TP (CALL) أو عند/تحت TP (PUT)
-    مع لمس Entry في نفس الشمعة → لا تُحتسب TP: الهدف كان محققاً قبل مسار الدخول
-    (شائع مع شموع يومية عندما يُطرح العقد والسعر فوق الهدف).
+    إذا Stop و TP في نفس الشمعة اليومية → Stop يفوز (محافظة)،
+    ما لم يكن Stop مُسبقاً على الافتتاح قبل الدخول.
+    كذلك لا تُحتسب TP إذا كانت على الافتتاح قبل مسار الدخول.
     يرجع (status, exit_price, exit_date) أو None.
     """
     levels = []
@@ -310,21 +329,15 @@ def resolve_first_touch(post, is_call, stop, tp1, tp2, tp3, entry=None):
                     tp_hits.append((status, level))
         if stop_hit:
             stop_lvl = next(lvl for st, lvl, k in levels if k == "stop")
-            return "stop_hit", stop_lvl, dt.date()
+            if not _level_preexisting_at_open(is_call, o, h, l, entry_f, stop_lvl, "stop"):
+                return "stop_hit", stop_lvl, dt.date()
+            # Stop مُسبق على الافتتاح → تجاهله هذا اليوم وكمّل لـ TP / اليوم التالي
         if tp_hits:
             # أقرب هدف تحقق في هذا اليوم (TP1 قبل TP3)
             order = {"tp1_hit": 1, "tp2_hit": 2, "tp3_hit": 3}
             tp_hits.sort(key=lambda x: order.get(x[0], 9))
             status, level = tp_hits[0]
-            # هدف مُسبق على الافتتاح + دخول لاحق في نفس اليوم → مسار مضلل
-            if (
-                entry_f is not None
-                and o is not None
-                and (
-                    (is_call and o >= level and l <= entry_f)
-                    or ((not is_call) and o <= level and h >= entry_f)
-                )
-            ):
+            if _level_preexisting_at_open(is_call, o, h, l, entry_f, level, "tp"):
                 continue
             return status, level, dt.date()
     return None
@@ -712,11 +725,11 @@ def recalculate_all_outcomes(outcomes_df):
     return outcomes_df
 
 
-def repair_preexisting_tp_hits(outcomes_df, hist_cache=None):
+def repair_preexisting_level_hits(outcomes_df, hist_cache=None):
     """
-    يلغي إغلاق TP إذا كان افتتاح يوم الدخول أصلاً عند/فوق الهدف
-    مع لمس Entry في نفس الشمعة (الهدف تحقق قبل مسار الصفقة).
-    يعيد الصف إلى open ليعاد تقييمه من اليوم التالي.
+    يلغي إغلاق TP/Stop إذا كان المستوى متحققاً على افتتاح يوم الدخول
+    مع لمس Entry في نفس الشمعة (قبل مسار صفقة نظيف).
+    يعيد الصف إلى open ليعاد تقييمه.
     """
     if outcomes_df is None or outcomes_df.empty:
         return outcomes_df
@@ -726,7 +739,7 @@ def repair_preexisting_tp_hits(outcomes_df, hist_cache=None):
     fixed = 0
     for idx, row in outcomes_df.iterrows():
         status = str(row.get("status") or "")
-        if not status.startswith("tp"):
+        if status != "stop_hit" and not status.startswith("tp"):
             continue
         entry_d = parse_date(row.get("entry_hit_date"))
         exit_d = parse_date(row.get("exit_date"))
@@ -739,7 +752,11 @@ def repair_preexisting_tp_hits(outcomes_df, hist_cache=None):
         tp3 = float(row.get("tp3_stock") or 0)
         stop = float(row.get("stop_stock") or 0)
         is_call = resolve_is_call(row.get("direction"), entry, tp1, stop)
-        level = {"tp1_hit": tp1, "tp2_hit": tp2, "tp3_hit": tp3}.get(status, 0)
+        if status == "stop_hit":
+            level, kind = stop, "stop"
+        else:
+            level = {"tp1_hit": tp1, "tp2_hit": tp2, "tp3_hit": tp3}.get(status, 0)
+            kind = "tp"
         if entry <= 0 or level <= 0:
             continue
 
@@ -756,11 +773,7 @@ def repair_preexisting_tp_hits(outcomes_df, hist_cache=None):
         except (TypeError, ValueError, KeyError):
             continue
 
-        preexisting = (
-            (is_call and o >= level and l <= entry)
-            or ((not is_call) and o <= level and h >= entry)
-        )
-        if not preexisting:
+        if not _level_preexisting_at_open(is_call, o, h, l, entry, level, kind):
             continue
 
         outcomes_df.at[idx, "status"] = "open"
@@ -771,11 +784,16 @@ def repair_preexisting_tp_hits(outcomes_df, hist_cache=None):
         outcomes_df.at[idx, "result_pct"] = None
         outcomes_df.at[idx, "option_pnl_pct"] = None
         fixed += 1
-        print(f"  ↺ {ticker}: أُلغي {status} — الهدف كان على الافتتاح قبل الدخول ({entry_d})")
+        label = "Stop" if kind == "stop" else "الهدف"
+        print(f"  ↺ {ticker}: أُلغي {status} — {label} كان على الافتتاح قبل الدخول ({entry_d})")
 
     if fixed:
-        print(f"✅ إصلاح TP مُسبق: {fixed} صف أُعيد فتحه")
+        print(f"✅ إصلاح مستويات مُسبقة (TP/Stop): {fixed} صف أُعيد فتحه")
     return outcomes_df
+
+
+# توافق مع الاسم القديم
+repair_preexisting_tp_hits = repair_preexisting_level_hits
 
 
 def has_option_data(row):
@@ -1428,7 +1446,7 @@ if __name__ == "__main__":
 
     print("📥 جلب أسعار يومية...")
     hist_cache = build_hist_cache(outcomes)
-    outcomes = repair_preexisting_tp_hits(outcomes, hist_cache=hist_cache)
+    outcomes = repair_preexisting_level_hits(outcomes, hist_cache=hist_cache)
     outcomes = update_open_outcomes(outcomes, hist_cache=hist_cache)
     outcomes = enrich_path_metrics(outcomes, hist_cache=hist_cache)
     outcomes = enrich_market_exit_premiums(outcomes)

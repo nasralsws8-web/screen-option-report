@@ -112,7 +112,7 @@ class TestDataQuality(unittest.TestCase):
         self.assertEqual(q, "partial")
 
 
-class TestPreexistingTP(unittest.TestCase):
+class TestPreexistingLevels(unittest.TestCase):
     def _bar(self, o, h, l, c):
         return pd.DataFrame(
             {"Open": [o], "High": [h], "Low": [l], "Close": [c]},
@@ -134,6 +134,23 @@ class TestPreexistingTP(unittest.TestCase):
         )
         self.assertIsNotNone(touch)
         self.assertEqual(touch[0], "tp1_hit")
+
+    def test_skips_stop_when_open_already_through_stop(self):
+        # CALL: افتتاح تحت Stop ثم ارتد ولمس Entry — لا Stop نظيف
+        post = self._bar(268.50, 272.50, 268.00, 271.80)
+        touch = resolve_first_touch(
+            post, True, stop=269.08, tp1=275.15, tp2=281.07, tp3=287.2, entry=271.61,
+        )
+        self.assertIsNone(touch)
+
+    def test_allows_stop_when_open_above_stop(self):
+        # افتتاح فوق Stop ثم كسره — Stop صالح
+        post = self._bar(272.0, 273.0, 268.5, 269.0)
+        touch = resolve_first_touch(
+            post, True, stop=269.08, tp1=275.15, tp2=281.07, tp3=287.2, entry=271.61,
+        )
+        self.assertIsNotNone(touch)
+        self.assertEqual(touch[0], "stop_hit")
 
 
 class TestTelegramDedupe(unittest.TestCase):
