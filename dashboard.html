@@ -162,6 +162,7 @@
       <input type="checkbox" id="autoRefresh" checked> تحديث CSV كل دقيقتين
     </div>
     <div class="last-update" id="lastUpdate">—</div>
+    <div class="last-update" id="dataSourceLine" style="color:#8b949e">مصدر البيانات: —</div>
     <div class="last-update" id="marketStatus" style="color:#8b949e">—</div>
     <button class="btn" id="refreshBtn" onclick="loadData()">🔄 تحديث</button>
     <button class="btn-run" id="runBtn" onclick="triggerAndWait()" title="فحص Finviz + يدوي فوراً عبر GitHub Actions">⚡ تشغيل يدوي</button>
@@ -255,15 +256,35 @@ let wsReconnectMs = 3000;
 let lastWsMsgAt = 0;
 let lastScanFreshness = { level: 'ok', ageMs: 0, scanDate: null };
 
+/** يستخرج أحدث scanned_at من نص CSV للمقارنة بين المصادر */
+function csvScanMs(text) {
+  try {
+    const rows = parseCSV(text);
+    let best = 0;
+    for (const r of rows) {
+      const raw = String(r.scanned_at || '').trim();
+      if (!raw) continue;
+      const ms = Date.parse(raw.replace(' UTC', 'Z'));
+      if (!isNaN(ms) && ms > best) best = ms;
+    }
+    return best;
+  } catch (e) {
+    return 0;
+  }
+}
+
 async function fetchTextNoCache(urls, opts = {}) {
   const list = Array.isArray(urls) ? urls : [urls];
   const preferColumns = opts.preferColumns || [];
+  // true = اختر الأحدث بـ scanned_at (يمنع عرض محلي قديم بدل GitHub)
+  const preferNewestScan = !!opts.preferNewestScan;
   // من http://localhost فضّل الملف المحلي أولاً؛ من file:// جرّب GitHub ثم المحلي
   const ordered = (typeof location !== 'undefined' && location.protocol === 'file:')
     ? [...list].reverse()
     : list;
   let lastErr = null;
   let fallback = null;
+  const candidates = [];
   for (const base of ordered) {
     try {
       const url = base + (base.includes('?') ? '&' : '?') + 't=' + Date.now();
@@ -280,13 +301,29 @@ async function fetchTextNoCache(urls, opts = {}) {
       const header = (text.trim().split('\n')[0] || '');
       const cols = header.split(',').map(h => h.trim().replace(/^"|"$/g, ''));
       const hasPreferred = !preferColumns.length || preferColumns.every(c => cols.includes(c));
-      const result = { text, source: base };
+      const result = { text, source: base, scanMs: csvScanMs(text), hasPreferred };
+      if (preferNewestScan) {
+        candidates.push(result);
+        continue;
+      }
       if (hasPreferred) return result;
       // مصدر قديم بدون الأعمدة المطلوبة — احتفظ به وجرّب المصدر التالي
       if (!fallback) fallback = result;
     } catch (e) {
       lastErr = e;
     }
+  }
+  if (preferNewestScan && candidates.length) {
+    const preferred = candidates.filter(c => c.hasPreferred);
+    const pool = preferred.length ? preferred : candidates;
+    pool.sort((a, b) => {
+      if (b.scanMs !== a.scanMs) return b.scanMs - a.scanMs;
+      // تعادل: فضّل GitHub (مخرجات الـ workflow) على نسخة محلية قديمة
+      const aGh = String(a.source).startsWith('http') ? 1 : 0;
+      const bGh = String(b.source).startsWith('http') ? 1 : 0;
+      return bGh - aGh;
+    });
+    return pool[0];
   }
   if (fallback) return fallback;
   const fileHint = (typeof location !== 'undefined' && location.protocol === 'file:')
@@ -1295,7 +1332,7 @@ async function loadData() {
   document.getElementById('statsBar').style.display = 'none';
 
   try {
-    const { text } = await fetchTextNoCache(CSV_URLS);
+    const { text, source } = await fetchTextNoCache(CSV_URLS, { preferNewestScan: true });
     if (!text.trim() || text.trim().split('\n').length < 2) {
       throw new Error('الملف فاضي — شغّل الـ workflow من GitHub Actions أولاً');
     }
@@ -1328,6 +1365,14 @@ async function loadData() {
       : freshness.level === 'soft' ? '#e3b341' : '#3fb950';
     const stampTag = freshness.level === 'hard' ? '⛔ جلسة سابقة'
       : freshness.level === 'soft' ? '⚠️ غير حديث للتنفيذ' : '✓ حديث';
+    const srcLabel = String(source || '').startsWith('http') ? 'GitHub' : 'محلي';
+    const srcEl = document.getElementById('dataSourceLine');
+    if (srcEl) {
+      srcEl.textContent = scanTs
+        ? `مصدر المسح: ${srcLabel} · ${scanTs}`
+        : `مصدر المسح: ${srcLabel}`;
+      srcEl.style.color = srcLabel === 'GitHub' ? '#58a6ff' : '#3fb950';
+    }
     document.getElementById('lastUpdate').innerHTML = scanTs
       ? `آخر مسح: ${scanTs}<span style="color:${stampColor}"> ${stampTag}${ageLabel}</span>`
       : 'آخر تحديث: ' + new Date().toLocaleTimeString('ar-SA');
