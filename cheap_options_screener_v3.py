@@ -37,12 +37,15 @@ import math
 import os
 import time
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
 import yfinance as yf
 from scipy.stats import norm
 from finvizfinance.screener.technical import Technical
+
+MARKET_TZ = ZoneInfo("America/New_York")
 
 # ── curl_cffi session يقلّد Chrome الحقيقي لتجاوز حجب Yahoo Finance ──
 try:
@@ -531,6 +534,28 @@ def entry_is_chased(price, entry, is_call, max_pct=None):
     if is_call:
         return price > entry * (1.0 + max_pct)
     return price < entry * (1.0 - max_pct)
+
+
+def is_exec_window(now=None):
+    """
+    نافذة اعتماد BUY/تيليجرام: أيام التداول بعد 9:30 ET + EXEC_AFTER_OPEN_MIN
+    حتى 16:00 ET. يطابق قاعدة الداشبورد (بعد 9:45 ET).
+    IGNORE_EXEC_WINDOW=1 يتجاوز الفحص للاختبار المحلي فقط.
+    """
+    if os.environ.get("IGNORE_EXEC_WINDOW", "").lower() in ("1", "true", "yes"):
+        return True
+    if now is None:
+        now = datetime.now(MARKET_TZ)
+    elif now.tzinfo is None:
+        now = now.replace(tzinfo=MARKET_TZ)
+    else:
+        now = now.astimezone(MARKET_TZ)
+    if now.weekday() >= 5:
+        return False
+    open_mins = 9 * 60 + 30 + int(EXEC_AFTER_OPEN_MIN)
+    close_mins = 16 * 60
+    mins = now.hour * 60 + now.minute
+    return open_mins <= mins < close_mins
 
 
 def parse_price_num(val):
@@ -1484,8 +1509,10 @@ def compute_trade_plan(r, tech):
     plan["spy_regime"] = spy_regime
     plan["spy_align_ok"] = align_ok
 
-    # BUY صارم: ثقة ≥55 + R:R حي ≥1.3 + سيولة + prem + مع اتجاه SPY + بدون مطاردة
-    buy_ready = (
+    # نافذة التنفيذ: لا BUY/تيليجرام قبل 9:45 ET (حتى لو باقي الشروط مكتملة)
+    exec_ok = is_exec_window()
+    plan["exec_window_ok"] = exec_ok
+    almost_buy = (
         conf >= MIN_CONF_TO_BUY
         and live_rr >= MIN_RR_TO_BUY
         and liquid_ok
@@ -1495,6 +1522,8 @@ def compute_trade_plan(r, tech):
         and dte > 0
         and not r.get("is_0dte")
     )
+    # BUY صارم: الشروط الفنية + داخل نافذة التنفيذ
+    buy_ready = almost_buy and exec_ok
 
     if earn_risk:
         plan["recommendation"] = "AVOID"
@@ -1520,6 +1549,13 @@ def compute_trade_plan(r, tech):
     elif dte == 0 or r.get("is_0dte"):
         plan["recommendation"] = "WAIT"
         plan["rec_note"]       = "0DTE — لا BUY من المسح (تنفيذ يدوي فقط إن لزم)"
+    elif almost_buy and not exec_ok:
+        plan["recommendation"] = "WAIT"
+        open_h, open_m = divmod(9 * 60 + 30 + int(EXEC_AFTER_OPEN_MIN), 60)
+        plan["rec_note"] = (
+            f"خارج نافذة التنفيذ — لا BUY قبل "
+            f"{open_h}:{open_m:02d} ET (+{EXEC_AFTER_OPEN_MIN}د بعد الافتتاح)"
+        )
     elif buy_ready and (trend_ok or mixed_ok):
         plan["recommendation"] = "BUY"
         plan["rec_note"]       = ("الاتجاه والزخم والسيولة مناسبة"
@@ -1717,7 +1753,7 @@ SAVE_COLS = [
     "atr_pct", "gap_pct", "RVOL", "pm_high", "pm_low", "pm_volume",
     "expiry", "dte_num", "direction", "earnings", "float_shares", "avg_vol",
     "entry_stock", "stop_stock", "tp1_stock", "tp2_stock", "tp3_stock", "tp1_rr",
-    "tp1_rr_live", "entry_chased",
+    "tp1_rr_live", "entry_chased", "exec_window_ok",
     "entry_note", "fh_gap_pct", "fh_pm_bullish", "fh_pm_strong", "fh_pm_note",
     "spy_regime", "rec_note", "gemini_note",
     "Score", "recommendation", "confidence", "Notes", "scanned_at",
@@ -1991,6 +2027,7 @@ def process_candidates(candidates_df, show_progress=True):
         row["tp1_rr"]         = plan.get("tp1_rr")
         row["tp1_rr_live"]    = plan.get("tp1_rr_live")
         row["entry_chased"]   = bool(plan.get("entry_chased", False))
+        row["exec_window_ok"] = bool(plan.get("exec_window_ok", False))
         row["entry_note"]     = plan.get("entry_note", "")
         row["rec_note"]       = plan.get("rec_note", "")
         row["spy_regime"]     = plan.get("spy_regime", row_regime)

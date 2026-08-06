@@ -255,13 +255,15 @@ let wsReconnectMs = 3000;
 let lastWsMsgAt = 0;
 let lastScanFreshness = { level: 'ok', ageMs: 0, scanDate: null };
 
-async function fetchTextNoCache(urls) {
+async function fetchTextNoCache(urls, opts = {}) {
   const list = Array.isArray(urls) ? urls : [urls];
+  const preferColumns = opts.preferColumns || [];
   // من http://localhost فضّل الملف المحلي أولاً؛ من file:// جرّب GitHub ثم المحلي
   const ordered = (typeof location !== 'undefined' && location.protocol === 'file:')
     ? [...list].reverse()
     : list;
   let lastErr = null;
+  let fallback = null;
   for (const base of ordered) {
     try {
       const url = base + (base.includes('?') ? '&' : '?') + 't=' + Date.now();
@@ -275,13 +277,20 @@ async function fetchTextNoCache(urls) {
         lastErr = new Error(`ملف فاضي أو غير مكتمل: ${base}`);
         continue;
       }
-      return { text, source: base };
+      const header = (text.trim().split('\n')[0] || '');
+      const cols = header.split(',').map(h => h.trim().replace(/^"|"$/g, ''));
+      const hasPreferred = !preferColumns.length || preferColumns.every(c => cols.includes(c));
+      const result = { text, source: base };
+      if (hasPreferred) return result;
+      // مصدر قديم بدون الأعمدة المطلوبة — احتفظ به وجرّب المصدر التالي
+      if (!fallback) fallback = result;
     } catch (e) {
       lastErr = e;
     }
   }
+  if (fallback) return fallback;
   const fileHint = (typeof location !== 'undefined' && location.protocol === 'file:')
-    ? ' — Safari يمنع التحميل من file://. افتح: http://127.0.0.1:8765/dashboard.html'
+    ? ' — Safari يمنع التحميل من file://. افتح: http://127.0.0.1:8766/dashboard.html'
     : '';
   throw new Error((lastErr && lastErr.message ? lastErr.message : 'Load failed') + fileHint);
 }
@@ -292,10 +301,10 @@ function warnIfFileProtocol() {
   if (!el) return;
   el.className = 'stale-banner show hard';
   el.innerHTML = `
-    ⛔ فتحت الداشبورد كملف محلي (file://) — Safari يمنع تحميل البيانات
+    ⛔ فتحت الداشبورد كملف محلي (file://) — Safari قد يجلب CSV قديم من الكاش
     <div class="stale-sub">افتح بدلها:
-    <a href="http://127.0.0.1:8765/dashboard.html" style="color:#fff;text-decoration:underline">http://127.0.0.1:8765/dashboard.html</a>
-    (شغّل أولاً من مجلد المشروع: <code style="background:#21262d;padding:2px 6px;border-radius:4px">python3 -m http.server 8765</code>)</div>`;
+    <a href="http://127.0.0.1:8766/dashboard.html" style="color:#fff;text-decoration:underline">http://127.0.0.1:8766/dashboard.html</a>
+    (شغّل أولاً من مجلد المشروع: <code style="background:#21262d;padding:2px 6px;border-radius:4px">python3 -m http.server 8766</code>)</div>`;
 }
 
 function parseScanDate(scannedAt) {
@@ -414,22 +423,34 @@ function applyStaleRecGuard(rows, freshness) {
   });
 }
 
-function isUsMarketHours() {
-  // تقريب ET: 13:45–20:00 UTC ≈ 9:45–16:00 ET (بعد ضوضاء الافتتاح)
-  const now = new Date();
-  const day = now.getUTCDay();
-  if (day === 0 || day === 6) return false;
-  const mins = now.getUTCHours() * 60 + now.getUTCMinutes();
-  return mins >= (13 * 60 + 45) && mins < (20 * 60);
+/** أجزاء الوقت بتوقيت أمريكا/نيويورك (ET) — يطابق Python is_exec_window */
+function etClockParts(d = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    weekday: 'short',
+    hour: 'numeric',
+    minute: 'numeric',
+    hour12: false,
+  }).formatToParts(d);
+  const get = (type) => (parts.find(p => p.type === type) || {}).value;
+  const wd = get('weekday');
+  const hour = parseInt(get('hour'), 10);
+  const minute = parseInt(get('minute'), 10);
+  const weekend = wd === 'Sat' || wd === 'Sun';
+  const h = hour === 24 ? 0 : hour;
+  return { weekend, mins: h * 60 + (minute || 0) };
 }
 
-/** نافذة التنفيذ المتفق عليها: بعد 9:45 ET (4:45 السعودية) */
+function isUsMarketHours() {
+  const { weekend, mins } = etClockParts();
+  if (weekend) return false;
+  // بعد 9:45 ET حتى 16:00 ET
+  return mins >= (9 * 60 + 45) && mins < (16 * 60);
+}
+
+/** نافذة التنفيذ المتفق عليها: بعد 9:45 ET (4:45 السعودية) — نفس بوابة Python */
 function isExecWindow() {
-  const now = new Date();
-  const day = now.getUTCDay();
-  if (day === 0 || day === 6) return false;
-  const mins = now.getUTCHours() * 60 + now.getUTCMinutes();
-  return mins >= (13 * 60 + 45) && mins < (20 * 60);
+  return isUsMarketHours();
 }
 
 function updateExecWindowBadge() {
@@ -461,11 +482,10 @@ function updateMarketBadge() {
 }
 
 function isUsMarketHoursLoose() {
-  const now = new Date();
-  const day = now.getUTCDay();
-  if (day === 0 || day === 6) return false;
-  const mins = now.getUTCHours() * 60 + now.getUTCMinutes();
-  return mins >= (13 * 60 + 30) && mins < (13 * 60 + 45);
+  const { weekend, mins } = etClockParts();
+  if (weekend) return false;
+  // من الافتتاح 9:30 حتى قبل نافذة التنفيذ 9:45 ET
+  return mins >= (9 * 60 + 30) && mins < (9 * 60 + 45);
 }
 
 // ── Finnhub WebSocket + REST polling (live طول الجلسة) ─────
@@ -863,6 +883,49 @@ function parseCSV(text) {
     });
     return obj;
   }).filter(r => r.Ticker || r.ticker);
+}
+
+function truthyEntryHit(v) {
+  const s = String(v ?? '').trim().toLowerCase();
+  return s === '1' || s === 'true' || s === 'yes' || s === 'y';
+}
+
+/** يطابق data_quality.py (مصدر الحقيقة) — احتياطي إذا CSV قديم بلا عمود الجودة */
+function classifyDataQuality(row) {
+  const status = String(row.status || '').trim();
+  if (status === 'open') return { q: 'open', note: 'صفقة مفتوحة — خارج نسب الإغلاق' };
+  if (!truthyEntryHit(row.entry_hit)) return { q: 'unreliable', note: 'Entry لم يتحقق — لا تُحسب كتنفيذ' };
+  const prem = parseFloat(row.premium);
+  const strike = parseFloat(row.strike);
+  if (!(prem > 0) || !(strike > 0)) return { q: 'unreliable', note: 'ناقص premium أو strike' };
+  const src = String(row.exit_premium_source || '').trim().toLowerCase();
+  if (!['market', 'intrinsic', 'estimate'].includes(src)) {
+    return { q: 'unreliable', note: 'لا مصدر موثوق لسعر خروج العقد' };
+  }
+  let optPnl = parseFloat(row.option_pnl_pct);
+  if (isNaN(optPnl)) optPnl = null;
+  if (status === 'stop_hit' && optPnl != null && optPnl > 5) {
+    return { q: 'unreliable', note: 'تناقض Stop مع ربح عقد (إغلاق يومي مضلل)' };
+  }
+  if (['tp1_hit', 'tp2_hit', 'tp3_hit'].includes(status) && src === 'estimate' && optPnl != null && optPnl < -30) {
+    return { q: 'partial', note: 'هدف سهم مع خسارة عقد تقديرية كبيرة' };
+  }
+  if (src === 'estimate') return { q: 'partial', note: 'سعر عقد تقديري — للمراجعة فقط' };
+  if (src === 'intrinsic' && status !== 'expired') return { q: 'partial', note: 'قيمة ذاتية بدون حالة انتهاء' };
+  if (optPnl == null) return { q: 'partial', note: 'لا P&L عقد محسوب رغم بيانات الدخول' };
+  return { q: 'reliable', note: 'دخول + سعر سوق/ذاتي + بدون تناقض' };
+}
+
+function enrichOutcomeQuality(rows) {
+  return rows.map(r => {
+    const existing = String(r.data_quality || '').trim().toLowerCase();
+    if (['reliable', 'partial', 'unreliable', 'open'].includes(existing)) return r;
+    const { q, note } = classifyDataQuality(r);
+    return Object.assign({}, r, {
+      data_quality: q,
+      data_quality_note: String(r.data_quality_note || '').trim() || note,
+    });
+  });
 }
 
 function fmt(v, prefix='$', suffix='', decimals=2) {
@@ -1389,8 +1452,8 @@ async function loadHistory(force) {
   const container = document.getElementById('historyContent');
   container.innerHTML = '<div class="loading"><div class="spinner"></div><br>جاري تحميل السجل...</div>';
   try {
-    const { text } = await fetchTextNoCache(OUTCOMES_URLS);
-    const rows = parseCSV(text).filter(r => r.ticker);
+    const { text, source } = await fetchTextNoCache(OUTCOMES_URLS, { preferColumns: ['data_quality'] });
+    const rows = enrichOutcomeQuality(parseCSV(text).filter(r => r.ticker));
     outcomeRows = rows;
     outcomeOpenTickers = rows.filter(r => r.status === 'open').map(r => r.ticker);
 
@@ -1420,6 +1483,7 @@ async function loadHistory(force) {
       partial: closed.filter(r => String(r.data_quality||'').toLowerCase()==='partial').length,
       unreliable: closed.filter(r => String(r.data_quality||'').toLowerCase()==='unreliable').length,
     };
+    const srcLabel = String(source || '').startsWith('http') ? 'GitHub' : 'محلي';
 
     const statusLabel = {
       'open':'🟡 مفتوح','tp1_hit':'✅ TP1','tp2_hit':'✅✅ TP2',
@@ -1435,19 +1499,19 @@ async function loadHistory(force) {
       : '⚙️ أضف Finnhub Key للأسعار الحية — حالياً آخر سعر مسجّل';
 
     container.innerHTML = `
-      <p style="font-size:12px;color:#8b949e;margin-bottom:12px">${finnhubHint} · يتحدث عند فتح التبويب أو 🔄 تحديث</p>
+      <p style="font-size:12px;color:#8b949e;margin-bottom:12px">${finnhubHint} · مصدر السجل: ${srcLabel} · يتحدث عند فتح التبويب أو 🔄 تحديث</p>
       <div style="background:#1a2a40;border:1px solid #388bfd66;border-radius:8px;padding:10px 12px;margin-bottom:14px;font-size:12px;color:#c9d1d9;line-height:1.55">
         النسب أعلاه من صفوف <strong style="color:#3fb950">reliable فقط</strong>
         (${qCounts.reliable} معتمد / ${qCounts.partial} جزئي / ${qCounts.unreliable} ضعيف من ${closed.length} مغلق).
         الصفوف الجزئية/الضعيفة تبقى في الجدول للمراجعة ولا تدخل Win Rate.
       </div>
       <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:20px">
-        <div class="stat total"><div class="stat-num">${rows.length}</div><div class="stat-label">إجمالي التوصيات</div></div>
-        <div class="stat buy"><div class="stat-num">${kpiBase.length ? winRate+'%' : '—'}</div><div class="stat-label">Win Rate (${pnlLabel})</div></div>
-        <div class="stat buy"><div class="stat-num">${avgWin === '—' ? '—' : (parseFloat(avgWin)>=0?'+':'')+avgWin+'%'}</div><div class="stat-label">Avg Win (${pnlLabel})</div></div>
-        <div class="stat avoid"><div class="stat-num">${avgLoss === '—' ? '—' : avgLoss+'%'}</div><div class="stat-label">Avg Loss (${pnlLabel})</div></div>
+        <div class="stat total"><div class="stat-num">${rows.length}</div><div class="stat-label">إجمالي التوصيات</div><div style="font-size:11px;color:#8b949e;margin-top:4px">${closed.length} مغلق</div></div>
+        <div class="stat buy"><div class="stat-num">${kpiBase.length ? winRate+'%' : '—'}</div><div class="stat-label">Win Rate (${pnlLabel})</div><div style="font-size:11px;color:#8b949e;margin-top:4px">n=${denom} معتمد${denom < 30 ? ' · عينة صغيرة' : ''}</div></div>
+        <div class="stat buy"><div class="stat-num">${avgWin === '—' ? '—' : (parseFloat(avgWin)>=0?'+':'')+avgWin+'%'}</div><div class="stat-label">Avg Win (${pnlLabel})</div><div style="font-size:11px;color:#8b949e;margin-top:4px">n=${wins.length} رابح</div></div>
+        <div class="stat avoid"><div class="stat-num">${avgLoss === '—' ? '—' : avgLoss+'%'}</div><div class="stat-label">Avg Loss (${pnlLabel})</div><div style="font-size:11px;color:#8b949e;margin-top:4px">n=${stops.length} خاسر</div></div>
         <div class="stat wait"><div class="stat-num">${rows.filter(r=>r.status==='open').length}</div><div class="stat-label">🟡 مفتوحة</div></div>
-        <div class="stat total"><div class="stat-num">${qCounts.reliable}</div><div class="stat-label">✅ معتمد للنسب</div></div>
+        <div class="stat total"><div class="stat-num">${qCounts.reliable}</div><div class="stat-label">✅ معتمد للنسب</div><div style="font-size:11px;color:#8b949e;margin-top:4px">من ${closed.length} مغلق</div></div>
       </div>
       <div style="overflow-x:auto">
       <table style="width:100%;border-collapse:collapse;font-size:13px">
@@ -1738,8 +1802,8 @@ async function triggerAndWait() {
 
 async function prefetchOutcomes() {
   try {
-    const { text } = await fetchTextNoCache(OUTCOMES_URLS);
-    const rows = parseCSV(text).filter(r => r.ticker);
+    const { text } = await fetchTextNoCache(OUTCOMES_URLS, { preferColumns: ['data_quality'] });
+    const rows = enrichOutcomeQuality(parseCSV(text).filter(r => r.ticker));
     outcomeRows = rows;
     outcomeOpenTickers = rows.filter(r => r.status === 'open').map(r => r.ticker);
   } catch (e) { /* ignore */ }

@@ -1,7 +1,10 @@
 """
 telegram_notify.py
 ------------------
-Sends each BUY signal as a styled PNG card + text caption to Telegram
+Sends each BUY signal as a styled PNG card + text caption to Telegram.
+
+Dedupe: عقد + يوم تقويم ET — لا إعادة إرسال نفس الإشارة في نفس اليوم.
+الحالة تُحفظ في telegram_sent.json وتُرفع مع نتائج الـ workflow.
 """
 
 import os
@@ -9,13 +12,18 @@ import io
 import json
 import urllib.request
 import urllib.parse
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+
 import pandas as pd
 from PIL import Image, ImageDraw, ImageFont
-from datetime import datetime
 
 TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 CSV_FILE         = "options_v3_results.csv"
+SENT_FILE        = os.environ.get("TELEGRAM_SENT_FILE", "telegram_sent.json")
+SENT_KEEP_DAYS   = 21
+MARKET_TZ        = ZoneInfo("America/New_York")
 
 # ── Palette ──────────────────────────────────────────────────────
 BG          = (10,  13,  20)
@@ -79,6 +87,112 @@ def fmt_oi(v):
     except: return str(v)
 
 
+def normalize_direction(direction) -> str:
+    d = str(direction or "").replace("📈", "").replace("📉", "").strip().upper()
+    if "PUT" in d:
+        return "PUT"
+    if "CALL" in d:
+        return "CALL"
+    return d
+
+
+def trading_day_et(now=None) -> str:
+    now = now or datetime.now(MARKET_TZ)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=MARKET_TZ)
+    else:
+        now = now.astimezone(MARKET_TZ)
+    return now.strftime("%Y-%m-%d")
+
+
+def alert_key(row, day=None) -> str:
+    """مفتاح منع التكرار: يوم ET + Ticker + اتجاه + Strike + Expiry."""
+    day = day or trading_day_et()
+    ticker = str(row.get("Ticker") or row.get("ticker") or "?").upper().strip()
+    direction = normalize_direction(row.get("direction"))
+    expiry = str(row.get("expiry") or "")[:10]
+    try:
+        strike = f"{float(row.get('strike', row.get('Strike', 0))):.2f}"
+    except (TypeError, ValueError):
+        strike = str(row.get("strike") or row.get("Strike") or "")
+    return f"{day}|{ticker}|{direction}|{strike}|{expiry}"
+
+
+def load_sent(path=SENT_FILE) -> dict:
+    if not os.path.exists(path):
+        return {"version": 1, "sent": {}}
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return {"version": 1, "sent": {}}
+        sent = data.get("sent") or {}
+        if not isinstance(sent, dict):
+            sent = {}
+        return {"version": 1, "sent": sent}
+    except Exception as e:
+        print(f"⚠️  قراءة {path} فشلت ({e}) — نبدأ فارغ")
+        return {"version": 1, "sent": {}}
+
+
+def prune_sent(sent: dict, keep_days=SENT_KEEP_DAYS, today=None) -> dict:
+    today = today or trading_day_et()
+    try:
+        cutoff = (datetime.strptime(today, "%Y-%m-%d") - timedelta(days=keep_days)).strftime("%Y-%m-%d")
+    except Exception:
+        return sent
+    return {k: v for k, v in sent.items() if str(k).split("|", 1)[0] >= cutoff}
+
+
+def save_sent(data: dict, path=SENT_FILE):
+    payload = {
+        "version": 1,
+        "sent": prune_sent(data.get("sent") or {}),
+    }
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2, sort_keys=True)
+        f.write("\n")
+
+
+def row_allows_telegram(row) -> bool:
+    """لا ترسل إن وُجد exec_window_ok=False صراحة (حماية إضافية)."""
+    try:
+        val = row["exec_window_ok"]
+    except Exception:
+        return True
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return True
+    s = str(val).strip().lower()
+    if s in ("", "nan", "none"):
+        return True
+    return s in ("1", "true", "yes", "y")
+
+
+def select_buy_rows(df: pd.DataFrame, sent_keys=None, force=False, day=None):
+    """يرجع (للإرسال، المتخطى بسبب dedupe، المتخطى بسبب النافذة)."""
+    sent_keys = set(sent_keys or [])
+    day = day or trading_day_et()
+    force = force or os.environ.get("TELEGRAM_FORCE", "").lower() in ("1", "true", "yes")
+
+    if "recommendation" not in df.columns:
+        return df.iloc[0:0], [], []
+
+    buys = df[df["recommendation"].astype(str).str.upper() == "BUY"]
+    to_send = []
+    skipped_dup = []
+    skipped_window = []
+    for _, row in buys.iterrows():
+        if not row_allows_telegram(row):
+            skipped_window.append(alert_key(row, day=day))
+            continue
+        key = alert_key(row, day=day)
+        if not force and key in sent_keys:
+            skipped_dup.append(key)
+            continue
+        to_send.append((key, row))
+    return to_send, skipped_dup, skipped_window
+
+
 def contract_symbol(ticker, direction, expiry_str, strike) -> str:
     """بناء رمز العقد مثل #CLF260807C12.00"""
     try:
@@ -87,8 +201,7 @@ def contract_symbol(ticker, direction, expiry_str, strike) -> str:
     except Exception:
         date_part = str(expiry_str).replace("-", "")[-6:]
 
-    d = str(direction).upper()
-    letter = "C" if d == "CALL" else "P"
+    letter = "C" if normalize_direction(direction) == "CALL" else "P"
 
     try:
         strike_fmt = f"{float(strike):.2f}"
@@ -101,7 +214,7 @@ def contract_symbol(ticker, direction, expiry_str, strike) -> str:
 def create_card(row) -> bytes:
     ticker    = str(row.get("Ticker",      "N/A"))
     price     = row.get("Price",           "N/A")
-    direction = str(row.get("direction",   "")).replace("📈","").replace("📉","").strip().upper()
+    direction = normalize_direction(row.get("direction", ""))
     entry     = row.get("entry_stock",     "N/A")
     stop_v    = row.get("stop_stock",      "N/A")
     strike    = row.get("strike",          row.get("Strike", "N/A"))
@@ -191,7 +304,7 @@ def create_card(row) -> bytes:
 
 def build_caption(row) -> str:
     ticker    = str(row.get("Ticker",      "N/A"))
-    direction = str(row.get("direction",   "")).replace("📈","").replace("📉","").strip().upper()
+    direction = normalize_direction(row.get("direction", ""))
     entry     = row.get("entry_stock",     "N/A")
     stop_v    = row.get("stop_stock",      "N/A")
     strike    = row.get("strike",          row.get("Strike", "N/A"))
@@ -292,29 +405,49 @@ def main():
         print(f"⚠️  {CSV_FILE} not found")
         return
 
-    df       = pd.read_csv(CSV_FILE)
-    buy_rows = df[df["recommendation"] == "BUY"]
+    df = pd.read_csv(CSV_FILE)
+    store = load_sent(SENT_FILE)
+    sent_map = store.get("sent") or {}
+    to_send, skipped_dup, skipped_window = select_buy_rows(df, sent_keys=sent_map.keys())
 
-    if buy_rows.empty:
-        print("No BUY signals today — nothing sent")
+    if skipped_dup:
+        print(f"⏭️  تخطي {len(skipped_dup)} مكررة (نفس العقد اليوم)")
+    if skipped_window:
+        print(f"⏭️  تخطي {len(skipped_window)} خارج نافذة التنفيذ")
+
+    if not to_send:
+        print("No new BUY signals to send (deduped or empty)")
+        # حافظ على ملف الحالة مُقلَّماً حتى لو ما فيه إرسال
+        save_sent(store, SENT_FILE)
         return
 
-    print(f"📤 Sending {len(buy_rows)} signals...")
+    print(f"📤 Sending {len(to_send)} new signal(s)...")
 
     send_message(
         f"📋 <b>Options Screener</b>\n"
-        f"🟢 <b>{len(buy_rows)}</b> signals today ↓"
+        f"🟢 <b>{len(to_send)}</b> new signal(s) ↓"
     )
 
-    for _, row in buy_rows.iterrows():
+    dirty = False
+    for key, row in to_send:
         ticker = row.get("Ticker", "?")
         try:
             card    = create_card(row)
             caption = build_caption(row)
             ok      = send_photo(card, caption)
-            print(f"  {'✅' if ok else '❌'} {ticker}")
+            print(f"  {'✅' if ok else '❌'} {ticker} [{key}]")
+            if ok:
+                sent_map[key] = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+                dirty = True
         except Exception as e:
             print(f"  ❌ {ticker}: {e}")
+
+    if dirty:
+        store["sent"] = sent_map
+        save_sent(store, SENT_FILE)
+        print(f"💾 حدّث {SENT_FILE} ({len(sent_map)} مفتاح)")
+    else:
+        save_sent(store, SENT_FILE)
 
 
 if __name__ == "__main__":

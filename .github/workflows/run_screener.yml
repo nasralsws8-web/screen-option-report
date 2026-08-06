@@ -30,6 +30,9 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: Run gate tests
+        run: python -m unittest tests.test_gates -v
+
       - name: Run screener
         env:
           SCREENER_SOURCE: both
@@ -61,4 +64,4 @@ jobs:
         run: |
           bash .github/scripts/push_csv_changes.sh \
             "Auto update: $(date -u '+%Y-%m-%d %H:%M UTC')" \
-            options_v3_results.csv outcomes.csv
+            options_v3_results.csv outcomes.csv telegram_sent.json
