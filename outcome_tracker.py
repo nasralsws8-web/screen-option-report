@@ -48,6 +48,8 @@ OUTCOMES_COLS = [
     "option_pnl_pct",
     "days_to_entry", "days_held",
     "mfe_pct", "mae_pct", "hold_expiry_pct",
+    "data_quality",       # reliable | partial | unreliable | open
+    "data_quality_note",
 ]
 
 PATH_METRIC_COLS = [
@@ -901,6 +903,8 @@ def add_new_recommendations(outcomes_df):
             "mfe_pct":        None,
             "mae_pct":        None,
             "hold_expiry_pct": None,
+            "data_quality":      "open",
+            "data_quality_note": "صفقة مفتوحة",
         }
         outcomes_df = pd.concat(
             [outcomes_df, pd.DataFrame([new_row])],
@@ -1134,24 +1138,132 @@ def enrich_market_exit_premiums(outcomes_df, cache=None):
     return outcomes_df
 
 
+def _truthy_entry_hit(val):
+    if isinstance(val, bool):
+        return val
+    s = str(val or "").strip().lower()
+    return s in ("true", "1", "yes", "y")
+
+
+def classify_data_quality(row):
+    """
+    reliable   = صالح لنسب الاعتماد (دخول + سوق/ذاتي + بدون تناقض)
+    partial    = مفيد للمراجعة لكن لا يدخل KPI الافتراضي
+    unreliable = ضعيف / ناقص / متناقض
+    open       = صفقة مفتوحة
+    """
+    status = str(row.get("status") or "").strip()
+    if status == "open":
+        return "open", "صفقة مفتوحة — خارج نسب الإغلاق"
+
+    if not _truthy_entry_hit(row.get("entry_hit")):
+        return "unreliable", "Entry لم يتحقق — لا تُحسب كتنفيذ"
+
+    try:
+        prem = float(row.get("premium") or 0)
+    except (TypeError, ValueError):
+        prem = 0.0
+    try:
+        strike = float(row.get("strike") or 0)
+    except (TypeError, ValueError):
+        strike = 0.0
+    if prem <= 0 or strike <= 0:
+        return "unreliable", "ناقص premium أو strike"
+
+    src = str(row.get("exit_premium_source") or "").strip().lower()
+    if src not in ("market", "intrinsic", "estimate"):
+        return "unreliable", "لا مصدر موثوق لسعر خروج العقد"
+
+    try:
+        opt_pnl = float(row.get("option_pnl_pct"))
+        if opt_pnl != opt_pnl:  # NaN
+            opt_pnl = None
+    except (TypeError, ValueError):
+        opt_pnl = None
+
+    # تناقض: وقف خسارة مع ربح عقد — غالباً إغلاق يومي مضلل
+    if status == "stop_hit" and opt_pnl is not None and opt_pnl > 5:
+        return "unreliable", "تناقض Stop مع ربح عقد (إغلاق يومي مضلل)"
+
+    # هدف مع خسارة عقد ضخمة من تقدير فقط → ضعيف
+    if (
+        status in ("tp1_hit", "tp2_hit", "tp3_hit")
+        and src == "estimate"
+        and opt_pnl is not None
+        and opt_pnl < -30
+    ):
+        return "partial", "هدف سهم مع خسارة عقد تقديرية كبيرة"
+
+    if src == "estimate":
+        return "partial", "سعر عقد تقديري — للمراجعة فقط"
+
+    if src == "intrinsic" and status != "expired":
+        return "partial", "قيمة ذاتية بدون حالة انتهاء"
+
+    if opt_pnl is None:
+        return "partial", "لا P&L عقد محسوب رغم بيانات الدخول"
+
+    return "reliable", "دخول + سعر سوق/ذاتي + بدون تناقض"
+
+
+def apply_data_quality(outcomes_df):
+    """يملأ data_quality / data_quality_note لكل الصفوف."""
+    if outcomes_df is None or outcomes_df.empty:
+        return outcomes_df
+    if "data_quality" not in outcomes_df.columns:
+        outcomes_df["data_quality"] = ""
+    if "data_quality_note" not in outcomes_df.columns:
+        outcomes_df["data_quality_note"] = ""
+
+    counts = {"reliable": 0, "partial": 0, "unreliable": 0, "open": 0}
+    for idx, row in outcomes_df.iterrows():
+        q, note = classify_data_quality(row)
+        outcomes_df.at[idx, "data_quality"] = q
+        outcomes_df.at[idx, "data_quality_note"] = note
+        counts[q] = counts.get(q, 0) + 1
+
+    print(
+        f"✅ جودة البيانات: reliable={counts.get('reliable',0)} | "
+        f"partial={counts.get('partial',0)} | "
+        f"unreliable={counts.get('unreliable',0)} | "
+        f"open={counts.get('open',0)}"
+    )
+    return outcomes_df
+
+
 def print_summary(outcomes_df):
     closed = outcomes_df[outcomes_df["status"] != "open"]
     if closed.empty:
         print("\nلا توجد نتائج مغلقة بعد")
         return
 
-    wins  = closed[closed["status"].isin(["tp1_hit", "tp2_hit", "tp3_hit"])]
-    stops = closed[closed["status"] == "stop_hit"]
+    reliable = closed
+    if "data_quality" in closed.columns:
+        reliable = closed[closed["data_quality"].astype(str).str.lower() == "reliable"]
 
-    win_rate = len(wins) / len(closed) * 100 if len(closed) > 0 else 0
-    avg_win  = float(wins["result_pct"].mean())  if not wins.empty  else 0
-    avg_loss = float(stops["result_pct"].mean()) if not stops.empty else 0
-
-    print(f"\n📊 ملخص النتائج (حركة السهم):")
-    print(f"   إجمالي مغلق : {len(closed)}")
-    print(f"   Win Rate    : {win_rate:.1f}%")
-    print(f"   Avg Win     : {avg_win:+.2f}%")
-    print(f"   Avg Loss    : {avg_loss:+.2f}%")
+    print(f"\n📊 ملخص الاعتماد (reliable فقط): {len(reliable)}/{len(closed)} مغلق")
+    if reliable.empty:
+        print("   لا صفوف reliable بعد — راجع data_quality_note")
+    else:
+        with_opt = reliable[reliable["option_pnl_pct"].notna()]
+        if not with_opt.empty:
+            opt_wins = with_opt[with_opt["option_pnl_pct"] > 0]
+            opt_loss = with_opt[with_opt["option_pnl_pct"] <= 0]
+            opt_wr = len(opt_wins) / len(with_opt) * 100
+            avg_opt_win = float(opt_wins["option_pnl_pct"].mean()) if not opt_wins.empty else 0
+            avg_opt_loss = float(opt_loss["option_pnl_pct"].mean()) if not opt_loss.empty else 0
+            print(f"   Win Rate عقد : {opt_wr:.1f}%")
+            print(f"   Avg Win عقد  : {avg_opt_win:+.1f}%")
+            print(f"   Avg Loss عقد : {avg_opt_loss:+.1f}%")
+        else:
+            wins = reliable[reliable["status"].isin(["tp1_hit", "tp2_hit", "tp3_hit"])]
+            stops = reliable[reliable["status"] == "stop_hit"]
+            win_rate = len(wins) / len(reliable) * 100
+            avg_win = float(wins["result_pct"].mean()) if not wins.empty else 0
+            avg_loss = float(stops["result_pct"].mean()) if not stops.empty else 0
+            print(f"   Win Rate سهم : {win_rate:.1f}%")
+            print(f"   Avg Win سهم  : {avg_win:+.2f}%")
+            print(f"   Avg Loss سهم : {avg_loss:+.2f}%")
 
     path = outcomes_df.dropna(subset=["mfe_pct"], how="all") if "mfe_pct" in outcomes_df.columns else pd.DataFrame()
     if not path.empty:
@@ -1171,18 +1283,6 @@ def print_summary(outcomes_df):
             print(f"   Avg MAE        : {mae.mean():+.2f}%")
         if hx.notna().any():
             print(f"   Avg hold→expiry: {hx.mean():+.2f}%  ({hx.notna().sum()} صف)")
-
-    with_opt = closed[closed["option_pnl_pct"].notna()]
-    if not with_opt.empty:
-        opt_wins = with_opt[with_opt["option_pnl_pct"] > 0]
-        opt_loss = with_opt[with_opt["option_pnl_pct"] <= 0]
-        opt_wr = len(opt_wins) / len(with_opt) * 100
-        avg_opt_win  = float(opt_wins["option_pnl_pct"].mean())  if not opt_wins.empty  else 0
-        avg_opt_loss = float(opt_loss["option_pnl_pct"].mean()) if not opt_loss.empty else 0
-        print(f"\n📈 ملخص P&L العقود ({len(with_opt)} صف ببيانات premium):")
-        print(f"   Win Rate    : {opt_wr:.1f}%")
-        print(f"   Avg Win     : {avg_opt_win:+.1f}%")
-        print(f"   Avg Loss    : {avg_opt_loss:+.1f}%")
 
 
 if __name__ == "__main__":
@@ -1205,6 +1305,7 @@ if __name__ == "__main__":
     outcomes = update_open_outcomes(outcomes, hist_cache=hist_cache)
     outcomes = enrich_path_metrics(outcomes, hist_cache=hist_cache)
     outcomes = enrich_market_exit_premiums(outcomes)
+    outcomes = apply_data_quality(outcomes)
 
     # حفظ بترتيب الأعمدة القياسي
     for col in OUTCOMES_COLS:
