@@ -1,15 +1,18 @@
-name: Price Update (Every 15 min during market hours)
+name: Price Update (Every 5 min during market hours)
 
+# ملاحظة: GitHub Actions لا يضمن جدولة كل دقيقة (الحد العملي ≈ 5 دقائق).
+# لتحديث كل دقيقة ثابت: شغّل scripts/vps_minute_update.sh على VPS.
 on:
   schedule:
-    # المسح الكامل (run_screener) عند 13:45 UTC — هنا نبدأ بعده كل 15 دقيقة لتجنب تداخل الكتابة
-    - cron: '*/15 14-19 * * 1-5'
+    # بعد المسح الكامل 13:45 UTC — تحديث كل 5 دقائق حتى إغلاق السوق
+    - cron: '*/5 14-19 * * 1-5'
     - cron: '0 20 * * 1-5'   # Final update at market close 4 PM ET
   workflow_dispatch:
 
 concurrency:
   group: repo-csv-writes
-  cancel-in-progress: false
+  # إلغاء الرن القديم إذا تأخر — نفضّل الأحدث
+  cancel-in-progress: true
 
 permissions:
   contents: write
@@ -17,7 +20,7 @@ permissions:
 jobs:
   update-prices:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 20
 
     steps:
       - name: Checkout repo
