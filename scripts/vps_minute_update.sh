@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # تحديث نتائج كل دقيقة على VPS (مو GitHub Actions).
+# تحذير: لا تشغّله مع price_update.yml في نفس الوقت — يتعارضان على CSV/GitHub.
+# إذا فعّلت VPS: عطّل schedule في price_update.yml أو أوقف الـ workflow.
 # الاستخدام:
 #   chmod +x scripts/vps_minute_update.sh
 #   crontab: * * * * 1-5 /path/to/repo/scripts/vps_minute_update.sh >> /var/log/screener-minute.log 2>&1

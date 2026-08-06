@@ -11,8 +11,8 @@ on:
 
 concurrency:
   group: repo-csv-writes
-  # إلغاء الرن القديم إذا تأخر — نفضّل الأحدث
-  cancel-in-progress: true
+  # false: لا نلغي المسح الكامل / EOD إذا تداخلا مع تحديث السعر
+  cancel-in-progress: false
 
 permissions:
   contents: write
