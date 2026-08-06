@@ -113,10 +113,10 @@ class TestDataQuality(unittest.TestCase):
 
 
 class TestPreexistingLevels(unittest.TestCase):
-    def _bar(self, o, h, l, c):
+    def _bar(self, o, h, l, c, day="2026-08-05"):
         return pd.DataFrame(
             {"Open": [o], "High": [h], "Low": [l], "Close": [c]},
-            index=pd.to_datetime(["2026-08-05"]),
+            index=pd.to_datetime([day]),
         )
 
     def test_skips_tp_when_open_already_above_target(self):
@@ -151,6 +151,42 @@ class TestPreexistingLevels(unittest.TestCase):
         )
         self.assertIsNotNone(touch)
         self.assertEqual(touch[0], "stop_hit")
+
+    def test_rec_day_ignores_high_without_close_confirm(self):
+        # مثل NVDA: قمة لمست TP1 لكن الإغلاق تحت الهدف يوم التوصية
+        post = self._bar(221.53, 223.63, 217.27, 218.92, day="2026-08-06")
+        touch = resolve_first_touch(
+            post, True, stop=215.24, tp1=222.22, tp2=226.0, tp3=230.0, entry=217.90,
+            rec_date="2026-08-06", price_at_rec=217.90,
+        )
+        self.assertIsNone(touch)
+
+    def test_rec_day_tp_when_close_confirms(self):
+        post = self._bar(218.0, 223.5, 217.5, 222.50, day="2026-08-06")
+        touch = resolve_first_touch(
+            post, True, stop=215.24, tp1=222.22, tp2=226.0, tp3=230.0, entry=217.90,
+            rec_date="2026-08-06", price_at_rec=217.90,
+        )
+        self.assertIsNotNone(touch)
+        self.assertEqual(touch[0], "tp1_hit")
+
+    def test_after_rec_day_high_still_counts(self):
+        # بعد يوم التوصية: High يكفي حتى لو الإغلاق تحت الهدف
+        post = self._bar(220.0, 223.5, 219.0, 220.5, day="2026-08-07")
+        touch = resolve_first_touch(
+            post, True, stop=215.24, tp1=222.22, tp2=226.0, tp3=230.0, entry=217.90,
+            rec_date="2026-08-06", price_at_rec=217.90,
+        )
+        self.assertIsNotNone(touch)
+        self.assertEqual(touch[0], "tp1_hit")
+
+    def test_skips_tp_already_at_price_at_rec(self):
+        post = self._bar(223.0, 224.0, 222.5, 223.2, day="2026-08-06")
+        touch = resolve_first_touch(
+            post, True, stop=215.24, tp1=222.22, tp2=226.0, tp3=230.0, entry=217.90,
+            rec_date="2026-08-06", price_at_rec=222.50,
+        )
+        self.assertIsNone(touch)
 
 
 class TestTelegramDedupe(unittest.TestCase):

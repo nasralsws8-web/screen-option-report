@@ -99,6 +99,19 @@ def valid_target(price):
         return False
 
 
+def parse_price(val):
+    """سعر قد يأتي كرقم أو نص فيه $."""
+    if val is None or val == "":
+        return None
+    if isinstance(val, float) and math.isnan(val):
+        return None
+    try:
+        f = float(str(val).replace("$", "").replace(",", "").strip())
+        return f if f > 0 else None
+    except (TypeError, ValueError):
+        return None
+
+
 def resolve_is_call(direction, entry, tp1, stop):
     d = str(direction or "").upper()
     if "PUT" in d:
@@ -286,12 +299,37 @@ def _level_preexisting_at_open(is_call, open_px, high, low, entry, level, kind):
     return (is_call and o <= lvl and h >= e) or ((not is_call) and o >= lvl and l <= e)
 
 
-def resolve_first_touch(post, is_call, stop, tp1, tp2, tp3, entry=None):
+def _level_already_at_rec(is_call, price_at_rec, level, kind):
+    """
+    True إذا المستوى كان متحققاً أصلاً عند سعر التوصية —
+    لا يُحسب كإنجاز بعد طرح التوصية.
+    """
+    if price_at_rec is None or level is None:
+        return False
+    try:
+        px, lvl = float(price_at_rec), float(level)
+    except (TypeError, ValueError):
+        return False
+    if px <= 0 or lvl <= 0:
+        return False
+    if kind == "tp":
+        return (is_call and px >= lvl) or ((not is_call) and px <= lvl)
+    return (is_call and px <= lvl) or ((not is_call) and px >= lvl)
+
+
+def resolve_first_touch(post, is_call, stop, tp1, tp2, tp3, entry=None,
+                        rec_date=None, price_at_rec=None):
     """
     أول لمسة زمنية: يمشي يوم بيوم.
     إذا Stop و TP في نفس الشمعة اليومية → Stop يفوز (محافظة)،
     ما لم يكن Stop مُسبقاً على الافتتاح قبل الدخول.
     كذلك لا تُحتسب TP إذا كانت على الافتتاح قبل مسار الدخول.
+
+    يوم التوصية فقط (rec_date): الشمعة اليومية لا تعرف ترتيب High/Low،
+    فقمة الصباح قد تسبق طرح التوصية. لذلك:
+      - لا هدف/وقف إذا كان متحققاً عند price_at_rec
+      - التأكيد يكون بإغلاق اليوم (Close) لا بـ High/Low وحدها
+    بعد يوم التوصية: High/Low كالسابق.
     يرجع (status, exit_price, exit_date) أو None.
     """
     levels = []
@@ -313,24 +351,39 @@ def resolve_first_touch(post, is_call, stop, tp1, tp2, tp3, entry=None):
     except (TypeError, ValueError):
         entry_f = None
 
+    px_rec = parse_price(price_at_rec)
+    rec_d = parse_date(rec_date) if rec_date is not None else None
+
     for dt, bar in post.iterrows():
+        bar_date = dt.date() if hasattr(dt, "date") else pd.Timestamp(dt).date()
+        is_rec_day = rec_d is not None and bar_date == rec_d
         o = float(bar["Open"]) if "Open" in bar.index and pd.notna(bar["Open"]) else None
         h, l = float(bar["High"]), float(bar["Low"])
+        c = float(bar["Close"]) if "Close" in bar.index and pd.notna(bar["Close"]) else None
         stop_hit = False
         tp_hits = []
         for status, level, kind in levels:
+            if is_rec_day and _level_already_at_rec(is_call, px_rec, level, kind):
+                continue
             if kind == "stop":
-                hit = (l <= level) if is_call else (h >= level)
+                if is_rec_day:
+                    # بعد التوصية فقط: إغلاق اليوم يؤكد الوقف (تجنّب قاع قبل الطرح)
+                    hit = c is not None and ((c <= level) if is_call else (c >= level))
+                else:
+                    hit = (l <= level) if is_call else (h >= level)
                 if hit:
                     stop_hit = True
             else:
-                hit = (h >= level) if is_call else (l <= level)
+                if is_rec_day:
+                    hit = c is not None and ((c >= level) if is_call else (c <= level))
+                else:
+                    hit = (h >= level) if is_call else (l <= level)
                 if hit:
                     tp_hits.append((status, level))
         if stop_hit:
             stop_lvl = next(lvl for st, lvl, k in levels if k == "stop")
             if not _level_preexisting_at_open(is_call, o, h, l, entry_f, stop_lvl, "stop"):
-                return "stop_hit", stop_lvl, dt.date()
+                return "stop_hit", stop_lvl, bar_date
             # Stop مُسبق على الافتتاح → تجاهله هذا اليوم وكمّل لـ TP / اليوم التالي
         if tp_hits:
             # أقرب هدف تحقق في هذا اليوم (TP1 قبل TP3)
@@ -339,7 +392,7 @@ def resolve_first_touch(post, is_call, stop, tp1, tp2, tp3, entry=None):
             status, level = tp_hits[0]
             if _level_preexisting_at_open(is_call, o, h, l, entry_f, level, "tp"):
                 continue
-            return status, level, dt.date()
+            return status, level, bar_date
     return None
 
 
@@ -547,7 +600,10 @@ def compute_path_metrics(row, hist, today=None):
             post = hist[hist.index.normalize() >= _as_ts(entry_hit_date)]
             if expiry_date:
                 post = post[post.index.normalize() <= _as_ts(expiry_date)]
-            touch = resolve_first_touch(post, is_call, stop, tp1, tp2, tp3, entry=entry)
+            touch = resolve_first_touch(
+                post, is_call, stop, tp1, tp2, tp3, entry=entry,
+                rec_date=rec_date, price_at_rec=row.get("price_at_rec"),
+            )
             if touch:
                 exit_date = touch[2]
                 # سعر اللمس الفعلي من الشمعة إن أمكن أدق من المستوى
@@ -727,8 +783,10 @@ def recalculate_all_outcomes(outcomes_df):
 
 def repair_preexisting_level_hits(outcomes_df, hist_cache=None):
     """
-    يلغي إغلاق TP/Stop إذا كان المستوى متحققاً على افتتاح يوم الدخول
-    مع لمس Entry في نفس الشمعة (قبل مسار صفقة نظيف).
+    يلغي إغلاق TP/Stop إذا:
+      1) المستوى متحققاً على افتتاح يوم الدخول مع لمس Entry (قبل مسار نظيف)، أو
+      2) الإغلاق كان يوم التوصية بدون تأكيد Close بعد الطرح
+         (قمة/قاع اليوم قد تكون قبل التوصية على شمعة يومية).
     يعيد الصف إلى open ليعاد تقييمه.
     """
     if outcomes_df is None or outcomes_df.empty:
@@ -743,6 +801,7 @@ def repair_preexisting_level_hits(outcomes_df, hist_cache=None):
             continue
         entry_d = parse_date(row.get("entry_hit_date"))
         exit_d = parse_date(row.get("exit_date"))
+        rec_d = parse_date(row.get("date"))
         if entry_d is None or exit_d is None or entry_d != exit_d:
             continue
 
@@ -769,11 +828,32 @@ def repair_preexisting_level_hits(outcomes_df, hist_cache=None):
             continue
         bar = day.iloc[0]
         try:
-            o, h, l = float(bar["Open"]), float(bar["High"]), float(bar["Low"])
+            o = float(bar["Open"])
+            h = float(bar["High"])
+            l = float(bar["Low"])
+            c = float(bar["Close"])
         except (TypeError, ValueError, KeyError):
             continue
 
-        if not _level_preexisting_at_open(is_call, o, h, l, entry, level, kind):
+        px_rec = parse_price(row.get("price_at_rec"))
+        reason = None
+        if _level_preexisting_at_open(is_call, o, h, l, entry, level, kind):
+            reason = "على الافتتاح قبل الدخول"
+        elif rec_d is not None and exit_d == rec_d:
+            if _level_already_at_rec(is_call, px_rec, level, kind):
+                reason = "متحقق عند سعر التوصية (قبل/مع الطرح)"
+            else:
+                # يوم التوصية: بدون تأكيد الإغلاق لا نثق بـ High/Low
+                close_ok = (
+                    (c >= level) if (is_call and kind == "tp") else
+                    (c <= level) if (is_call and kind == "stop") else
+                    (c <= level) if ((not is_call) and kind == "tp") else
+                    (c >= level)
+                )
+                if not close_ok:
+                    reason = "يوم التوصية بدون تأكيد إغلاق بعد الطرح"
+
+        if not reason:
             continue
 
         outcomes_df.at[idx, "status"] = "open"
@@ -785,10 +865,10 @@ def repair_preexisting_level_hits(outcomes_df, hist_cache=None):
         outcomes_df.at[idx, "option_pnl_pct"] = None
         fixed += 1
         label = "Stop" if kind == "stop" else "الهدف"
-        print(f"  ↺ {ticker}: أُلغي {status} — {label} كان على الافتتاح قبل الدخول ({entry_d})")
+        print(f"  ↺ {ticker}: أُلغي {status} — {label} {reason} ({entry_d})")
 
     if fixed:
-        print(f"✅ إصلاح مستويات مُسبقة (TP/Stop): {fixed} صف أُعيد فتحه")
+        print(f"✅ إصلاح مستويات مُسبقة/قبل التوصية (TP/Stop): {fixed} صف أُعيد فتحه")
     return outcomes_df
 
 
@@ -1085,7 +1165,10 @@ def update_open_outcomes(outcomes_df, hist_cache=None):
             if expiry_date:
                 post = post[post.index.normalize() <= _as_ts(expiry_date)]
             if not post.empty:
-                touch = resolve_first_touch(post, is_call, stop, tp1, tp2, tp3, entry=entry)
+                touch = resolve_first_touch(
+                    post, is_call, stop, tp1, tp2, tp3, entry=entry,
+                    rec_date=rec_date, price_at_rec=row.get("price_at_rec"),
+                )
                 if touch:
                     status, exit_price, exit_d = touch
                     apply_close(outcomes_df, idx, row, status, entry, exit_price, is_call, exit_d)
