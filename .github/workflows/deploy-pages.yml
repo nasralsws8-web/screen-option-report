@@ -1,0 +1,53 @@
+name: Deploy dashboard to GitHub Pages
+
+# مصدر واحد للشريكين: https://nasralsws8-web.github.io/screen-option-report/
+# يتطلب Settings → Pages → Source = GitHub Actions
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'dashboard.html'
+      - 'options_v3_results.csv'
+      - 'outcomes.csv'
+      - '.github/workflows/deploy-pages.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: github-pages-dashboard
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Build static site
+        run: |
+          mkdir -p _site
+          cp dashboard.html _site/dashboard.html
+          cp dashboard.html _site/index.html
+          cp options_v3_results.csv _site/options_v3_results.csv
+          cp outcomes.csv _site/outcomes.csv
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

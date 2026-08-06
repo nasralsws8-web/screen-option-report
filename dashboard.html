@@ -180,7 +180,10 @@
   لا مطاردة بعد Entry.
   <span class="exec-badge" id="execWindowBadge">نافذة التنفيذ: …</span>
   <div class="rule-warn" style="margin-top:4px">تحديث الأسعار اللحظي ≠ توصية جديدة. المسح الكامل فقط يمنح BUY — لا ترقية لحظية.</div>
-  <div class="rule-warn" style="margin-top:4px;color:#58a6ff">وضع مشترك: التوصيات/السجل من GitHub · كل جهاز بمفتاح Finnhub خاص · افتحا http://127.0.0.1:8766/dashboard.html ثم 🔄 بعد كل رن</div>
+  <div class="rule-warn" style="margin-top:4px;color:#58a6ff">رابط مشترك للجهازين:
+    <a href="https://nasralsws8-web.github.io/screen-option-report/dashboard.html" style="color:#79c0ff">github.io/dashboard.html</a>
+    · البيانات من GitHub main · 🔄 بعد كل رن · كل جهاز بمفتاح Finnhub خاص
+  </div>
 </div>
 
 <div class="stale-banner" id="staleBanner" role="alert"></div>
@@ -237,16 +240,18 @@
 </div>
 
 <script>
+const REPO_RAW = 'https://raw.githubusercontent.com/nasralsws8-web/screen-option-report/main';
+// مصدر الحقيقة دائماً ملفات main على GitHub — يتوافق github.io والمحلي والشريك
 const CSV_URLS = [
-  // GitHub أولاً = مصدر مشترك للجهازين؛ المحلي احتياطي أوفلاين فقط
-  'https://raw.githubusercontent.com/nasralsws8-web/screen-option-report/main/options_v3_results.csv',
+  REPO_RAW + '/options_v3_results.csv',
   './options_v3_results.csv',
 ];
 const CSV_URL = CSV_URLS[0];
 const OUTCOMES_URLS = [
-  'https://raw.githubusercontent.com/nasralsws8-web/screen-option-report/main/outcomes.csv',
+  REPO_RAW + '/outcomes.csv',
   './outcomes.csv',
 ];
+const SHARED_DASH_URL = 'https://nasralsws8-web.github.io/screen-option-report/dashboard.html';
 /** أثناء الجلسة: أقدم من هذا = قديم (price_update كل ~15د) */
 const STALE_SOFT_MS = 45 * 60 * 1000;
 /** أقصى عمر مقبول لنفس جلسة التداول */
@@ -1504,7 +1509,10 @@ async function loadHistory(force) {
   const container = document.getElementById('historyContent');
   container.innerHTML = '<div class="loading"><div class="spinner"></div><br>جاري تحميل السجل...</div>';
   try {
-    const { text, source } = await fetchTextNoCache(OUTCOMES_URLS, { preferColumns: ['data_quality'] });
+    const { text, source } = await fetchTextNoCache(OUTCOMES_URLS, {
+      preferColumns: ['data_quality'],
+      preferNewestScan: true,
+    });
     const rows = enrichOutcomeQuality(parseCSV(text).filter(r => r.ticker));
     outcomeRows = rows;
     outcomeOpenTickers = rows.filter(r => r.status === 'open').map(r => r.ticker);
