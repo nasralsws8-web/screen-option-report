@@ -180,6 +180,7 @@
   لا مطاردة بعد Entry.
   <span class="exec-badge" id="execWindowBadge">نافذة التنفيذ: …</span>
   <div class="rule-warn" style="margin-top:4px">تحديث الأسعار اللحظي ≠ توصية جديدة. المسح الكامل فقط يمنح BUY — لا ترقية لحظية.</div>
+  <div class="rule-warn" style="margin-top:4px;color:#58a6ff">وضع مشترك: التوصيات/السجل من GitHub · كل جهاز بمفتاح Finnhub خاص · افتحا http://127.0.0.1:8766/dashboard.html ثم 🔄 بعد كل رن</div>
 </div>
 
 <div class="stale-banner" id="staleBanner" role="alert"></div>
@@ -188,11 +189,16 @@
 <div class="modal-overlay" id="settingsModal">
   <div class="modal">
     <h3>⚙️ الإعدادات</h3>
+    <p style="margin-bottom:10px;color:#c9d1d9;font-size:12px;line-height:1.5;background:#161b22;border:1px solid #30363d;border-radius:8px;padding:8px 10px">
+      <strong style="color:#58a6ff">وضع الشريك (جهازين):</strong>
+      المسح والسجل من <strong>GitHub المشترك</strong> — نفس الأرقام عند الاثنين بعد كل رن.
+      مفتاح Finnhub وToken GitHub <strong>شخصي لكل جهاز</strong> (لا يُشارك المفتاح).
+    </p>
     <p style="margin-bottom:8px;color:#e3b341;font-size:12px">🔑 GitHub Token (للتشغيل اليدوي — زر ⚡ تشغيل يدوي)</p>
     <input type="password" id="tokenInput" placeholder="github_pat_..." />
-    <p style="margin-bottom:8px;color:#3fb950;font-size:12px">📡 Finnhub API Key (للأسعار اللحظية)</p>
+    <p style="margin-bottom:8px;color:#3fb950;font-size:12px">📡 Finnhub API Key (للأسعار اللحظية على جهازك)</p>
     <input type="text" id="finnhubInput" placeholder="xxxxxxxxxxxxxxxxxx" autocomplete="off" />
-    <p style="font-size:11px;color:#8b949e;margin-bottom:16px">يُحفظ في متصفحك فقط — لا يُرفع لأي مكان.</p>
+    <p style="font-size:11px;color:#8b949e;margin-bottom:16px">يُحفظ في متصفحك فقط — لا يُرفع لأي مكان. الشريك يدخل مفتاحه عنده.</p>
     <div class="modal-btns">
       <button class="btn" style="background:#21262d;color:#8b949e" onclick="closeSettings()">إلغاء</button>
       <button class="btn" onclick="saveToken()">💾 حفظ</button>
@@ -232,13 +238,14 @@
 
 <script>
 const CSV_URLS = [
-  './options_v3_results.csv',
+  // GitHub أولاً = مصدر مشترك للجهازين؛ المحلي احتياطي أوفلاين فقط
   'https://raw.githubusercontent.com/nasralsws8-web/screen-option-report/main/options_v3_results.csv',
+  './options_v3_results.csv',
 ];
-const CSV_URL = CSV_URLS[CSV_URLS.length - 1];
+const CSV_URL = CSV_URLS[0];
 const OUTCOMES_URLS = [
-  './outcomes.csv',
   'https://raw.githubusercontent.com/nasralsws8-web/screen-option-report/main/outcomes.csv',
+  './outcomes.csv',
 ];
 /** أثناء الجلسة: أقدم من هذا = قديم (price_update كل ~15د) */
 const STALE_SOFT_MS = 45 * 60 * 1000;
@@ -278,7 +285,7 @@ async function fetchTextNoCache(urls, opts = {}) {
   const preferColumns = opts.preferColumns || [];
   // true = اختر الأحدث بـ scanned_at (يمنع عرض محلي قديم بدل GitHub)
   const preferNewestScan = !!opts.preferNewestScan;
-  // من http://localhost فضّل الملف المحلي أولاً؛ من file:// جرّب GitHub ثم المحلي
+  // من file://: المحلي أولاً (قد يفشل raw بسبب CORS/قيود)؛ من http: GitHub أولاً للتوافق بين الأجهزة
   const ordered = (typeof location !== 'undefined' && location.protocol === 'file:')
     ? [...list].reverse()
     : list;
