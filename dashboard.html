@@ -133,6 +133,48 @@
   .live-status.status-stop { background: #3d1a1a; color: #f85149; border-color: #f85149; }
   .live-dist { font-size: 10px; font-weight: 500; color: #8b949e; margin-top: 3px; }
 
+  .study-wrap { max-width: 980px; }
+  .study-toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 16px; }
+  .study-toolbar select, .study-toolbar input {
+    background: #0d1117; border: 1px solid #30363d; color: #e6edf3;
+    padding: 8px 12px; border-radius: 8px; font-size: 13px;
+  }
+  .study-toolbar input { width: 110px; text-transform: uppercase; font-family: monospace; }
+  .study-toolbar button {
+    background: #1f6feb; color: #fff; border: none; padding: 8px 14px;
+    border-radius: 8px; font-size: 13px; font-weight: 700; cursor: pointer;
+  }
+  .study-toolbar button:hover { background: #388bfd; }
+  .study-verdict {
+    border-radius: 10px; padding: 12px 14px; margin-bottom: 16px;
+    font-size: 14px; font-weight: 700; line-height: 1.55; border: 1px solid #30363d;
+  }
+  .study-verdict.ok { background: #1a4731; border-color: #3fb950; color: #3fb950; }
+  .study-verdict.warn { background: #3d2d00; border-color: #e3b341; color: #e3b341; }
+  .study-verdict.bad { background: #3d1a1a; border-color: #f85149; color: #f85149; }
+  .study-verdict.neutral { background: #21262d; color: #c9d1d9; }
+  .study-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin-bottom: 16px; }
+  .study-metric {
+    background: #161b22; border: 1px solid #30363d; border-radius: 10px; padding: 12px;
+  }
+  .study-metric .lbl { font-size: 11px; color: #8b949e; margin-bottom: 4px; }
+  .study-metric .val { font-size: 18px; font-weight: 800; color: #e6edf3; }
+  .study-metric .sub { font-size: 11px; color: #8b949e; margin-top: 3px; }
+  .study-section-title {
+    font-size: 13px; font-weight: 800; color: #58a6ff; margin: 18px 0 10px;
+  }
+  .study-levels { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 8px; margin-bottom: 14px; }
+  .study-lvl { background: #21262d; border-radius: 8px; padding: 10px; border: 1px solid #30363d; text-align: center; }
+  .study-lvl .n { font-size: 10px; color: #8b949e; }
+  .study-lvl .p { font-size: 15px; font-weight: 800; margin-top: 2px; }
+  .study-lvl .d { font-size: 11px; margin-top: 2px; color: #8b949e; }
+  .btn-study {
+    background: #21262d; color: #58a6ff; border: 1px solid #388bfd66;
+    padding: 4px 8px; border-radius: 6px; font-size: 11px; font-weight: 700;
+    cursor: pointer; margin-top: 6px;
+  }
+  .btn-study:hover { background: #1a2a40; border-color: #58a6ff; }
+
   /* SPY — توصية خاصة */
   .spy-hero { background: linear-gradient(135deg, #1a2a40 0%, #161b22 100%); border: 2px solid #58a6ff; border-radius: 14px; padding: 20px 24px; margin-bottom: 20px; box-shadow: 0 0 24px rgba(88,166,255,0.15); }
   .spy-hero-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 14px; flex-wrap: wrap; gap: 12px; }
@@ -227,11 +269,25 @@
     <div class="tab-bar">
       <div class="tab active" onclick="showTab('cards')">🃏 بطاقات</div>
       <div class="tab" onclick="showTab('table')">📋 جدول</div>
+      <div class="tab" onclick="showTab('study')">🔬 دراسة السهم</div>
       <div class="tab" onclick="showTab('history')">📊 السجل</div>
     </div>
     <div id="cardsView"></div>
     <div id="tableView" style="display:none">
       <table id="mainTable"><thead></thead><tbody></tbody></table>
+    </div>
+    <div id="studyView" style="display:none">
+      <div class="study-wrap">
+        <div class="study-toolbar">
+          <label style="font-size:12px;color:#8b949e">السهم</label>
+          <select id="studySelect" onchange="onStudySelectChange()"></select>
+          <input id="studyInput" type="text" maxlength="8" placeholder="NVDA" onkeydown="if(event.key==='Enter')openStockStudy()" />
+          <button type="button" onclick="openStockStudy()">تحليل</button>
+        </div>
+        <div id="studyContent">
+          <div style="color:#8b949e;font-size:13px;padding:24px 0">اختر سهماً من القائمة أو اكتب الرمز ثم اضغط تحليل.</div>
+        </div>
+      </div>
     </div>
     <div id="historyView" style="display:none">
       <div id="historyContent"><div class="loading"><div class="spinner"></div><br>جاري تحميل السجل...</div></div>
@@ -264,6 +320,8 @@ let currentTickers = [];
 let tradePlans = {};  // خطة الصفقة لكل ticker — تربط Finnhub بـ Entry/Stop/TP
 let outcomeRows = []; // صفوف السجل — للتحديث الحي
 let outcomeOpenTickers = [];
+let scanRows = [];    // صفوف آخر مسح — لدراسة السهم
+let studyTicker = '';
 let wsReconnectMs = 3000;
 let lastWsMsgAt = 0;
 let lastScanFreshness = { level: 'ok', ageMs: 0, scanDate: null };
@@ -1178,6 +1236,7 @@ function buildCard(r) {
         <div class="ticker">${r.Ticker}</div>
         <div class="card-price price-live" id="price-${r.Ticker}">$${parsePrice(r.Price || r.price_num).toFixed(2)}</div>
   <div style="font-size:11px;margin-bottom:4px"><span class="change-badge" id="change-${r.Ticker}">جاري التحديث...</span></div>
+        <button type="button" class="btn-study" onclick="event.stopPropagation();openStockStudy('${r.Ticker}')">🔬 دراسة السهم</button>
       </div>
       <div style="text-align:left">
         <span class="rec-badge ${rec}" id="rec-badge-${r.Ticker}">${rec}</span>
@@ -1377,6 +1436,8 @@ async function loadData() {
     let rows = applyScanGuards(rowsRaw);
     rows = applyStaleRecGuard(rows, freshness);
     registerTradePlans(rows); // بعد تصحيح المطاردة/R:R + حداثة المسح
+    scanRows = rows.slice();
+    refreshStudyTickerOptions();
     const { spy, rest } = splitSpyRows(rows);
 
     renderSpySection(spy);
@@ -1443,12 +1504,323 @@ async function loadData() {
   btn.textContent = '🔄 تحديث';
 }
 
+// ── دراسة السهم ──────────────────────────────────────────────
+function pctDist(from, to) {
+  if (!from || !to || from <= 0) return null;
+  return ((to - from) / from) * 100;
+}
+
+function fmtPctSigned(n, digits = 1) {
+  if (n == null || !Number.isFinite(n)) return '—';
+  const v = Number(n);
+  return (v >= 0 ? '+' : '') + v.toFixed(digits) + '%';
+}
+
+function avgNum(arr) {
+  const xs = arr.filter(n => Number.isFinite(n));
+  if (!xs.length) return null;
+  return xs.reduce((a, b) => a + b, 0) / xs.length;
+}
+
+function refreshStudyTickerOptions() {
+  const sel = document.getElementById('studySelect');
+  if (!sel) return;
+  const set = new Set();
+  scanRows.forEach(r => { if (r.Ticker) set.add(String(r.Ticker).toUpperCase()); });
+  outcomeRows.forEach(r => { if (r.ticker) set.add(String(r.ticker).toUpperCase()); });
+  const list = [...set].sort();
+  const prev = studyTicker || sel.value || '';
+  sel.innerHTML = '<option value="">— اختر —</option>' +
+    list.map(t => `<option value="${t}">${t}</option>`).join('');
+  if (prev && list.includes(prev)) sel.value = prev;
+}
+
+async function ensureOutcomesForStudy() {
+  if (outcomeRows.length) return;
+  try {
+    const { text } = await fetchTextNoCache(OUTCOMES_URLS, {
+      preferColumns: ['data_quality'],
+      preferNewestScan: true,
+    });
+    outcomeRows = enrichOutcomeQuality(parseCSV(text).filter(r => r.ticker));
+    outcomeOpenTickers = outcomeRows.filter(r => r.status === 'open').map(r => r.ticker);
+    refreshStudyTickerOptions();
+  } catch (_) { /* ignore */ }
+}
+
+function onStudySelectChange() {
+  const t = (document.getElementById('studySelect').value || '').trim().toUpperCase();
+  if (t) openStockStudy(t);
+}
+
+function openStockStudy(ticker) {
+  const fromInput = (document.getElementById('studyInput')?.value || '').trim().toUpperCase();
+  const t = String(ticker || fromInput || document.getElementById('studySelect')?.value || '')
+    .trim().toUpperCase().replace(/[^A-Z0-9.\-]/g, '');
+  if (!t) return;
+  studyTicker = t;
+  const sel = document.getElementById('studySelect');
+  const inp = document.getElementById('studyInput');
+  if (sel) {
+    if (![...sel.options].some(o => o.value === t)) {
+      sel.insertAdjacentHTML('beforeend', `<option value="${t}">${t}</option>`);
+    }
+    sel.value = t;
+  }
+  if (inp) inp.value = t;
+  // لا نستدعي showTab هنا إذا كنا داخلها — نعرض التبويب مباشرة لتجنّب إعادة الدخول
+  const order = ['cards', 'table', 'study', 'history'];
+  document.querySelectorAll('.tab').forEach((el, i) => el.classList.toggle('active', order[i] === 'study'));
+  document.getElementById('cardsView').style.display = 'none';
+  document.getElementById('tableView').style.display = 'none';
+  document.getElementById('studyView').style.display = 'block';
+  document.getElementById('historyView').style.display = 'none';
+  refreshStudyTickerOptions();
+  if (sel) sel.value = t;
+  const box = document.getElementById('studyContent');
+  if (box) box.innerHTML = '<div class="loading"><div class="spinner"></div><br>جاري تحليل السهم...</div>';
+  ensureOutcomesForStudy().then(() => renderStockStudy(t));
+}
+
+function findScanRow(ticker) {
+  const t = String(ticker || '').toUpperCase();
+  return scanRows.find(r => String(r.Ticker || '').toUpperCase() === t) || null;
+}
+
+function studyHistStats(ticker) {
+  const t = String(ticker || '').toUpperCase();
+  const rows = outcomeRows.filter(r => String(r.ticker || '').toUpperCase() === t);
+  const closed = rows.filter(r => r.status !== 'open');
+  const tp = closed.filter(r => String(r.status || '').startsWith('tp'));
+  const stop = closed.filter(r => r.status === 'stop_hit');
+  const mfe = avgNum(closed.map(r => parseFloat(r.mfe_pct)));
+  const mae = avgNum(closed.map(r => parseFloat(r.mae_pct)));
+  const opt = avgNum(closed.map(r => parseFloat(r.option_pnl_pct)));
+  const stock = avgNum(closed.map(r => parseFloat(r.result_pct)));
+  const hitRate = closed.length ? (tp.length / closed.length) * 100 : null;
+  return { rows, closed, tp, stop, mfe, mae, opt, stock, hitRate };
+}
+
+function buildStudyVerdict(scan, hist, price, liveRr, chased) {
+  const parts = [];
+  let cls = 'neutral';
+  if (!scan && !hist.closed.length) {
+    return { cls: 'warn', text: 'لا بيانات مسح حالية ولا سجل سابق لهذا الرمز.' };
+  }
+  if (scan) {
+    const rec = scan.recommendation || 'AVOID';
+    const dte = parseInt(scan.dte_num, 10);
+    if (rec === 'BUY' && !chased && dte > 0 && (liveRr == null || liveRr >= 1.3)) {
+      cls = 'ok';
+      parts.push('الشروط الحالية تدعم التنفيذ (BUY + بدون مطاردة + R:R مقبول).');
+    } else if (chased || (liveRr != null && liveRr < 1.3)) {
+      cls = 'warn';
+      parts.push('الوضع الحالي ضعيف للتنفيذ: مطاردة أو R:R حي منخفض — الأفضل الانتظار قرب Entry.');
+    } else if (dte === 0) {
+      cls = 'warn';
+      parts.push('0DTE — ثيتا عالية؛ المسح لا يعطي BUY تلقائي.');
+    } else if (rec === 'WAIT') {
+      cls = 'warn';
+      parts.push('المسح يصنّف الفرصة WAIT — راقب ولا تتعجّل.');
+    } else {
+      cls = 'bad';
+      parts.push('المسح لا يدعم الصفقة حالياً (AVOID أو شروط ناقصة).');
+    }
+  }
+  if (hist.closed.length) {
+    const hr = hist.hitRate;
+    const mfe = hist.mfe;
+    if (hr != null && hr >= 55 && mfe != null && mfe >= 3) {
+      parts.push(`تاريخياً على ${hist.closed.length} صفقة: وصول أهداف ${(hr).toFixed(0)}% ومتوسط MFE ${fmtPctSigned(mfe)}.`);
+      if (cls === 'neutral') cls = 'ok';
+    } else if (hr != null && hr < 40) {
+      parts.push(`تاريخياً وصول الأهداف ضعيف (${(hr).toFixed(0)}% من ${hist.closed.length}).`);
+      if (cls === 'ok') cls = 'warn';
+      else if (cls === 'neutral') cls = 'bad';
+    } else {
+      parts.push(`سجل ${hist.closed.length} صفقة سابقة · متوسط MFE ${fmtPctSigned(mfe)} · متوسط نتيجة السهم ${fmtPctSigned(hist.stock)}.`);
+    }
+  } else {
+    parts.push('لا سجل سابق كافٍ — اعتمد على خطة اليوم فقط.');
+  }
+  if (price > 0 && scan) {
+    const entry = parseFloat(scan.entry_stock) || 0;
+    const tp1 = parseFloat(scan.tp1_stock) || 0;
+    if (entry > 0 && tp1 > 0) {
+      const toTp = Math.abs(pctDist(price, tp1));
+      const atr = parseFloat(scan.atr_pct) || 0;
+      if (atr > 0 && toTp > atr * 1.5) {
+        parts.push(`الهدف أبعد من مدى ATR اليومي (~${atr.toFixed(1)}%) — احتمال أبطأ للوصول.`);
+      }
+    }
+  }
+  return { cls, text: parts.join(' ') };
+}
+
+function renderStockStudy(ticker) {
+  const box = document.getElementById('studyContent');
+  if (!box) return;
+  const t = String(ticker || '').toUpperCase();
+  const scan = findScanRow(t);
+  const hist = studyHistStats(t);
+  const plan = tradePlans[t] || (scan ? {
+    entry: parseFloat(scan.entry_stock) || 0,
+    stop: parseFloat(scan.stop_stock) || 0,
+    tp1: parseFloat(scan.tp1_stock) || 0,
+    tp2: parseFloat(scan.tp2_stock) || 0,
+    tp3: parseFloat(scan.tp3_stock) || 0,
+    direction: scan.direction || '',
+    rr: parseFloat(scan.tp1_rr) || 0,
+    rrLive: parseFloat(scan.tp1_rr_live) || 0,
+    dte: parseInt(scan.dte_num, 10),
+    rec: scan.recommendation || 'AVOID',
+  } : null);
+
+  const csvPrice = scan ? parsePrice(scan.Price || scan.price_num) : 0;
+  const price = (livePrices[t] && livePrices[t].price) || csvPrice || 0;
+  const isCall = plan ? !(String(plan.direction || '').toUpperCase().includes('PUT')) : true;
+  let liveRr = plan ? (parseFloat(plan.rrLive) || 0) : null;
+  let chased = false;
+  if (plan && price > 0) {
+    const st = evalLiveStatus(plan, price);
+    liveRr = st.liveRr;
+    chased = st.chased;
+  }
+  const verdict = buildStudyVerdict(scan, hist, price, liveRr, chased);
+
+  const lvl = (name, level, color) => {
+    const lv = parseFloat(level) || 0;
+    const d = price > 0 && lv > 0 ? pctDist(price, lv) : null;
+    const raw = d == null ? '—' : fmtPctSigned(d);
+    return `<div class="study-lvl">
+      <div class="n">${name}</div>
+      <div class="p" style="color:${color}">${lv > 0 ? '$' + lv.toFixed(2) : '—'}</div>
+      <div class="d">${raw} من السعر</div>
+    </div>`;
+  };
+
+  const atrPct = scan ? (parseFloat(scan.atr_pct) || 0) : 0;
+  const atrDollar = price > 0 && atrPct > 0 ? price * atrPct / 100 : 0;
+  const iv = scan ? (parseFloat(scan.iv) || 0) : 0;
+  const dte = scan ? parseInt(scan.dte_num, 10) : NaN;
+  const planRr = plan ? (parseFloat(plan.rr) || parseFloat(scan?.tp1_rr) || 0) : 0;
+
+  const recent = [...hist.rows].sort((a, b) => String(b.date).localeCompare(String(a.date))).slice(0, 10);
+  const statusLabel = {
+    open: 'مفتوح', tp1_hit: 'TP1', tp2_hit: 'TP2', tp3_hit: 'TP3',
+    stop_hit: 'Stop', expired: 'انتهى',
+  };
+  const statusColor = {
+    open: '#e3b341', tp1_hit: '#3fb950', tp2_hit: '#3fb950', tp3_hit: '#58a6ff',
+    stop_hit: '#f85149', expired: '#8b949e',
+  };
+
+  box.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:flex-end;gap:12px;flex-wrap:wrap;margin-bottom:12px">
+      <div>
+        <div style="font-size:28px;font-weight:900;color:#e6edf3">${t}</div>
+        <div style="font-size:13px;color:#8b949e;margin-top:4px">
+          السعر ${price > 0 ? '$' + price.toFixed(2) : '—'}
+          ${scan ? ` · ${scan.recommendation || '—'} · Score ${scan.Score || 0} · ثقة ${scan.confidence || 0}%` : ' · ليس في مسح اليوم'}
+          ${plan ? ` · ${(String(plan.direction || '').toUpperCase().includes('PUT') ? 'PUT' : 'CALL')}` : ''}
+        </div>
+      </div>
+    </div>
+
+    <div class="study-verdict ${verdict.cls}">${verdict.text}</div>
+
+    <div class="study-section-title">قبل الدخول — خطة اليوم</div>
+    ${scan || plan ? `
+      <div class="study-levels">
+        ${lvl('Entry', plan?.entry || scan?.entry_stock, '#3fb950')}
+        ${lvl('Stop', plan?.stop || scan?.stop_stock, '#f85149')}
+        ${lvl('TP1', plan?.tp1 || scan?.tp1_stock, '#3fb950')}
+        ${lvl('TP2', plan?.tp2 || scan?.tp2_stock, '#3fb950')}
+        ${lvl('TP3', plan?.tp3 || scan?.tp3_stock, '#58a6ff')}
+      </div>
+      <div class="study-grid">
+        <div class="study-metric"><div class="lbl">R:R خطة</div><div class="val">1:${planRr.toFixed(1)}</div>
+          <div class="sub">حي 1:${liveRr != null ? Number(liveRr).toFixed(1) : '—'}${chased ? ' · مطاردة' : ''}</div></div>
+        <div class="study-metric"><div class="lbl">مدى ATR يومي</div><div class="val">${atrPct ? atrPct.toFixed(1) + '%' : '—'}</div>
+          <div class="sub">${atrDollar ? '≈ $' + atrDollar.toFixed(2) : 'حركة محتملة ليوم'}</div></div>
+        <div class="study-metric"><div class="lbl">IV</div><div class="val">${iv ? (iv * 100).toFixed(1) + '%' : '—'}</div>
+          <div class="sub">DTE ${Number.isFinite(dte) ? dte : '—'}${dte === 0 ? ' · 0DTE' : ''}</div></div>
+        <div class="study-metric"><div class="lbl">Premium</div><div class="val">${scan && parseFloat(scan.premium) > 0 ? '$' + parseFloat(scan.premium).toFixed(2) : '—'}</div>
+          <div class="sub">Strike ${scan && parseFloat(scan.strike) ? parseFloat(scan.strike).toFixed(1) : '—'}</div></div>
+        <div class="study-metric"><div class="lbl">إلى TP1 من السعر</div>
+          <div class="val">${price && plan?.tp1 ? fmtPctSigned(pctDist(price, plan.tp1)) : '—'}</div>
+          <div class="sub">إلى Stop ${price && plan?.stop ? fmtPctSigned(pctDist(price, plan.stop)) : '—'}</div></div>
+        <div class="study-metric"><div class="lbl">ملاحظة المسح</div>
+          <div class="val" style="font-size:13px;font-weight:600;line-height:1.4">${(scan?.rec_note || '—').replace(/</g, '&lt;')}</div></div>
+      </div>
+    ` : `<div style="color:#8b949e;font-size:13px;margin-bottom:12px">لا خطة من مسح اليوم لهذا الرمز — يظهر السجل فقط إن وُجد.</div>`}
+
+    <div class="study-section-title">سجل نفس السهم</div>
+    <div class="study-grid">
+      <div class="study-metric"><div class="lbl">صفقات مسجّلة</div><div class="val">${hist.rows.length}</div>
+        <div class="sub">${hist.closed.length} مغلق · ${hist.rows.length - hist.closed.length} مفتوح</div></div>
+      <div class="study-metric"><div class="lbl">وصول أهداف</div><div class="val">${hist.hitRate == null ? '—' : hist.hitRate.toFixed(0) + '%'}</div>
+        <div class="sub">${hist.tp.length} هدف / ${hist.stop.length} وقف</div></div>
+      <div class="study-metric"><div class="lbl">متوسط MFE</div><div class="val" style="color:#3fb950">${fmtPctSigned(hist.mfe)}</div>
+        <div class="sub">أقصى صعود محتمل تاريخياً</div></div>
+      <div class="study-metric"><div class="lbl">متوسط MAE</div><div class="val" style="color:#f85149">${fmtPctSigned(hist.mae)}</div>
+        <div class="sub">أقصى تراجع تاريخياً</div></div>
+      <div class="study-metric"><div class="lbl">متوسط P&L العقد</div><div class="val">${fmtPctSigned(hist.opt)}</div>
+        <div class="sub">نتيجة السهم ${fmtPctSigned(hist.stock)}</div></div>
+    </div>
+
+    ${recent.length ? `
+      <div style="overflow-x:auto;margin-top:8px">
+        <table style="width:100%;border-collapse:collapse;font-size:12px">
+          <thead><tr style="background:#21262d;color:#8b949e">
+            <th style="padding:8px;text-align:right">التاريخ</th>
+            <th style="padding:8px;text-align:right">الحالة</th>
+            <th style="padding:8px;text-align:right">Entry</th>
+            <th style="padding:8px;text-align:right">MFE</th>
+            <th style="padding:8px;text-align:right">MAE</th>
+            <th style="padding:8px;text-align:right">سهم %</th>
+            <th style="padding:8px;text-align:right">عقد %</th>
+          </tr></thead>
+          <tbody>
+            ${recent.map(r => {
+              const st = r.status || '';
+              return `<tr style="border-bottom:1px solid #30363d">
+                <td style="padding:8px">${r.date || '—'}</td>
+                <td style="padding:8px;color:${statusColor[st] || '#8b949e'};font-weight:700">${statusLabel[st] || st}</td>
+                <td style="padding:8px">${r.entry_stock || '—'}</td>
+                <td style="padding:8px;color:#3fb950">${fmtPctSigned(parseFloat(r.mfe_pct))}</td>
+                <td style="padding:8px;color:#f85149">${fmtPctSigned(parseFloat(r.mae_pct))}</td>
+                <td style="padding:8px">${fmtPctSigned(parseFloat(r.result_pct))}</td>
+                <td style="padding:8px">${fmtPctSigned(parseFloat(r.option_pnl_pct))}</td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>
+    ` : `<div style="color:#8b949e;font-size:13px">لا صفقات سابقة في outcomes لهذا السهم.</div>`}
+  `;
+
+  // تحديث خفيف بعد ظهور السعر الحي
+  if (t && (!livePrices[t] || !livePrices[t].price)) {
+    const key = localStorage.getItem('finnhub_key');
+    if (key) fetchFinnhubQuotes([t]);
+  }
+}
+
 function showTab(tab) {
-  document.querySelectorAll('.tab').forEach((t,i) => t.classList.toggle('active', ['cards','table','history'][i] === tab));
-  document.getElementById('cardsView').style.display   = tab === 'cards'   ? 'block' : 'none';
-  document.getElementById('tableView').style.display   = tab === 'table'   ? 'block' : 'none';
+  const order = ['cards', 'table', 'study', 'history'];
+  document.querySelectorAll('.tab').forEach((t, i) => t.classList.toggle('active', order[i] === tab));
+  document.getElementById('cardsView').style.display = tab === 'cards' ? 'block' : 'none';
+  document.getElementById('tableView').style.display = tab === 'table' ? 'block' : 'none';
+  document.getElementById('studyView').style.display = tab === 'study' ? 'block' : 'none';
   document.getElementById('historyView').style.display = tab === 'history' ? 'block' : 'none';
   if (tab === 'history') loadHistory(true);
+  if (tab === 'study') {
+    refreshStudyTickerOptions();
+    ensureOutcomesForStudy().then(() => {
+      if (studyTicker) renderStockStudy(studyTicker);
+    });
+  }
 }
 
 // ── Outcome History ──────────────────────────────────────────
@@ -1535,6 +1907,10 @@ async function loadHistory(force) {
     const rows = enrichOutcomeQuality(parseCSV(text).filter(r => r.ticker));
     outcomeRows = rows;
     outcomeOpenTickers = rows.filter(r => r.status === 'open').map(r => r.ticker);
+    refreshStudyTickerOptions();
+    if (studyTicker && document.getElementById('studyView')?.style.display !== 'none') {
+      renderStockStudy(studyTicker);
+    }
 
     if (rows.length === 0) {
       container.innerHTML = '<div style="text-align:center;padding:40px;color:#8b949e">السجل فارغ — سيتعبأ تلقائياً بعد أول BUY</div>';
