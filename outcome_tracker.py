@@ -1124,6 +1124,14 @@ def add_new_recommendations(outcomes_df):
                 _refresh_fields(idx)
                 upgraded += 1
                 print(f"  ↑ ترقية → BUY {ticker} strike={strike_f} expiry={expiry_key}")
+            elif rec_kind == "WAIT_HOT" and prev_kind in ("", "NAN", "NONE", "WAIT_HOT"):
+                # حدّث مستويات المسح الجديد لنفس العقد المفتوح
+                _refresh_fields(idx)
+                if prev_kind != "WAIT_HOT":
+                    outcomes_df.at[idx, "rec_kind"] = "WAIT_HOT"
+                    outcomes_df.at[idx, "data_quality_note"] = "WAIT HOT — دخول يدوي / تتبع"
+                upgraded += 1
+                print(f"  ↻ تحديث WAIT_HOT {ticker} strike={strike_f} expiry={expiry_key}")
             return
 
         already = _same_contract(
