@@ -536,6 +536,141 @@ def entry_is_chased(price, entry, is_call, max_pct=None):
     return price < entry * (1.0 - max_pct)
 
 
+def chase_distance_pct(price, entry, is_call):
+    """كم % تجاوز السعر Entry (0 إذا لم يُطارَد)."""
+    try:
+        price, entry = float(price), float(entry)
+    except (TypeError, ValueError):
+        return 0.0
+    if price <= 0 or entry <= 0:
+        return 0.0
+    if is_call and price > entry:
+        return (price - entry) / entry * 100.0
+    if (not is_call) and price < entry:
+        return (entry - price) / entry * 100.0
+    return 0.0
+
+
+def grade_wait_setup(
+    *,
+    conf,
+    liquid_ok,
+    prem_ok,
+    align_ok,
+    exec_ok,
+    trend_ok,
+    mixed_ok,
+    plan_valid,
+    chased,
+    dte,
+    is_0dte,
+    live_rr,
+    tp1_rr,
+    price,
+    entry,
+    stop,
+    tp2,
+    tp3,
+    is_call,
+    atr_pct=0,
+    score=0,
+    rvol=0,
+):
+    """
+    يقيّم اكتمال الشروط حتى لو التوصية WAIT (مطاردة/0DTE/…).
+    لا يغيّر بوابة BUY — يعطي setup_pct + wait_tier لزخم محتمل.
+    من دراسة أسبوع 3–7 أغسطس: مطاردات خفيفة كثيراً كملت لـ TP بـ MFE قوي.
+    """
+    checks = [
+        (conf >= MIN_CONF_TO_BUY, 18),
+        (bool(liquid_ok), 14),
+        (bool(prem_ok), 10),
+        (bool(align_ok), 14),
+        (bool(plan_valid), 8),
+        (bool(exec_ok), 6),
+        (bool(trend_ok or mixed_ok), 12),
+        ((dte or 0) > 0 and not is_0dte, 8),
+    ]
+    # R:R: الحي المثالي، أو خطة قوية، أو مجال متبقٍ لـ TP2 بعد مطاردة خفيفة
+    rr_tp2 = live_stock_rr(price, tp2, stop, is_call) if tp2 else 0.0
+    rr_tp3 = live_stock_rr(price, tp3, stop, is_call) if tp3 else 0.0
+    rr_ok = (
+        live_rr >= MIN_RR_TO_BUY
+        or tp1_rr >= MIN_RR_TO_BUY
+        or (chased and max(rr_tp2, rr_tp3) >= 1.0)
+        or (chased and live_rr >= 0.5 and max(rr_tp2, rr_tp3) >= 0.8)
+    )
+    checks.append((rr_ok, 10))
+
+    earned = sum(w for ok, w in checks if ok)
+    total = sum(w for _, w in checks)
+    setup_pct = int(round(100.0 * earned / total)) if total else 0
+
+    chase_pct = chase_distance_pct(price, entry, is_call) if chased else 0.0
+    mild_chase = chased and chase_pct <= 1.5  # ≤1.5% فوق/تحت Entry
+    try:
+        atr = float(atr_pct or 0)
+    except (TypeError, ValueError):
+        atr = 0.0
+    try:
+        sc = float(score or 0)
+    except (TypeError, ValueError):
+        sc = 0.0
+    try:
+        rv = float(rvol or 0)
+    except (TypeError, ValueError):
+        rv = 0.0
+
+    # مكافأة زخم استمرار (لا تُحوّل إلى BUY)
+    momentum_bonus = 0
+    if mild_chase and conf >= MIN_CONF_TO_BUY and align_ok:
+        momentum_bonus += 6
+    if chased and max(rr_tp2, rr_tp3) >= 1.2:
+        momentum_bonus += 8
+    elif chased and max(rr_tp2, rr_tp3) >= 0.8:
+        momentum_bonus += 4
+    if atr > 0 and chase_pct > 0 and chase_pct < atr:
+        # المطاردة أصغر من مدى ATR اليومي → غالباً باقي وقود
+        momentum_bonus += 5
+    if sc >= 20 or rv >= 2.0:
+        momentum_bonus += 3
+
+    setup_pct = min(99, setup_pct + momentum_bonus)
+
+    if setup_pct >= 90:
+        tier = "FIRE"
+    elif setup_pct >= 75:
+        tier = "HOT"
+    elif setup_pct >= 55:
+        tier = "WARM"
+    else:
+        tier = "COLD"
+
+    edge = ""
+    if chased and tier in ("FIRE", "HOT"):
+        edge = (
+            f"مطاردة {'خفيفة' if mild_chase else ''} {chase_pct:.1f}% — "
+            f"الشروط ≈{setup_pct}% · زخم قوي محتمل "
+            f"(مجال TP2 R:R حي 1:{rr_tp2:.1f}) — دخول يدوي بحذر فقط"
+        ).replace("  ", " ").strip()
+    elif tier == "FIRE":
+        edge = f"الشروط ≈{setup_pct}% — شبه BUY؛ راقب أقرب تراجع لدخول أنظف"
+    elif tier == "HOT":
+        edge = f"الشروط ≈{setup_pct}% — فرصة ساخنة تحت WAIT؛ راقب Entry/زخم"
+    elif tier == "WARM":
+        edge = f"الشروط ≈{setup_pct}% — متوسطة؛ لا تستعجل"
+    else:
+        edge = f"الشروط ≈{setup_pct}% — ضعيفة حالياً"
+
+    return {
+        "setup_pct": setup_pct,
+        "wait_tier": tier,
+        "wait_edge_note": edge,
+        "chase_pct": round(chase_pct, 2),
+        "tp2_rr_live": rr_tp2,
+    }
+
+
 def is_exec_window(now=None):
     """
     نافذة اعتماد BUY/تيليجرام: أيام التداول بعد 9:30 ET + EXEC_AFTER_OPEN_MIN
@@ -1579,6 +1714,40 @@ def compute_trade_plan(r, tech):
         plan["recommendation"] = "AVOID"
         plan["rec_note"]       = "الشروط غير مكتملة"
 
+    # جودة WAIT / اكتمال الشروط (حتى مع مطاردة) — لا يفتح بوابة BUY
+    grade = grade_wait_setup(
+        conf=conf,
+        liquid_ok=liquid_ok,
+        prem_ok=prem_ok,
+        align_ok=align_ok,
+        exec_ok=exec_ok,
+        trend_ok=trend_ok,
+        mixed_ok=mixed_ok,
+        plan_valid=trade_plan_is_valid(plan, price, is_call),
+        chased=chased,
+        dte=dte,
+        is_0dte=bool(r.get("is_0dte") or dte == 0),
+        live_rr=live_rr,
+        tp1_rr=tp1_rr,
+        price=price,
+        entry=entry_s,
+        stop=stop_stock,
+        tp2=plan.get("tp2_stock"),
+        tp3=plan.get("tp3_stock"),
+        is_call=is_call,
+        atr_pct=r.get("atr_pct"),
+        score=r.get("Score") or r.get("score"),
+        rvol=r.get("RVOL") or r.get("rvol"),
+    )
+    plan["setup_pct"] = grade["setup_pct"]
+    plan["wait_tier"] = grade["wait_tier"]
+    plan["wait_edge_note"] = grade["wait_edge_note"]
+    plan["chase_pct"] = grade["chase_pct"]
+    plan["tp2_rr_live"] = grade["tp2_rr_live"]
+    if plan.get("recommendation") == "WAIT" and grade["wait_tier"] in ("FIRE", "HOT"):
+        base = plan.get("rec_note") or ""
+        plan["rec_note"] = (base + " · " + grade["wait_edge_note"]).strip(" ·")
+
     c = plan["confidence"]
     plan["stars"] = 5 if c >= 85 else 4 if c >= 75 else 3 if c >= 65 else 2 if c >= 55 else 1
 
@@ -1753,7 +1922,8 @@ SAVE_COLS = [
     "atr_pct", "gap_pct", "RVOL", "pm_high", "pm_low", "pm_volume",
     "expiry", "dte_num", "direction", "earnings", "float_shares", "avg_vol",
     "entry_stock", "stop_stock", "tp1_stock", "tp2_stock", "tp3_stock", "tp1_rr",
-    "tp1_rr_live", "entry_chased", "exec_window_ok",
+    "tp1_rr_live", "tp2_rr_live", "entry_chased", "chase_pct", "exec_window_ok",
+    "setup_pct", "wait_tier", "wait_edge_note",
     "entry_note", "fh_gap_pct", "fh_pm_bullish", "fh_pm_strong", "fh_pm_note",
     "spy_regime", "rec_note", "gemini_note",
     "Score", "recommendation", "confidence", "Notes", "scanned_at",
@@ -2026,8 +2196,13 @@ def process_candidates(candidates_df, show_progress=True):
         row["tp3_stock"]      = plan.get("tp3_stock")
         row["tp1_rr"]         = plan.get("tp1_rr")
         row["tp1_rr_live"]    = plan.get("tp1_rr_live")
+        row["tp2_rr_live"]    = plan.get("tp2_rr_live")
         row["entry_chased"]   = bool(plan.get("entry_chased", False))
+        row["chase_pct"]      = plan.get("chase_pct")
         row["exec_window_ok"] = bool(plan.get("exec_window_ok", False))
+        row["setup_pct"]      = plan.get("setup_pct")
+        row["wait_tier"]      = plan.get("wait_tier")
+        row["wait_edge_note"] = plan.get("wait_edge_note", "")
         row["entry_note"]     = plan.get("entry_note", "")
         row["rec_note"]       = plan.get("rec_note", "")
         row["spy_regime"]     = plan.get("spy_regime", row_regime)

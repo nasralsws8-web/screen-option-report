@@ -174,6 +174,14 @@
     cursor: pointer; margin-top: 6px;
   }
   .btn-study:hover { background: #1a2a40; border-color: #58a6ff; }
+  .wait-tier {
+    display: inline-block; margin-top: 4px; padding: 2px 8px; border-radius: 6px;
+    font-size: 10px; font-weight: 800; letter-spacing: 0.2px;
+  }
+  .wait-tier.FIRE { background: #3d1a1a; color: #ff7b72; border: 1px solid #f85149; }
+  .wait-tier.HOT { background: #3d2d00; color: #e3b341; border: 1px solid #e3b341; }
+  .wait-tier.WARM { background: #21262d; color: #c9d1d9; border: 1px solid #30363d; }
+  .wait-tier.COLD { background: #161b22; color: #8b949e; border: 1px solid #30363d; }
 
   /* SPY — توصية خاصة */
   .spy-hero { background: linear-gradient(135deg, #1a2a40 0%, #161b22 100%); border: 2px solid #58a6ff; border-radius: 14px; padding: 20px 24px; margin-bottom: 20px; box-shadow: 0 0 24px rgba(88,166,255,0.15); }
@@ -1240,6 +1248,14 @@ function buildCard(r) {
       </div>
       <div style="text-align:left">
         <span class="rec-badge ${rec}" id="rec-badge-${r.Ticker}">${rec}</span>
+        ${(() => {
+          const tier = String(r.wait_tier || '').toUpperCase();
+          const pct = parseInt(r.setup_pct, 10);
+          if (rec !== 'WAIT' || !tier) return '';
+          const label = tier === 'FIRE' ? '🔥 FIRE' : tier === 'HOT' ? 'HOT' : tier === 'WARM' ? 'WARM' : 'COLD';
+          const pctStr = Number.isFinite(pct) ? ` ${pct}%` : '';
+          return `<div class="wait-tier ${tier}">${label}${pctStr}</div>`;
+        })()}
         <div style="font-size:11px;color:${dirColor};margin-top:4px;font-weight:700">${dirLabel}</div>
         <div style="font-size:11px;color:#8b949e;margin-top:2px">Score: ${r.Score||0}</div>
         <div style="font-size:10px;color:#e3b341;margin-top:2px" id="rr-live-${r.Ticker}">
@@ -1610,18 +1626,24 @@ function buildStudyVerdict(scan, hist, price, liveRr, chased) {
   if (scan) {
     const rec = scan.recommendation || 'AVOID';
     const dte = parseInt(scan.dte_num, 10);
+    const tier = String(scan.wait_tier || '').toUpperCase();
+    const setupPct = parseInt(scan.setup_pct, 10);
+    const edge = String(scan.wait_edge_note || '').trim();
     if (rec === 'BUY' && !chased && dte > 0 && (liveRr == null || liveRr >= 1.3)) {
       cls = 'ok';
       parts.push('الشروط الحالية تدعم التنفيذ (BUY + بدون مطاردة + R:R مقبول).');
+    } else if (rec === 'WAIT' && (tier === 'FIRE' || tier === 'HOT')) {
+      cls = tier === 'FIRE' ? 'ok' : 'warn';
+      parts.push(edge || `WAIT ساخنة — اكتمال الشروط ≈${Number.isFinite(setupPct) ? setupPct : '—'}٪. ليست BUY تلقائي؛ دخول يدوي بحذر إن بقي مجال للأهداف.`);
     } else if (chased || (liveRr != null && liveRr < 1.3)) {
       cls = 'warn';
-      parts.push('الوضع الحالي ضعيف للتنفيذ: مطاردة أو R:R حي منخفض — الأفضل الانتظار قرب Entry.');
+      parts.push(edge || 'الوضع الحالي ضعيف كـ BUY: مطاردة أو R:R حي منخفض — راقب الرجوع أو استمرار الزخم بحذر.');
     } else if (dte === 0) {
       cls = 'warn';
       parts.push('0DTE — ثيتا عالية؛ المسح لا يعطي BUY تلقائي.');
     } else if (rec === 'WAIT') {
       cls = 'warn';
-      parts.push('المسح يصنّف الفرصة WAIT — راقب ولا تتعجّل.');
+      parts.push(edge || 'المسح يصنّف الفرصة WAIT — راقب ولا تتعجّل.');
     } else {
       cls = 'bad';
       parts.push('المسح لا يدعم الصفقة حالياً (AVOID أو شروط ناقصة).');
@@ -1750,6 +1772,9 @@ function renderStockStudy(ticker) {
         <div class="study-metric"><div class="lbl">إلى TP1 من السعر</div>
           <div class="val">${price && plan?.tp1 ? fmtPctSigned(pctDist(price, plan.tp1)) : '—'}</div>
           <div class="sub">إلى Stop ${price && plan?.stop ? fmtPctSigned(pctDist(price, plan.stop)) : '—'}</div></div>
+        <div class="study-metric"><div class="lbl">اكتمال الشروط</div>
+          <div class="val">${scan?.setup_pct != null && scan?.setup_pct !== '' ? scan.setup_pct + '%' : '—'}</div>
+          <div class="sub">${scan?.wait_tier ? 'WAIT ' + scan.wait_tier : '—'}${scan?.chase_pct ? ' · مطاردة ' + parseFloat(scan.chase_pct).toFixed(1) + '%' : ''}</div></div>
         <div class="study-metric"><div class="lbl">ملاحظة المسح</div>
           <div class="val" style="font-size:13px;font-weight:600;line-height:1.4">${(scan?.rec_note || '—').replace(/</g, '&lt;')}</div></div>
       </div>

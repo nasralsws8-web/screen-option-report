@@ -13,7 +13,11 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from cheap_options_screener_v3 import entry_is_chased, is_exec_window  # noqa: E402
+from cheap_options_screener_v3 import (  # noqa: E402
+    entry_is_chased,
+    grade_wait_setup,
+    is_exec_window,
+)
 from data_quality import classify_data_quality  # noqa: E402
 from outcome_tracker import resolve_first_touch  # noqa: E402
 from telegram_notify import (  # noqa: E402
@@ -25,6 +29,31 @@ from telegram_notify import (  # noqa: E402
 )
 
 ET = ZoneInfo("America/New_York")
+
+
+class TestWaitGrade(unittest.TestCase):
+    def test_mild_chase_can_be_hot(self):
+        # مثل NVDA/TQQQ هذا الأسبوع: مطاردة بسيطة مع مجال لـ TP2
+        g = grade_wait_setup(
+            conf=76, liquid_ok=True, prem_ok=True, align_ok=True, exec_ok=True,
+            trend_ok=True, mixed_ok=False, plan_valid=True, chased=True,
+            dte=3, is_0dte=False, live_rr=0.5, tp1_rr=2.0,
+            price=211.85, entry=209.43, stop=207.5, tp2=218.7, tp3=226.0,
+            is_call=True, atr_pct=2.5, score=22, rvol=2.2,
+        )
+        self.assertGreaterEqual(g["setup_pct"], 75)
+        self.assertIn(g["wait_tier"], ("HOT", "FIRE"))
+
+    def test_cold_when_misaligned(self):
+        g = grade_wait_setup(
+            conf=40, liquid_ok=False, prem_ok=False, align_ok=False, exec_ok=False,
+            trend_ok=False, mixed_ok=False, plan_valid=False, chased=False,
+            dte=0, is_0dte=True, live_rr=0.2, tp1_rr=0.5,
+            price=100, entry=100, stop=99, tp2=102, tp3=104,
+            is_call=True, atr_pct=1.0, score=5, rvol=0.5,
+        )
+        self.assertLess(g["setup_pct"], 55)
+        self.assertEqual(g["wait_tier"], "COLD")
 
 
 class TestChase(unittest.TestCase):
