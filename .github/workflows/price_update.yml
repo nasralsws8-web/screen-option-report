@@ -43,8 +43,14 @@ jobs:
       - name: Run outcome tracker
         run: python outcome_tracker.py
 
+      - name: Telegram (BUY + WAIT HOT/FIRE)
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python telegram_notify.py
+
       - name: Commit updated CSVs
         run: |
           bash .github/scripts/push_csv_changes.sh \
             "Price update: $(date -u '+%Y-%m-%d %H:%M UTC')" \
-            options_v3_results.csv outcomes.csv
+            options_v3_results.csv outcomes.csv telegram_sent.json

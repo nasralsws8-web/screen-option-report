@@ -1,9 +1,10 @@
 """
 telegram_notify.py
 ------------------
-Sends each BUY signal as a styled PNG card + text caption to Telegram.
+Sends BUY signals and WAIT HOT/FIRE watch alerts as PNG cards to Telegram.
 
 Dedupe: عقد + يوم تقويم ET — لا إعادة إرسال نفس الإشارة في نفس اليوم.
+WAIT HOT لها مفتاح منفصل عن BUY لنفس العقد.
 الحالة تُحفظ في telegram_sent.json وتُرفع مع نتائج الـ workflow.
 """
 
@@ -105,8 +106,8 @@ def trading_day_et(now=None) -> str:
     return now.strftime("%Y-%m-%d")
 
 
-def alert_key(row, day=None) -> str:
-    """مفتاح منع التكرار: يوم ET + Ticker + اتجاه + Strike + Expiry."""
+def alert_key(row, day=None, kind="BUY") -> str:
+    """مفتاح منع التكرار: يوم ET + Ticker + اتجاه + Strike + Expiry (+ نوع الإشارة)."""
     day = day or trading_day_et()
     ticker = str(row.get("Ticker") or row.get("ticker") or "?").upper().strip()
     direction = normalize_direction(row.get("direction"))
@@ -115,7 +116,41 @@ def alert_key(row, day=None) -> str:
         strike = f"{float(row.get('strike', row.get('Strike', 0))):.2f}"
     except (TypeError, ValueError):
         strike = str(row.get("strike") or row.get("Strike") or "")
-    return f"{day}|{ticker}|{direction}|{strike}|{expiry}"
+    base = f"{day}|{ticker}|{direction}|{strike}|{expiry}"
+    kind_u = str(kind or "BUY").upper()
+    if kind_u in ("WAIT_HOT", "HOT", "FIRE"):
+        return f"WAIT_HOT|{base}"
+    return base
+
+
+def wait_tier_of(row) -> str:
+    return str(row.get("wait_tier") or "").strip().upper()
+
+
+def is_hot_wait_row(row) -> bool:
+    """WAIT مع درجة HOT/FIRE أو اكتمال شروط ≥75%."""
+    if str(row.get("recommendation") or "").strip().upper() != "WAIT":
+        return False
+    tier = wait_tier_of(row)
+    if tier in ("HOT", "FIRE"):
+        return True
+    try:
+        return float(row.get("setup_pct") or 0) >= 75
+    except (TypeError, ValueError):
+        return False
+
+
+def is_active_watch(row) -> bool:
+    """مطاردة خفيفة ≤1% مع مجال TP2 R:R ≥1.2 — مراقبة نشطة."""
+    try:
+        chase = float(row.get("chase_pct") or 0)
+    except (TypeError, ValueError):
+        chase = 0.0
+    try:
+        tp2_rr = float(row.get("tp2_rr_live") or 0)
+    except (TypeError, ValueError):
+        tp2_rr = 0.0
+    return chase <= 1.0 and tp2_rr >= 1.2
 
 
 def load_sent(path=SENT_FILE) -> dict:
@@ -174,8 +209,8 @@ def select_buy_rows(df: pd.DataFrame, sent_keys=None, force=False, day=None):
     day = day or trading_day_et()
     force = force or os.environ.get("TELEGRAM_FORCE", "").lower() in ("1", "true", "yes")
 
-    if "recommendation" not in df.columns:
-        return df.iloc[0:0], [], []
+    if df is None or df.empty or "recommendation" not in df.columns:
+        return [], [], []
 
     buys = df[df["recommendation"].astype(str).str.upper() == "BUY"]
     to_send = []
@@ -183,9 +218,35 @@ def select_buy_rows(df: pd.DataFrame, sent_keys=None, force=False, day=None):
     skipped_window = []
     for _, row in buys.iterrows():
         if not row_allows_telegram(row):
-            skipped_window.append(alert_key(row, day=day))
+            skipped_window.append(alert_key(row, day=day, kind="BUY"))
             continue
-        key = alert_key(row, day=day)
+        key = alert_key(row, day=day, kind="BUY")
+        if not force and key in sent_keys:
+            skipped_dup.append(key)
+            continue
+        to_send.append((key, row))
+    return to_send, skipped_dup, skipped_window
+
+
+def select_hot_wait_rows(df: pd.DataFrame, sent_keys=None, force=False, day=None):
+    """WAIT HOT/FIRE للمراقبة — ليست توصية BUY."""
+    sent_keys = set(sent_keys or [])
+    day = day or trading_day_et()
+    force = force or os.environ.get("TELEGRAM_FORCE", "").lower() in ("1", "true", "yes")
+
+    if df is None or df.empty or "recommendation" not in df.columns:
+        return [], [], []
+
+    to_send = []
+    skipped_dup = []
+    skipped_window = []
+    for _, row in df.iterrows():
+        if not is_hot_wait_row(row):
+            continue
+        if not row_allows_telegram(row):
+            skipped_window.append(alert_key(row, day=day, kind="WAIT_HOT"))
+            continue
+        key = alert_key(row, day=day, kind="WAIT_HOT")
         if not force and key in sent_keys:
             skipped_dup.append(key)
             continue
@@ -211,7 +272,7 @@ def contract_symbol(ticker, direction, expiry_str, strike) -> str:
     return f"#{ticker}{date_part}{letter}{strike_fmt}"
 
 
-def create_card(row) -> bytes:
+def create_card(row, kind="BUY") -> bytes:
     ticker    = str(row.get("Ticker",      "N/A"))
     price     = row.get("Price",           "N/A")
     direction = normalize_direction(row.get("direction", ""))
@@ -222,13 +283,16 @@ def create_card(row) -> bytes:
     tp2       = row.get("tp2_stock",       "N/A")
     tp3       = row.get("tp3_stock",       "N/A")
     expiry    = str(row.get("expiry",      ""))
+    kind_u    = str(kind or "BUY").upper()
+    is_watch  = kind_u in ("WAIT_HOT", "HOT", "FIRE")
 
     is_call   = direction == "CALL"
-    hdr_bg    = HDR_CALL if is_call else HDR_PUT
-    dir_color = GREEN_BRIGHT if is_call else RED_BRIGHT
+    hdr_bg    = (55, 40, 8) if is_watch else (HDR_CALL if is_call else HDR_PUT)
+    dir_color = GOLD if is_watch else (GREEN_BRIGHT if is_call else RED_BRIGHT)
     dir_label = "▲  CALL" if is_call else "▼  PUT"
+    tier = wait_tier_of(row) or "HOT"
 
-    W, H  = 560, 490
+    W, H  = 560, 530 if is_watch else 490
     PAD   = 22
 
     img  = Image.new("RGB", (W, H), BG)
@@ -252,6 +316,12 @@ def create_card(row) -> bytes:
     draw.text((W - PAD, 46), expiry, font=F["sub"], fill=WHITE, anchor="ra")
 
     y = HDR_H + 14
+
+    if is_watch:
+        banner = f"WAIT {tier} — مراقبة نشطة (ليست BUY)"
+        draw.rounded_rectangle([PAD, y, W - PAD, y + 36], radius=8, fill=(48, 36, 10))
+        draw.text((W // 2, y + 18), banner, font=F["sub"], fill=GOLD, anchor="mm")
+        y += 48
 
     # ── current price ────────────────────────────────────────────
     draw.rounded_rectangle([PAD, y, W-PAD, y+54], radius=10, fill=DGRAY)
@@ -302,7 +372,7 @@ def create_card(row) -> bytes:
     return buf.getvalue()
 
 
-def build_caption(row) -> str:
+def build_caption(row, kind="BUY") -> str:
     ticker    = str(row.get("Ticker",      "N/A"))
     direction = normalize_direction(row.get("direction", ""))
     entry     = row.get("entry_stock",     "N/A")
@@ -316,12 +386,49 @@ def build_caption(row) -> str:
     oi        = row.get("oi",              "N/A")
     score     = row.get("Score",           "N/A")
     conf      = row.get("confidence",      "N/A")
+    kind_u    = str(kind or "BUY").upper()
+    is_watch  = kind_u in ("WAIT_HOT", "HOT", "FIRE")
 
     symbol = contract_symbol(ticker, direction, expiry, strike)
     gemini = str(row.get("gemini_note") or "").strip()
     gemini_block = f"\n🤖 <b>مستشار Gemini</b>\n{gemini}\n" if gemini else ""
 
+    if is_watch:
+        tier = wait_tier_of(row) or "HOT"
+        try:
+            setup = f"{float(row.get('setup_pct')):.0f}%"
+        except (TypeError, ValueError):
+            setup = "—"
+        try:
+            tp2_rr = f"1:{float(row.get('tp2_rr_live') or 0):.1f}"
+        except (TypeError, ValueError):
+            tp2_rr = "—"
+        try:
+            chase = f"{float(row.get('chase_pct') or 0):.1f}%"
+        except (TypeError, ValueError):
+            chase = "—"
+        edge = str(row.get("wait_edge_note") or "").strip()
+        active = "نعم — مطاردة ≤1% ومجال TP2 ≥1.2" if is_active_watch(row) else "مراقبة فقط"
+        return (
+            f"🟡 <b>WAIT {tier}</b> — ليست توصية BUY\n"
+            f"<code>{symbol}</code>\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"✅ اكتمال الشروط: <b>{setup}</b>\n"
+            f"📐 R:R حي لـ TP2: <b>{tp2_rr}</b>\n"
+            f"🏃 مطاردة Entry: <b>{chase}</b>\n"
+            f"👁 مراقبة نشطة: <b>{active}</b>\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"💵 Entry: <b>{fmt(entry)}</b>  |  🛑 Stop: <b>{fmt(stop_v)}</b>\n"
+            f"🎯 TP1: <b>{fmt(tp1)}</b> · TP2: <b>{fmt(tp2)}</b> · TP3: <b>{fmt(tp3)}</b>\n"
+            f"📊 Score: <b>{score}</b>  |  Confidence: <b>{conf}%</b>\n"
+            f"💰 Premium: <b>{fmt(premium)}</b>  |  OI: <b>{fmt_oi(oi)}</b>\n"
+            + (f"\n📝 {edge}\n" if edge else "\n")
+            + f"{gemini_block}"
+            f"⚠️ <i>مراقبة / دخول يدوي بحذر — للأغراض التعليمية فقط</i>"
+        )
+
     return (
+        f"🟢 <b>BUY</b>\n"
         f"<code>{symbol}</code>\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"💵 سعر الدخول: <b>{fmt(entry)}</b>\n"
@@ -400,6 +507,24 @@ def send_message(text: str) -> bool:
         return False
 
 
+def _send_batch(to_send, sent_map, kind="BUY"):
+    """يرسل دفعة ويحدّث sent_map. يرجع True إذا نجح إرسال واحد على الأقل."""
+    dirty = False
+    for key, row in to_send:
+        ticker = row.get("Ticker", "?")
+        try:
+            card = create_card(row, kind=kind)
+            caption = build_caption(row, kind=kind)
+            ok = send_photo(card, caption)
+            print(f"  {'✅' if ok else '❌'} {kind} {ticker} [{key}]")
+            if ok:
+                sent_map[key] = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+                dirty = True
+        except Exception as e:
+            print(f"  ❌ {kind} {ticker}: {e}")
+    return dirty
+
+
 def main():
     if not os.path.exists(CSV_FILE):
         print(f"⚠️  {CSV_FILE} not found")
@@ -408,46 +533,44 @@ def main():
     df = pd.read_csv(CSV_FILE)
     store = load_sent(SENT_FILE)
     sent_map = store.get("sent") or {}
-    to_send, skipped_dup, skipped_window = select_buy_rows(df, sent_keys=sent_map.keys())
 
-    if skipped_dup:
-        print(f"⏭️  تخطي {len(skipped_dup)} مكررة (نفس العقد اليوم)")
-    if skipped_window:
-        print(f"⏭️  تخطي {len(skipped_window)} خارج نافذة التنفيذ")
+    buys, buy_dup, buy_win = select_buy_rows(df, sent_keys=sent_map.keys())
+    hots, hot_dup, hot_win = select_hot_wait_rows(df, sent_keys=sent_map.keys())
 
-    if not to_send:
-        print("No new BUY signals to send (deduped or empty)")
-        # حافظ على ملف الحالة مُقلَّماً حتى لو ما فيه إرسال
+    if buy_dup or hot_dup:
+        print(f"⏭️  تخطي مكرر: BUY={len(buy_dup)} WAIT_HOT={len(hot_dup)}")
+    if buy_win or hot_win:
+        print(f"⏭️  خارج النافذة: BUY={len(buy_win)} WAIT_HOT={len(hot_win)}")
+
+    if not buys and not hots:
+        print("No new BUY / WAIT HOT signals to send (deduped or empty)")
         save_sent(store, SENT_FILE)
         return
 
-    print(f"📤 Sending {len(to_send)} new signal(s)...")
+    print(f"📤 Sending BUY={len(buys)} · WAIT_HOT={len(hots)}...")
 
-    send_message(
-        f"📋 <b>Options Screener</b>\n"
-        f"🟢 <b>{len(to_send)}</b> new signal(s) ↓"
-    )
+    if buys:
+        send_message(
+            f"📋 <b>Options Screener</b>\n"
+            f"🟢 <b>{len(buys)}</b> BUY signal(s) ↓"
+        )
+    if hots:
+        send_message(
+            f"📋 <b>Options Screener</b>\n"
+            f"🟡 <b>{len(hots)}</b> WAIT HOT/FIRE watch(es) ↓\n"
+            f"<i>ليست BUY — مراقبة / دخول يدوي بحذر</i>"
+        )
 
     dirty = False
-    for key, row in to_send:
-        ticker = row.get("Ticker", "?")
-        try:
-            card    = create_card(row)
-            caption = build_caption(row)
-            ok      = send_photo(card, caption)
-            print(f"  {'✅' if ok else '❌'} {ticker} [{key}]")
-            if ok:
-                sent_map[key] = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
-                dirty = True
-        except Exception as e:
-            print(f"  ❌ {ticker}: {e}")
+    if buys:
+        dirty = _send_batch(buys, sent_map, kind="BUY") or dirty
+    if hots:
+        dirty = _send_batch(hots, sent_map, kind="WAIT_HOT") or dirty
 
+    store["sent"] = sent_map
+    save_sent(store, SENT_FILE)
     if dirty:
-        store["sent"] = sent_map
-        save_sent(store, SENT_FILE)
         print(f"💾 حدّث {SENT_FILE} ({len(sent_map)} مفتاح)")
-    else:
-        save_sent(store, SENT_FILE)
 
 
 if __name__ == "__main__":

@@ -22,10 +22,13 @@ from data_quality import classify_data_quality  # noqa: E402
 from outcome_tracker import resolve_first_touch  # noqa: E402
 from telegram_notify import (  # noqa: E402
     alert_key,
+    is_active_watch,
+    is_hot_wait_row,
     load_sent,
     prune_sent,
     save_sent,
     select_buy_rows,
+    select_hot_wait_rows,
 )
 
 ET = ZoneInfo("America/New_York")
@@ -228,6 +231,36 @@ class TestTelegramDedupe(unittest.TestCase):
         k2 = alert_key(row, day="2026-08-05")
         self.assertEqual(k1, k2)
         self.assertEqual(k1, "2026-08-05|SPY|CALL|773.00|2026-08-07")
+        self.assertEqual(
+            alert_key(row, day="2026-08-05", kind="WAIT_HOT"),
+            "WAIT_HOT|2026-08-05|SPY|CALL|773.00|2026-08-07",
+        )
+
+    def test_select_hot_wait_rows(self):
+        df = pd.DataFrame([
+            {
+                "Ticker": "NVDA", "recommendation": "WAIT", "direction": "CALL",
+                "strike": 220, "expiry": "2026-08-14", "exec_window_ok": True,
+                "wait_tier": "HOT", "setup_pct": 82, "chase_pct": 0.8, "tp2_rr_live": 1.4,
+            },
+            {
+                "Ticker": "AMD", "recommendation": "WAIT", "direction": "CALL",
+                "strike": 100, "expiry": "2026-08-14", "exec_window_ok": True,
+                "wait_tier": "COLD", "setup_pct": 40,
+            },
+            {
+                "Ticker": "SPY", "recommendation": "BUY", "direction": "CALL",
+                "strike": 770, "expiry": "2026-08-14", "exec_window_ok": True,
+                "wait_tier": "FIRE", "setup_pct": 95,
+            },
+        ])
+        day = "2026-08-07"
+        to_send, _, _ = select_hot_wait_rows(df, sent_keys=set(), day=day)
+        tickers = [r.get("Ticker") for _, r in to_send]
+        self.assertEqual(tickers, ["NVDA"])
+        self.assertTrue(is_hot_wait_row(df.iloc[0]))
+        self.assertTrue(is_active_watch(df.iloc[0]))
+        self.assertFalse(is_hot_wait_row(df.iloc[1]))
 
     def test_select_skips_duplicates(self):
         df = pd.DataFrame([

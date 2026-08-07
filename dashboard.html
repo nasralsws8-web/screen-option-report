@@ -1249,11 +1249,12 @@ function buildCard(r) {
       <div style="text-align:left">
         <span class="rec-badge ${rec}" id="rec-badge-${r.Ticker}">${rec}</span>
         ${(() => {
-          const tier = String(r.wait_tier || '').toUpperCase();
-          const pct = parseInt(r.setup_pct, 10);
-          if (rec !== 'WAIT' || !tier) return '';
-          const label = tier === 'FIRE' ? '🔥 FIRE' : tier === 'HOT' ? 'HOT' : tier === 'WARM' ? 'WARM' : 'COLD';
-          const pctStr = Number.isFinite(pct) ? ` ${pct}%` : '';
+          if (rec !== 'WAIT') return '';
+          const g = enrichWaitGrade(r);
+          const tier = String(g.wait_tier || '').toUpperCase();
+          if (!tier) return '';
+          const label = tier === 'FIRE' ? 'FIRE' : tier === 'HOT' ? 'HOT' : tier === 'WARM' ? 'WARM' : 'COLD';
+          const pctStr = Number.isFinite(g.setup_pct) ? ` ${g.setup_pct}%` : '';
           return `<div class="wait-tier ${tier}">${label}${pctStr}</div>`;
         })()}
         <div style="font-size:11px;color:${dirColor};margin-top:4px;font-weight:700">${dirLabel}</div>
@@ -1265,6 +1266,30 @@ function buildCard(r) {
         ${chasedFlag ? `<div style="font-size:10px;color:#f85149;margin-top:2px;font-weight:700">⚠ مطاردة Entry</div>` : ''}
       </div>
     </div>
+    ${(() => {
+      const graded = enrichWaitGrade(r);
+      const tier = String(graded.wait_tier || '').toUpperCase();
+      if (rec !== 'WAIT' || (tier !== 'HOT' && tier !== 'FIRE')) return '';
+      const setup = Number.isFinite(graded.setup_pct) ? graded.setup_pct + '%' : '—';
+      const tp2rr = Number.isFinite(graded.tp2_rr_live) ? '1:' + graded.tp2_rr_live.toFixed(1) : '—';
+      const chase = Number.isFinite(graded.chase_pct) ? graded.chase_pct.toFixed(1) + '%' : '—';
+      const toTp2 = graded.to_tp2_pct != null ? ((graded.to_tp2_pct >= 0 ? '+' : '') + graded.to_tp2_pct.toFixed(1) + '%') : '—';
+      const active = graded.active_watch;
+      return `<div style="background:${tier==='FIRE'?'#3d1a1a':'#3d2d00'};border:1px solid ${tier==='FIRE'?'#f85149':'#e3b341'};border-radius:8px;padding:8px 10px;margin-bottom:8px">
+        <div style="font-size:12px;font-weight:800;color:${tier==='FIRE'?'#ff7b72':'#e3b341'};margin-bottom:4px">
+          ${tier==='FIRE'?'FIRE':'HOT'} WAIT — مراقبة نشطة (ليست BUY)
+        </div>
+        <div style="font-size:11px;color:#c9d1d9;line-height:1.55">
+          اكتمال الشروط <strong>${setup}</strong>
+          · R:R حي TP2 <strong>${tp2rr}</strong>
+          · متبقي لـ TP2 <strong>${toTp2}</strong>
+          · مطاردة <strong>${chase}</strong>
+        </div>
+        <div style="font-size:11px;margin-top:4px;font-weight:700;color:${active?'#3fb950':'#8b949e'}">
+          ${active ? 'مراقبة نشطة: مطاردة ≤1% + مجال TP2 ≥1.2 — دخول يدوي بحذر إن لزم' : 'راقب الرجوع لـ Entry أو استمرار الزخم بحذر'}
+        </div>
+      </div>`;
+    })()}
       ${recNote || againstSpy || premWarn ? `
     <div style="font-size:11px;color:#e3b341;background:#3d2d00;border-radius:6px;padding:6px 8px;margin-bottom:8px">
       ${recNote || (againstSpy ? 'تعارض مع اتجاه SPY — مراقبة فقط' : '')}${premWarn ? (recNote ? ' · ' : '') + 'Premium تحت $1' : ''}
@@ -1518,6 +1543,68 @@ async function loadData() {
   btn.disabled = false;
   btn.className = 'btn';
   btn.textContent = '🔄 تحديث';
+}
+
+// ── WAIT HOT/FIRE (عرض حي حتى قبل وصول أعمدة CSV الجديدة) ──
+function liveStockRr(price, target, stop, isCall) {
+  price = parseFloat(price); target = parseFloat(target); stop = parseFloat(stop);
+  if (!(price > 0) || !(target > 0) || !(stop > 0)) return 0;
+  let risk, reward;
+  if (isCall) { risk = price - stop; reward = target - price; }
+  else { risk = stop - price; reward = price - target; }
+  if (risk <= 0 || reward <= 0) return 0;
+  return Math.min(reward / risk, 10);
+}
+
+function enrichWaitGrade(r, livePrice) {
+  const price = livePrice || parsePrice(r.Price || r.price_num);
+  const entry = parseFloat(r.entry_stock) || 0;
+  const stop = parseFloat(r.stop_stock) || 0;
+  const tp2 = parseFloat(r.tp2_stock) || 0;
+  const dir = String(r.direction || '').toUpperCase();
+  const isCall = !dir.includes('PUT');
+  const chased = String(r.entry_chased || '').toLowerCase() === 'true';
+  let chasePct = parseFloat(r.chase_pct);
+  if (!Number.isFinite(chasePct) && chased && entry > 0 && price > 0) {
+    chasePct = isCall
+      ? Math.max(0, (price - entry) / entry * 100)
+      : Math.max(0, (entry - price) / entry * 100);
+  }
+  if (!Number.isFinite(chasePct)) chasePct = 0;
+  let tp2Rr = parseFloat(r.tp2_rr_live);
+  if (!Number.isFinite(tp2Rr)) tp2Rr = liveStockRr(price, tp2, stop, isCall);
+  let setupPct = parseInt(r.setup_pct, 10);
+  let tier = String(r.wait_tier || '').toUpperCase();
+  if (!Number.isFinite(setupPct) || !tier) {
+    // تقدير سريع من الحقول المتاحة إذا المسح قديم بدون أعمدة جديدة
+    let pts = 0, max = 0;
+    const add = (ok, w) => { max += w; if (ok) pts += w; };
+    const conf = parseInt(r.confidence, 10) || 0;
+    const prem = parseFloat(r.premium) || 0;
+    const dte = parseInt(r.dte_num, 10);
+    const liveRr = parseFloat(r.tp1_rr_live) || 0;
+    const align = !((String(r.spy_regime).toUpperCase() === 'BULL' && dir.includes('PUT'))
+      || (String(r.spy_regime).toUpperCase() === 'BEAR' && dir.includes('CALL')));
+    add(conf >= 55, 18);
+    add(prem >= 1, 10);
+    add(align, 14);
+    add(Number.isFinite(dte) && dte > 0, 8);
+    add(liveRr >= 1.3 || tp2Rr >= 1.0, 10);
+    add(!chased || chasePct <= 1.5, 8);
+    setupPct = max ? Math.round(100 * pts / max) : 0;
+    if (chased && chasePct <= 1.5 && tp2Rr >= 0.8) setupPct = Math.min(99, setupPct + 10);
+    tier = setupPct >= 90 ? 'FIRE' : setupPct >= 75 ? 'HOT' : setupPct >= 55 ? 'WARM' : 'COLD';
+  }
+  const toTp2 = (price > 0 && tp2 > 0) ? ((tp2 - price) / price * 100) : null;
+  const active_watch = chasePct <= 1.0 && tp2Rr >= 1.2;
+  return {
+    setup_pct: setupPct,
+    wait_tier: tier,
+    chase_pct: chasePct,
+    tp2_rr_live: tp2Rr,
+    to_tp2_pct: toTp2,
+    active_watch,
+  };
 }
 
 // ── دراسة السهم ──────────────────────────────────────────────
