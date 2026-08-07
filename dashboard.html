@@ -2058,6 +2058,100 @@ async function fetchFinnhubQuotes(tickers) {
   }));
 }
 
+function outcomeNum(v) {
+  const n = parseFloat(String(v ?? '').replace(/[$,\s]/g, ''));
+  return Number.isFinite(n) ? n : NaN;
+}
+
+function outcomeWasChased(r) {
+  const flag = String(r.entry_chased ?? '').toLowerCase();
+  if (flag === 'true' || flag === '1' || flag === 'yes') return true;
+  if (flag === 'false' || flag === '0' || flag === 'no') return false;
+  const px = outcomeNum(r.price_at_rec);
+  const entry = outcomeNum(r.entry_stock);
+  if (!(px > 0) || !(entry > 0)) return false;
+  const put = String(r.direction || '').toUpperCase().includes('PUT');
+  return put ? px < entry * 0.998 : px > entry * 1.002;
+}
+
+function outcomeRecKind(r) {
+  const k = String(r.rec_kind || '').toUpperCase();
+  if (k === 'WAIT_HOT' || k === 'HOT' || k === 'FIRE') return 'WAIT_HOT';
+  const tier = String(r.wait_tier || '').toUpperCase();
+  if (tier === 'HOT' || tier === 'FIRE') return 'WAIT_HOT';
+  return 'BUY';
+}
+
+function outcomeBucket(r) {
+  const kind = outcomeRecKind(r);
+  if (kind === 'WAIT_HOT') return 'wait_hot';
+  return outcomeWasChased(r) ? 'buy_chase' : 'buy_clean';
+}
+
+function subsetOutcomeKpis(list) {
+  const closed = list.filter(r => r.status !== 'open');
+  const rel = closed.filter(r => String(r.data_quality || '').toLowerCase() === 'reliable');
+  const base = rel.length ? rel : closed;
+  const withOpt = base.filter(r => Number.isFinite(outcomeNum(r.option_pnl_pct)));
+  const useOpt = withOpt.length > 0;
+  const pnl = (r) => useOpt ? outcomeNum(r.option_pnl_pct) : outcomeNum(r.result_pct);
+  const scored = useOpt ? withOpt : base;
+  const wins = scored.filter(r => pnl(r) > 0);
+  const tp = base.filter(r => String(r.status || '').startsWith('tp')).length;
+  const stop = base.filter(r => r.status === 'stop_hit').length;
+  const avg = (arr) => {
+    const xs = arr.filter(Number.isFinite);
+    if (!xs.length) return null;
+    return xs.reduce((a, b) => a + b, 0) / xs.length;
+  };
+  return {
+    n: base.length,
+    open: list.length - closed.length,
+    tpRate: base.length ? (tp / base.length * 100) : null,
+    stopRate: base.length ? (stop / base.length * 100) : null,
+    winRate: scored.length ? (wins.length / scored.length * 100) : null,
+    avgOpt: avg(base.map(r => outcomeNum(r.option_pnl_pct))),
+    avgMfe: avg(base.map(r => outcomeNum(r.mfe_pct))),
+    avgStock: avg(base.map(r => outcomeNum(r.result_pct))),
+    label: useOpt ? 'عقد' : 'سهم',
+  };
+}
+
+function fmtKpiPct(n, digits = 0) {
+  if (n == null || !Number.isFinite(n)) return '—';
+  return n.toFixed(digits) + '%';
+}
+
+function fmtKpiSigned(n, digits = 1) {
+  if (n == null || !Number.isFinite(n)) return '—';
+  return (n >= 0 ? '+' : '') + n.toFixed(digits) + '%';
+}
+
+function last7DaysRows(rows) {
+  const dates = rows.map(r => String(r.date || '')).filter(Boolean).sort();
+  if (!dates.length) return { start: '', end: '', rows: [] };
+  const end = dates[dates.length - 1];
+  const endD = new Date(end + 'T12:00:00');
+  const startD = new Date(endD);
+  startD.setDate(startD.getDate() - 6);
+  const start = startD.toISOString().slice(0, 10);
+  const week = rows.filter(r => String(r.date || '') >= start && String(r.date || '') <= end);
+  return { start, end, rows: week };
+}
+
+function renderBucketCard(title, color, k) {
+  return `<div style="flex:1;min-width:160px;background:#161b22;border:1px solid #30363d;border-radius:10px;padding:12px">
+    <div style="font-size:12px;font-weight:800;color:${color};margin-bottom:8px">${title}</div>
+    <div style="font-size:22px;font-weight:800;color:#e6edf3">${k.n ? fmtKpiPct(k.tpRate, 0) : '—'}</div>
+    <div style="font-size:11px;color:#8b949e;margin-top:2px">وصول هدف · n=${k.n}${k.open ? ` · ${k.open} مفتوح` : ''}</div>
+    <div style="font-size:12px;margin-top:8px;color:#c9d1d9;line-height:1.5">
+      Win ${k.label}: <strong>${fmtKpiPct(k.winRate, 0)}</strong><br>
+      Avg عقد: <strong style="color:${(k.avgOpt||0)>=0?'#3fb950':'#f85149'}">${fmtKpiSigned(k.avgOpt)}</strong><br>
+      Avg MFE: <strong style="color:#3fb950">${fmtKpiSigned(k.avgMfe)}</strong>
+    </div>
+  </div>`;
+}
+
 async function loadHistory(force) {
   if (historyLoaded && !force) return;
   const container = document.getElementById('historyContent');
@@ -2103,6 +2197,31 @@ async function loadHistory(force) {
     };
     const srcLabel = String(source || '').startsWith('http') ? 'GitHub' : 'محلي';
 
+    const buyClean = rows.filter(r => outcomeBucket(r) === 'buy_clean');
+    const buyChase = rows.filter(r => outcomeBucket(r) === 'buy_chase');
+    const waitHot = rows.filter(r => outcomeBucket(r) === 'wait_hot');
+    const kClean = subsetOutcomeKpis(buyClean);
+    const kChase = subsetOutcomeKpis(buyChase);
+    const kHot = subsetOutcomeKpis(waitHot);
+    const week = last7DaysRows(rows);
+    const kWeek = subsetOutcomeKpis(week.rows);
+    const weekByDay = {};
+    week.rows.forEach(r => {
+      const d = String(r.date || '');
+      if (!weekByDay[d]) weekByDay[d] = [];
+      weekByDay[d].push(r);
+    });
+    const weekDayRows = Object.keys(weekByDay).sort().map(d => {
+      const kk = subsetOutcomeKpis(weekByDay[d]);
+      return `<tr style="border-bottom:1px solid #30363d">
+        <td style="padding:8px">${d.slice(5)}</td>
+        <td style="padding:8px">${weekByDay[d].length}</td>
+        <td style="padding:8px;color:#3fb950">${fmtKpiPct(kk.tpRate, 0)}</td>
+        <td style="padding:8px;color:${(kk.avgOpt||0)>=0?'#3fb950':'#f85149'}">${fmtKpiSigned(kk.avgOpt)}</td>
+        <td style="padding:8px">${fmtKpiSigned(kk.avgMfe)}</td>
+      </tr>`;
+    }).join('');
+
     const statusLabel = {
       'open':'🟡 مفتوح','tp1_hit':'✅ TP1','tp2_hit':'✅✅ TP2',
       'tp3_hit':'🏆 TP3','stop_hit':'🛑 Stop','expired':'⏳ انتهى'
@@ -2119,11 +2238,11 @@ async function loadHistory(force) {
     container.innerHTML = `
       <p style="font-size:12px;color:#8b949e;margin-bottom:12px">${finnhubHint} · مصدر السجل: ${srcLabel} · يتحدث عند فتح التبويب أو 🔄 تحديث</p>
       <div style="background:#1a2a40;border:1px solid #388bfd66;border-radius:8px;padding:10px 12px;margin-bottom:14px;font-size:12px;color:#c9d1d9;line-height:1.55">
-        النسب أعلاه من صفوف <strong style="color:#3fb950">reliable فقط</strong>
+        النسب الإجمالية من صفوف <strong style="color:#3fb950">reliable فقط</strong>
         (${qCounts.reliable} معتمد / ${qCounts.partial} جزئي / ${qCounts.unreliable} ضعيف من ${closed.length} مغلق).
-        الصفوف الجزئية/الضعيفة تبقى في الجدول للمراجعة ولا تدخل Win Rate.
+        التقسيم أدناه: BUY نظيف / مطاردة / WAIT HOT (القديمة بدون rec_kind تُصنَّف بالسعر مقابل Entry).
       </div>
-      <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:20px">
+      <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:16px">
         <div class="stat total"><div class="stat-num">${rows.length}</div><div class="stat-label">إجمالي التوصيات</div><div style="font-size:11px;color:#8b949e;margin-top:4px">${closed.length} مغلق</div></div>
         <div class="stat buy"><div class="stat-num">${kpiBase.length ? winRate+'%' : '—'}</div><div class="stat-label">Win Rate (${pnlLabel})</div><div style="font-size:11px;color:#8b949e;margin-top:4px">n=${denom} معتمد${denom < 30 ? ' · عينة صغيرة' : ''}</div></div>
         <div class="stat buy"><div class="stat-num">${avgWin === '—' ? '—' : (parseFloat(avgWin)>=0?'+':'')+avgWin+'%'}</div><div class="stat-label">Avg Win (${pnlLabel})</div><div style="font-size:11px;color:#8b949e;margin-top:4px">n=${wins.length} رابح</div></div>
@@ -2131,10 +2250,43 @@ async function loadHistory(force) {
         <div class="stat wait"><div class="stat-num">${rows.filter(r=>r.status==='open').length}</div><div class="stat-label">🟡 مفتوحة</div></div>
         <div class="stat total"><div class="stat-num">${qCounts.reliable}</div><div class="stat-label">✅ معتمد للنسب</div><div style="font-size:11px;color:#8b949e;margin-top:4px">من ${closed.length} مغلق</div></div>
       </div>
+
+      <div style="font-size:13px;font-weight:800;color:#58a6ff;margin:4px 0 10px">تفصيل المسارات</div>
+      <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:18px">
+        ${renderBucketCard('BUY نظيف (قرب Entry)', '#3fb950', kClean)}
+        ${renderBucketCard('مطاردة (فوق Entry وقت التوصية)', '#e3b341', kChase)}
+        ${renderBucketCard('WAIT HOT / FIRE', '#ff7b72', kHot)}
+      </div>
+
+      <div style="background:#161b22;border:1px solid #30363d;border-radius:10px;padding:14px;margin-bottom:18px">
+        <div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:baseline;margin-bottom:10px">
+          <div style="font-size:13px;font-weight:800;color:#e6edf3">ملخص آخر 7 أيام</div>
+          <div style="font-size:11px;color:#8b949e">${week.start && week.end ? (week.start + ' → ' + week.end) : '—'}</div>
+        </div>
+        <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:12px">
+          <div class="stat total"><div class="stat-num">${week.rows.length}</div><div class="stat-label">صفقات الأسبوع</div></div>
+          <div class="stat buy"><div class="stat-num">${fmtKpiPct(kWeek.tpRate, 0)}</div><div class="stat-label">وصول هدف</div></div>
+          <div class="stat buy"><div class="stat-num">${fmtKpiSigned(kWeek.avgOpt)}</div><div class="stat-label">Avg عقد</div></div>
+          <div class="stat wait"><div class="stat-num">${fmtKpiSigned(kWeek.avgMfe)}</div><div class="stat-label">Avg MFE</div></div>
+          <div class="stat avoid"><div class="stat-num">${fmtKpiPct(kWeek.stopRate, 0)}</div><div class="stat-label">Stop %</div></div>
+        </div>
+        ${weekDayRows ? `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px">
+          <thead><tr style="background:#21262d;color:#8b949e">
+            <th style="padding:8px;text-align:right">يوم</th>
+            <th style="padding:8px;text-align:right">n</th>
+            <th style="padding:8px;text-align:right">TP%</th>
+            <th style="padding:8px;text-align:right">Avg عقد</th>
+            <th style="padding:8px;text-align:right">MFE</th>
+          </tr></thead>
+          <tbody>${weekDayRows}</tbody>
+        </table></div>` : '<div style="color:#8b949e;font-size:12px">لا بيانات أسبوعية بعد.</div>'}
+      </div>
+
       <div style="overflow-x:auto">
       <table style="width:100%;border-collapse:collapse;font-size:13px">
         <thead><tr style="background:#21262d">
           <th style="padding:10px;text-align:right;color:#8b949e">التاريخ</th>
+          <th style="padding:10px;text-align:right;color:#8b949e">المسار</th>
           <th style="padding:10px;text-align:right;color:#8b949e">العقد</th>
           <th style="padding:10px;text-align:right;color:#8b949e">جودة</th>
           <th style="padding:10px;text-align:right;color:#8b949e">الاتجاه</th>
@@ -2310,8 +2462,14 @@ async function loadHistory(force) {
             const qNote = String(r.data_quality_note || '').replace(/"/g, '&quot;');
             const qHtml = `<div style="font-weight:700;color:${qColor}" title="${qNote}">${qLabel}</div>`
               + (qNote ? `<div style="font-size:10px;color:#8b949e;margin-top:2px;max-width:140px">${qNote}</div>` : '');
+            const bucket = outcomeBucket(r);
+            const pathLabel = bucket === 'wait_hot' ? 'WAIT HOT'
+              : bucket === 'buy_chase' ? 'مطاردة' : 'BUY نظيف';
+            const pathColor = bucket === 'wait_hot' ? '#ff7b72'
+              : bucket === 'buy_chase' ? '#e3b341' : '#3fb950';
             return `<tr style="border-bottom:1px solid #21262d">
               <td style="padding:10px;color:#8b949e">${r.date||'—'}</td>
+              <td style="padding:10px;font-weight:700;color:${pathColor};font-size:11px">${pathLabel}</td>
               <td style="padding:10px;line-height:1.25">${contractHtml}</td>
               <td style="padding:10px;line-height:1.25">${qHtml}</td>
               <td style="padding:10px;color:${dirColor}">${dirLabel}</td>
