@@ -2109,7 +2109,13 @@ function outcomeRecKind(r) {
   return 'BUY';
 }
 
+function isInverseOutcome(r) {
+  const t = String(r.ticker || r.Ticker || '').toUpperCase().trim();
+  return INVERSE_ETFS.has(t);
+}
+
 function outcomeBucket(r) {
+  if (isInverseOutcome(r)) return 'inverse';
   const kind = outcomeRecKind(r);
   if (kind === 'WAIT_HOT') return 'wait_hot';
   return outcomeWasChased(r) ? 'buy_chase' : 'buy_clean';
@@ -2203,8 +2209,12 @@ async function loadHistory(force) {
     }
 
     const closed  = rows.filter(r => r.status !== 'open');
-    // النسب فوق تعتمد فقط على reliable — لا نخلط تقدير/تناقض/بدون دخول
-    const reliable = closed.filter(r => String(r.data_quality || '').toLowerCase() === 'reliable');
+    const inverseRows = rows.filter(isInverseOutcome);
+    const coreRows = rows.filter(r => !isInverseOutcome(r));
+    // النسب فوق تعتمد فقط على reliable — لا نخلط تقدير/تناقض/بدون دخول/عكسي
+    const reliable = closed.filter(r =>
+      String(r.data_quality || '').toLowerCase() === 'reliable' && !isInverseOutcome(r)
+    );
     const kpiBase = reliable;
     const withOpt = kpiBase.filter(r => r.option_pnl_pct !== '' && r.option_pnl_pct != null && !isNaN(parseFloat(r.option_pnl_pct)));
     const optWins = withOpt.filter(r => parseFloat(r.option_pnl_pct) > 0);
@@ -2218,19 +2228,20 @@ async function loadHistory(force) {
     const avgLoss = stops.length ? (stops.reduce((s,r)=>s+pnlField(r),0)/stops.length).toFixed(1) : '—';
     const pnlLabel = withOpt.length ? 'P&L معتمد' : 'سهم معتمد';
     const qCounts = {
-      reliable: closed.filter(r => String(r.data_quality||'').toLowerCase()==='reliable').length,
-      partial: closed.filter(r => String(r.data_quality||'').toLowerCase()==='partial').length,
-      unreliable: closed.filter(r => String(r.data_quality||'').toLowerCase()==='unreliable').length,
+      reliable: closed.filter(r => String(r.data_quality||'').toLowerCase()==='reliable' && !isInverseOutcome(r)).length,
+      partial: closed.filter(r => String(r.data_quality||'').toLowerCase()==='partial' && !isInverseOutcome(r)).length,
+      unreliable: closed.filter(r => String(r.data_quality||'').toLowerCase()==='unreliable' && !isInverseOutcome(r)).length,
+      inverse: inverseRows.filter(r => r.status !== 'open').length,
     };
     const srcLabel = String(source || '').startsWith('http') ? 'GitHub' : 'محلي';
 
-    const buyClean = rows.filter(r => outcomeBucket(r) === 'buy_clean');
-    const buyChase = rows.filter(r => outcomeBucket(r) === 'buy_chase');
-    const waitHot = rows.filter(r => outcomeBucket(r) === 'wait_hot');
+    const buyClean = coreRows.filter(r => outcomeBucket(r) === 'buy_clean');
+    const buyChase = coreRows.filter(r => outcomeBucket(r) === 'buy_chase');
+    const waitHot = coreRows.filter(r => outcomeBucket(r) === 'wait_hot');
     const kClean = subsetOutcomeKpis(buyClean);
     const kChase = subsetOutcomeKpis(buyChase);
     const kHot = subsetOutcomeKpis(waitHot);
-    const week = last7DaysRows(rows);
+    const week = last7DaysRows(coreRows);
     const kWeek = subsetOutcomeKpis(week.rows);
     const weekByDay = {};
     week.rows.forEach(r => {
@@ -2266,10 +2277,10 @@ async function loadHistory(force) {
       <p style="font-size:12px;color:#8b949e;margin-bottom:12px">${finnhubHint} · مصدر السجل: ${srcLabel} · يتحدث عند فتح التبويب أو 🔄 تحديث</p>
       <div style="background:#1a2a40;border:1px solid #388bfd66;border-radius:8px;padding:10px 12px;margin-bottom:14px;font-size:12px;color:#c9d1d9;line-height:1.55">
         النسب الإجمالية من صفوف <strong style="color:#3fb950">reliable فقط</strong>
-        (${qCounts.reliable} معتمد / ${qCounts.partial} جزئي / ${qCounts.unreliable} ضعيف من ${closed.length} مغلق).
-        التقسيم أدناه: BUY نظيف / مطاردة / WAIT HOT — أرقام البطاقات من <strong>reliable فقط</strong>
-        (لذلك n≈30+8 وليس كل الـ94). المطاردة = تجاوز Entry بـ &gt;0.8% وقت التوصية (نفس المحرك).
-        الصفوف القديمة بدون rec_kind تُصنَّف بالسعر. المطاردة الأعلى٪ لا تعني «اطرد» — عيّنة صغيرة + تحيّز تاريخي.
+        (${qCounts.reliable} معتمد / ${qCounts.partial} جزئي / ${qCounts.unreliable} ضعيف
+        · استُبعد ${qCounts.inverse} عكسي من النسب · من ${closed.length} مغلق).
+        التقسيم أدناه: BUY نظيف / مطاردة / WAIT HOT — <strong>بدون صناديق عكسية</strong> + reliable فقط.
+        المطاردة = تجاوز Entry بـ &gt;0.8% وقت التوصية. صفوف العكسي تبقى في الجدول بوسم «عكسي» فقط.
       </div>
       <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:16px">
         <div class="stat total"><div class="stat-num">${rows.length}</div><div class="stat-label">إجمالي التوصيات</div><div style="font-size:11px;color:#8b949e;margin-top:4px">${closed.length} مغلق</div></div>
@@ -2492,9 +2503,11 @@ async function loadHistory(force) {
             const qHtml = `<div style="font-weight:700;color:${qColor}" title="${qNote}">${qLabel}</div>`
               + (qNote ? `<div style="font-size:10px;color:#8b949e;margin-top:2px;max-width:140px">${qNote}</div>` : '');
             const bucket = outcomeBucket(r);
-            const pathLabel = bucket === 'wait_hot' ? 'WAIT HOT'
+            const pathLabel = bucket === 'inverse' ? 'عكسي'
+              : bucket === 'wait_hot' ? 'WAIT HOT'
               : bucket === 'buy_chase' ? 'مطاردة' : 'BUY نظيف';
-            const pathColor = bucket === 'wait_hot' ? '#ff7b72'
+            const pathColor = bucket === 'inverse' ? '#8b949e'
+              : bucket === 'wait_hot' ? '#ff7b72'
               : bucket === 'buy_chase' ? '#e3b341' : '#3fb950';
             return `<tr style="border-bottom:1px solid #21262d">
               <td style="padding:10px;color:#8b949e">${r.date||'—'}</td>
