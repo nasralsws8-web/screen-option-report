@@ -198,6 +198,26 @@ def spy_alignment_ok(is_call, spy_regime, ticker=None):
     return True, ""
 
 
+def inverse_recommendation_ceiling(is_call, spy_regime, ticker=None):
+    """
+    سقف توصية للصناديق العكسية (SQQQ…).
+    أسبوع 3–5 أغسطس: SQQQ خسر 3/3 بعد ما مرّ كفرصة —
+    لذلك: مخالفة اتجاه → AVOID، وباقي الحالات لا BUY تلقائي.
+    يرجع (ceiling, note) حيث ceiling ∈ BUY|WAIT|AVOID.
+    """
+    if not is_inverse_ticker(ticker):
+        return "BUY", ""
+    regime = str(spy_regime or "NEUTRAL").upper()
+    if regime == "BULL" and is_call:
+        return "AVOID", "CALL على صندوق عكسي مرفوض — SPY صاعد (AVOID)"
+    if regime == "BEAR" and not is_call:
+        return "AVOID", "PUT على صندوق عكسي مرفوض — SPY هابط (AVOID)"
+    if regime == "NEUTRAL":
+        return "WAIT", "صندوق عكسي + SPY محايد — لا BUY تلقائي (رافعة/عكس)"
+    # محاذاة ظاهرة (مثل PUT على SQQQ والسوق صاعد) — ما زالت رافعة 3x
+    return "WAIT", "صندوق عكسي — لا BUY تلقائي حتى مع محاذاة SPY (رافعة)"
+
+
 def fetch_spy_regime():
     """جلب نظام SPY مرة واحدة قبل مسح الأسهم."""
     try:
@@ -1383,6 +1403,9 @@ def score_stock(row):
 
     prem = row.get("premium", 0) or 0
     ticker = str(row.get("Ticker", "")).upper()
+    if is_inverse_ticker(ticker):
+        score -= 5
+        notes.append("Inverse ETF -5")
     prem_min = profile_limit(ticker, "prem_min", TARGET_PREM_MIN)
     prem_max = profile_limit(ticker, "prem_max", TARGET_PREM_MAX)
     if prem_min <= prem <= prem_max:
@@ -1641,12 +1664,16 @@ def compute_trade_plan(r, tech):
     prem_ok = premium >= prem_min
     spy_regime = r.get("spy_regime") or "NEUTRAL"
     align_ok, align_note = spy_alignment_ok(is_call, spy_regime, ticker)
+    inv_ceiling, inv_note = inverse_recommendation_ceiling(is_call, spy_regime, ticker)
     plan["spy_regime"] = spy_regime
     plan["spy_align_ok"] = align_ok
+    plan["inverse_ceiling"] = inv_ceiling
 
     # نافذة التنفيذ: لا BUY/تيليجرام قبل 9:45 ET (حتى لو باقي الشروط مكتملة)
     exec_ok = is_exec_window()
     plan["exec_window_ok"] = exec_ok
+    # الصناديق العكسية: لا BUY تلقائي أبداً (سقف WAIT حتى مع محاذاة)
+    inverse_blocks_buy = is_inverse_ticker(ticker)
     almost_buy = (
         conf >= MIN_CONF_TO_BUY
         and live_rr >= MIN_RR_TO_BUY
@@ -1656,6 +1683,7 @@ def compute_trade_plan(r, tech):
         and not chased
         and dte > 0
         and not r.get("is_0dte")
+        and not inverse_blocks_buy
     )
     # BUY صارم: الشروط الفنية + داخل نافذة التنفيذ
     buy_ready = almost_buy and exec_ok
@@ -1663,9 +1691,16 @@ def compute_trade_plan(r, tech):
     if earn_risk:
         plan["recommendation"] = "AVOID"
         plan["rec_note"]       = "⚠️ Earnings قبل انتهاء العقد — خطر كبير"
+    elif inv_ceiling == "AVOID":
+        plan["recommendation"] = "AVOID"
+        plan["rec_note"]       = inv_note
     elif not align_ok:
         plan["recommendation"] = "WAIT"
         plan["rec_note"]       = align_note + " — مراقبة فقط"
+    elif inverse_blocks_buy and inv_ceiling == "WAIT":
+        # عكسي محايد أو «محاذي» — مراقبة فقط، لا مسار BUY
+        plan["recommendation"] = "WAIT"
+        plan["rec_note"]       = inv_note
     elif chased:
         plan["recommendation"] = "WAIT"
         plan["rec_note"]       = (
@@ -1744,9 +1779,17 @@ def compute_trade_plan(r, tech):
     plan["wait_edge_note"] = grade["wait_edge_note"]
     plan["chase_pct"] = grade["chase_pct"]
     plan["tp2_rr_live"] = grade["tp2_rr_live"]
-    if plan.get("recommendation") == "WAIT" and grade["wait_tier"] in ("FIRE", "HOT"):
+    # عكسي: لا تنبيه HOT/FIRE — رافعة عالية وأخطاء مكلفة هذا الأسبوع
+    if is_inverse_ticker(ticker) and plan.get("wait_tier") in ("FIRE", "HOT"):
+        plan["wait_tier"] = "WARM"
+        plan["wait_edge_note"] = (
+            (plan.get("wait_edge_note") or "") + " · سقف WARM لصندوق عكسي"
+        ).strip(" ·")
+        if plan.get("setup_pct", 0) >= 75:
+            plan["setup_pct"] = 74
+    if plan.get("recommendation") == "WAIT" and plan.get("wait_tier") in ("FIRE", "HOT"):
         base = plan.get("rec_note") or ""
-        plan["rec_note"] = (base + " · " + grade["wait_edge_note"]).strip(" ·")
+        plan["rec_note"] = (base + " · " + plan.get("wait_edge_note", "")).strip(" ·")
 
     c = plan["confidence"]
     plan["stars"] = 5 if c >= 85 else 4 if c >= 75 else 3 if c >= 65 else 2 if c >= 55 else 1

@@ -128,8 +128,16 @@ def wait_tier_of(row) -> str:
 
 
 def is_hot_wait_row(row) -> bool:
-    """WAIT مع درجة HOT/FIRE أو اكتمال شروط ≥75%."""
+    """WAIT مع درجة HOT/FIRE أو اكتمال شروط ≥75% (بدون صناديق عكسية)."""
     if str(row.get("recommendation") or "").strip().upper() != "WAIT":
+        return False
+    ticker = str(row.get("Ticker") or row.get("ticker") or "").upper().strip()
+    # SQQQ وأمثالها: لا تنبيه HOT — خسائر متكررة مع الرافعة
+    inverse = {
+        "SQQQ", "SOXS", "SPXU", "SDOW", "FAZ", "TECS",
+        "UVIX", "VXX", "UVXY", "SVIX", "VIXY",
+    }
+    if ticker in inverse:
         return False
     tier = wait_tier_of(row)
     if tier in ("HOT", "FIRE"):

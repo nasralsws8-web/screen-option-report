@@ -866,18 +866,28 @@ function passesOpsRules(plan) {
   if (prem > 0 && prem < 1.0) return { ok: false, why: 'Premium < $1' };
   if (spread > 0.10) return { ok: false, why: 'سبريد > 10%' };
   if (inverse) {
-    if (regime === 'BULL' && isCall) return { ok: false, why: 'CALL على صندوق عكسي ضد SPY صاعد' };
-    if (regime === 'BEAR' && isPut) return { ok: false, why: 'PUT على صندوق عكسي ضد SPY هابط' };
-  } else {
-    if (regime === 'BULL' && isPut) return { ok: false, why: 'PUT ضد SPY صاعد' };
-    if (regime === 'BEAR' && isCall) return { ok: false, why: 'CALL ضد SPY هابط' };
+    if (regime === 'BULL' && isCall) return { ok: false, why: 'CALL عكسي ضد SPY صاعد → AVOID' };
+    if (regime === 'BEAR' && isPut) return { ok: false, why: 'PUT عكسي ضد SPY هابط → AVOID' };
+    return { ok: false, why: 'صندوق عكسي — لا BUY تلقائي' };
   }
+  if (regime === 'BULL' && isPut) return { ok: false, why: 'PUT ضد SPY صاعد' };
+  if (regime === 'BEAR' && isCall) return { ok: false, why: 'CALL ضد SPY هابط' };
   if (!isExecWindow()) return { ok: false, why: 'قبل نافذة ٤:٤٥' };
   return { ok: true, why: '' };
 }
 
 function effectiveLiveRec(plan, st) {
   if (plan.rec === 'AVOID' || st.cls === 'status-stop') return plan.rec;
+  const ticker = String(plan.ticker || '').toUpperCase();
+  const dir = String(plan.direction || '').toUpperCase();
+  const regime = String(plan.spyRegime || 'NEUTRAL').toUpperCase();
+  if (INVERSE_ETFS.has(ticker)) {
+    if ((regime === 'BULL' && dir.includes('CALL')) || (regime === 'BEAR' && dir.includes('PUT'))) {
+      return 'AVOID';
+    }
+    // عكسي محايد/محاذي: لا BUY ظاهر
+    return plan.rec === 'AVOID' ? 'AVOID' : 'WAIT';
+  }
   // بيانات قديمة / جلسة سابقة → لا BUY ظاهر أبداً
   if (lastScanFreshness && lastScanFreshness.level !== 'ok') {
     return plan.rec === 'AVOID' ? 'AVOID' : 'WAIT';
@@ -1221,6 +1231,7 @@ function buildCard(r) {
        (String(spyRegime).toUpperCase() === 'BEAR' && isPut))
     : ((String(spyRegime).toUpperCase() === 'BULL' && isPut) ||
        (String(spyRegime).toUpperCase() === 'BEAR' && dir.includes('CALL')));
+  const inverseNoBuy = inverse; // كل العكسي: لا BUY تلقائي
   const planRr = parseFloat(r.tp1_rr) || 0;
   const liveRrScan = parseFloat(r.tp1_rr_live) || 0;
   const gapPct = parseFloat(r.gap_pct);
@@ -1290,9 +1301,9 @@ function buildCard(r) {
         </div>
       </div>`;
     })()}
-      ${recNote || againstSpy || premWarn ? `
-    <div style="font-size:11px;color:#e3b341;background:#3d2d00;border-radius:6px;padding:6px 8px;margin-bottom:8px">
-      ${recNote || (againstSpy ? 'تعارض مع اتجاه SPY — مراقبة فقط' : '')}${premWarn ? (recNote ? ' · ' : '') + 'Premium تحت $1' : ''}
+      ${recNote || againstSpy || inverseNoBuy || premWarn ? `
+    <div style="font-size:11px;color:${againstSpy ? '#f85149' : '#e3b341'};background:${againstSpy ? '#3d1a1a' : '#3d2d00'};border-radius:6px;padding:6px 8px;margin-bottom:8px">
+      ${recNote || (againstSpy ? 'صندوق عكسي ضد SPY → AVOID' : (inverseNoBuy ? 'صندوق عكسي — لا BUY تلقائي (رافعة)' : ''))}${premWarn ? ((recNote || againstSpy || inverseNoBuy) ? ' · ' : '') + 'Premium تحت $1' : ''}
     </div>` : ''}
     ${hasEarnings ? `
     <div style="font-size:11px;color:#f85149;background:#2a1515;border:1px solid #f8514966;border-radius:6px;padding:6px 8px;margin-bottom:8px">
@@ -1563,6 +1574,8 @@ function enrichWaitGrade(r, livePrice) {
   const tp2 = parseFloat(r.tp2_stock) || 0;
   const dir = String(r.direction || '').toUpperCase();
   const isCall = !dir.includes('PUT');
+  const tickerU = String(r.Ticker || r.ticker || '').toUpperCase();
+  const inverse = INVERSE_ETFS.has(tickerU);
   const chased = String(r.entry_chased || '').toLowerCase() === 'true';
   let chasePct = parseFloat(r.chase_pct);
   if (!Number.isFinite(chasePct) && chased && entry > 0 && price > 0) {
@@ -1595,8 +1608,12 @@ function enrichWaitGrade(r, livePrice) {
     if (chased && chasePct <= 1.5 && tp2Rr >= 0.8) setupPct = Math.min(99, setupPct + 10);
     tier = setupPct >= 90 ? 'FIRE' : setupPct >= 75 ? 'HOT' : setupPct >= 55 ? 'WARM' : 'COLD';
   }
+  if (inverse && (tier === 'HOT' || tier === 'FIRE')) {
+    tier = 'WARM';
+    if (setupPct >= 75) setupPct = 74;
+  }
   const toTp2 = (price > 0 && tp2 > 0) ? ((tp2 - price) / price * 100) : null;
-  const active_watch = chasePct <= 1.0 && tp2Rr >= 1.2;
+  const active_watch = !inverse && chasePct <= 1.0 && tp2Rr >= 1.2;
   return {
     setup_pct: setupPct,
     wait_tier: tier,

@@ -16,6 +16,7 @@ if ROOT not in sys.path:
 from cheap_options_screener_v3 import (  # noqa: E402
     entry_is_chased,
     grade_wait_setup,
+    inverse_recommendation_ceiling,
     is_exec_window,
 )
 from data_quality import classify_data_quality  # noqa: E402
@@ -32,6 +33,27 @@ from telegram_notify import (  # noqa: E402
 )
 
 ET = ZoneInfo("America/New_York")
+
+
+class TestInverseGate(unittest.TestCase):
+    def test_sqqq_call_in_bull_is_avoid(self):
+        ceiling, note = inverse_recommendation_ceiling(True, "BULL", "SQQQ")
+        self.assertEqual(ceiling, "AVOID")
+        self.assertIn("صاعد", note)
+
+    def test_sqqq_put_in_bull_is_wait_not_buy(self):
+        ceiling, note = inverse_recommendation_ceiling(False, "BULL", "SQQQ")
+        self.assertEqual(ceiling, "WAIT")
+        self.assertNotEqual(ceiling, "BUY")
+
+    def test_sqqq_neutral_no_buy(self):
+        ceiling, _ = inverse_recommendation_ceiling(True, "NEUTRAL", "SQQQ")
+        self.assertEqual(ceiling, "WAIT")
+
+    def test_normal_stock_unchanged(self):
+        ceiling, note = inverse_recommendation_ceiling(True, "BULL", "NVDA")
+        self.assertEqual(ceiling, "BUY")
+        self.assertEqual(note, "")
 
 
 class TestWaitGrade(unittest.TestCase):
