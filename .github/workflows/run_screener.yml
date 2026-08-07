@@ -1,14 +1,17 @@
-name: Options Screener Full Scan (9:45 ET / 4:45 Saudi)
+name: Options Screener Full Scan (every 15m market hours)
 
 on:
   schedule:
-    # 13:45 UTC ≈ 9:45 AM ET ≈ 4:45 PM Saudi — بعد ضوضاء الافتتاح
-    - cron: '45 13 * * 1-5'
+    # كل ربع ساعة أيام الأسبوع أثناء/قرب جلسة السوق (UTC)
+    # صيفاً: 13:00–19:45 UTC ≈ 9:00 AM–3:45 PM ET ؛ + رن إغلاق 20:00
+    - cron: '*/15 13-19 * * 1-5'
+    - cron: '0 20 * * 1-5'
   workflow_dispatch:
 
 concurrency:
-  group: repo-csv-writes
-  cancel-in-progress: false
+  # مجموعة خاصة بالمسح الكامل — الرن الجديد يلغي السابق حتى لا تتراكم الطوابير
+  group: full-screener
+  cancel-in-progress: true
 
 permissions:
   contents: write

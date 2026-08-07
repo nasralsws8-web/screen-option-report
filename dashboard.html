@@ -172,7 +172,7 @@
 
 <div class="rules-banner" id="rulesBanner">
   <strong>قواعد التشغيل:</strong>
-  مسح معتمد ≈ <strong>٤:٤٥ السعودية</strong> (٩:٤٥ ET) —
+  Full Scan تلقائي كل <strong>١٥ دقيقة</strong> وقت السوق —
   لا تنفيذ عكس <strong>SPY</strong> —
   Premium <strong>≥ $1</strong> —
   سبريد <strong>≤ 10%</strong> —
@@ -1866,7 +1866,15 @@ function saveToken() {
 // ── تشغيل يدوي: workflow_dispatch + انتظار + تحديث CSV ─────
 async function triggerAndWait() {
   const token = localStorage.getItem('gh_token');
-  if (!token) { openSettings(); return; }
+  if (!token) {
+    openSettings();
+    const status = document.getElementById('runStatus');
+    if (status) {
+      status.style.display = 'block';
+      status.textContent = '⚙️ للتشغيل اليدوي فقط: احفظ GitHub Token ثم اضغط ⚡ من جديد. مشاهدة المسح لا تحتاج Token.';
+    }
+    return;
+  }
 
   const btn = document.getElementById('runBtn');
   const status = document.getElementById('runStatus');
