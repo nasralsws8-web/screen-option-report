@@ -1140,21 +1140,51 @@ function renderSpySection(spyRow) {
     </div>`;
 }
 
+function nextFridayISO(fromDate) {
+  const d = fromDate ? new Date(fromDate) : new Date();
+  const day = d.getDay(); // 0=أحد … 5=جمعة
+  let add = (5 - day + 7) % 7;
+  if (add === 0) add = 7; // اليوم جمعة → الجمعة الجاية
+  d.setDate(d.getDate() + add);
+  return d.toISOString().slice(0, 10);
+}
+
+function isZeroDteRow(r) {
+  const dte = parseInt(r.dte_num, 10);
+  return dte === 0 || String(r.is_0dte).toLowerCase() === 'true';
+}
+
 function renderCards(rows) {
   const buy = rows.filter(r => r.recommendation === 'BUY');
   const wait = rows.filter(r => r.recommendation === 'WAIT');
+  const wait0 = wait.filter(isZeroDteRow);
+  const waitLive = wait.filter(r => !isZeroDteRow(r));
   const avoid = rows.filter(r => !['BUY','WAIT'].includes(r.recommendation));
+  const suggestedFri = nextFridayISO();
 
   let html = '';
+
+  if (!buy.length && wait0.length) {
+    html += `<div style="background:#3d2d00;border:1px solid #e3b341;border-radius:10px;padding:12px 14px;margin-bottom:16px;font-size:13px;color:#e3b341;line-height:1.6">
+      <strong>مراقبة فقط — عقود 0DTE</strong><br>
+      لا BUY تلقائي لنفس اليوم (ثيتا عالية). يُفضّل عقد <strong>الجمعة الجاية ${suggestedFri}</strong>
+      — المسح الجديد يحاول اختيارها تلقائياً بدل 0DTE.
+    </div>`;
+  }
 
   if (buy.length) {
     html += `<div class="section-title">🟢 BUY — ${buy.length} فرصة</div><div class="cards">`;
     buy.forEach(r => html += buildCard(r));
     html += '</div>';
   }
-  if (wait.length) {
-    html += `<div class="section-title">🟡 WAIT — ${wait.length} فرصة</div><div class="cards">`;
-    wait.forEach(r => html += buildCard(r));
+  if (waitLive.length) {
+    html += `<div class="section-title">🟡 WAIT — ${waitLive.length} فرصة</div><div class="cards">`;
+    waitLive.forEach(r => html += buildCard(r));
+    html += '</div>';
+  }
+  if (wait0.length) {
+    html += `<div class="section-title">👁 مراقبة فقط (0DTE) — ${wait0.length} · جمعة مقترحة ${suggestedFri}</div><div class="cards">`;
+    wait0.forEach(r => html += buildCard(r));
     html += '</div>';
   }
   if (avoid.length) {
@@ -1217,6 +1247,10 @@ function buildCard(r) {
       expTag = fri ? ' <span style="color:#3fb950;font-weight:700">جمعة</span>' :
         (dte === 0 ? ' <span style="color:#f85149">0DTE</span>' :
          (dte > 0 ? ` <span style="color:#e3b341">(${dte}d)</span>` : ''));
+      if (dte === 0) {
+        const nf = String(r.next_friday_expiry || '').trim() || nextFridayISO();
+        expTag += ` <span style="color:#58a6ff;font-weight:700">→ جمعة ${nf}</span>`;
+      }
     } catch (_) {}
   }
   const optionOk = prem >= 1.0 && strike > 0 && oi >= 100 && spread > 0 && spread <= 0.10;

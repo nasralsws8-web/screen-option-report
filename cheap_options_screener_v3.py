@@ -880,12 +880,21 @@ def find_best_expiry(expirations, dte_target=7, window=8):
     return best if best_diff <= window else None
 
 
-def find_nearest_expiry(expirations, ticker=None):
+def next_friday_date(today=None):
+    """أقرب جمعة قادمة (إذا اليوم جمعة → الجمعة الجاية وليس اليوم)."""
+    today = today or datetime.now().date()
+    add = (4 - today.weekday()) % 7
+    if add == 0:
+        add = 7
+    return today + timedelta(days=add)
+
+
+def find_nearest_expiry(expirations, ticker=None, today=None):
     """
-    اختيار expiry — أولوية جمعة الأسبوع (أقل ثيتا من 0DTE).
+    اختيار expiry — أولوية جمعة لاحقة (ليس 0DTE يوم الجمعة).
     يرفض أي expiry أبعد من MAX_DTE.
     """
-    today = datetime.now().date()
+    today = today or datetime.now().date()
     max_dte = profile_limit(ticker, "max_dte", MAX_DTE)
     prefer_friday = profile_limit(ticker, "prefer_friday", PREFER_FRIDAY)
     prefer_0 = profile_limit(ticker, "prefer_0dte", PREFER_0DTE)
@@ -910,22 +919,32 @@ def find_nearest_expiry(expirations, ticker=None):
 
     if prefer_friday:
         fridays = [c for c in candidates if c[2]]
-        if fridays:
-            # أقرب جمعة ضمن النافذة
+        # تجنّب جمعة اليوم (0DTE): خذ أقرب جمعة لاحقة ضمن النافذة
+        non_zero_fri = [c for c in fridays if c[0] > 0]
+        if non_zero_fri:
+            non_zero_fri.sort(key=lambda x: x[0])
+            return non_zero_fri[0][1], non_zero_fri[0][0]
+        # لا جمعة لاحقة في القائمة — لا نأخذ 0DTE إلا إذا prefer_0dte صراحة
+        if fridays and prefer_0:
             fridays.sort(key=lambda x: x[0])
             return fridays[0][1], fridays[0][0]
 
+    # افتراضياً لا نختار 0DTE (ثيتا قاتلة) ما لم يُطلب صراحة
+    pool = candidates if prefer_0 else [c for c in candidates if c[0] > 0]
+    if not pool:
+        pool = candidates
+
     if prefer_0:
-        candidates.sort(key=lambda x: x[0])
-        return candidates[0][1], candidates[0][0]
+        pool.sort(key=lambda x: x[0])
+        return pool[0][1], pool[0][0]
 
     target_dte = profile_limit(ticker, "dte_target", DTE_TARGET)
     window = profile_limit(ticker, "dte_window", DTE_WINDOW)
-    best = min(candidates, key=lambda x: abs(x[0] - target_dte))
+    best = min(pool, key=lambda x: abs(x[0] - target_dte))
     if abs(best[0] - target_dte) <= window:
         return best[1], best[0]
-    candidates.sort(key=lambda x: x[0])
-    return candidates[0][1], candidates[0][0]
+    pool.sort(key=lambda x: x[0])
+    return pool[0][1], pool[0][0]
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -1718,7 +1737,12 @@ def compute_trade_plan(r, tech):
         plan["rec_note"]       = "خطة الدخول غير متسقة مع السعر الحالي — انتظر"
     elif dte == 0 or r.get("is_0dte"):
         plan["recommendation"] = "WAIT"
-        plan["rec_note"]       = "0DTE — لا BUY من المسح (تنفيذ يدوي فقط إن لزم)"
+        nf = next_friday_date()
+        plan["rec_note"] = (
+            f"0DTE — مراقبة فقط · يُفضّل عقد الجمعة الجاية {nf.isoformat()} "
+            f"(ليس تنفيذ تلقائي اليوم)"
+        )
+        plan["next_friday_expiry"] = nf.isoformat()
     elif almost_buy and not exec_ok:
         plan["recommendation"] = "WAIT"
         open_h, open_m = divmod(9 * 60 + 30 + int(EXEC_AFTER_OPEN_MIN), 60)
@@ -1966,7 +1990,7 @@ SAVE_COLS = [
     "expiry", "dte_num", "direction", "earnings", "float_shares", "avg_vol",
     "entry_stock", "stop_stock", "tp1_stock", "tp2_stock", "tp3_stock", "tp1_rr",
     "tp1_rr_live", "tp2_rr_live", "entry_chased", "chase_pct", "exec_window_ok",
-    "setup_pct", "wait_tier", "wait_edge_note",
+    "setup_pct", "wait_tier", "wait_edge_note", "next_friday_expiry",
     "entry_note", "fh_gap_pct", "fh_pm_bullish", "fh_pm_strong", "fh_pm_note",
     "spy_regime", "rec_note", "gemini_note",
     "Score", "recommendation", "confidence", "Notes", "scanned_at",
@@ -2246,6 +2270,7 @@ def process_candidates(candidates_df, show_progress=True):
         row["setup_pct"]      = plan.get("setup_pct")
         row["wait_tier"]      = plan.get("wait_tier")
         row["wait_edge_note"] = plan.get("wait_edge_note", "")
+        row["next_friday_expiry"] = plan.get("next_friday_expiry") or ""
         row["entry_note"]     = plan.get("entry_note", "")
         row["rec_note"]       = plan.get("rec_note", "")
         row["spy_regime"]     = plan.get("spy_regime", row_regime)

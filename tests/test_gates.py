@@ -15,9 +15,11 @@ if ROOT not in sys.path:
 
 from cheap_options_screener_v3 import (  # noqa: E402
     entry_is_chased,
+    find_nearest_expiry,
     grade_wait_setup,
     inverse_recommendation_ceiling,
     is_exec_window,
+    next_friday_date,
 )
 from data_quality import classify_data_quality  # noqa: E402
 from outcome_tracker import resolve_first_touch  # noqa: E402
@@ -33,6 +35,26 @@ from telegram_notify import (  # noqa: E402
 )
 
 ET = ZoneInfo("America/New_York")
+
+
+class TestExpiryFriday(unittest.TestCase):
+    def test_next_friday_skips_today_when_friday(self):
+        fri = __import__("datetime").date(2026, 8, 7)  # Friday
+        self.assertEqual(next_friday_date(fri).isoformat(), "2026-08-14")
+
+    def test_on_friday_picks_next_friday_not_0dte(self):
+        fri = __import__("datetime").date(2026, 8, 7)
+        exps = ["2026-08-07", "2026-08-14", "2026-08-21"]
+        exp, dte = find_nearest_expiry(exps, ticker="NVDA", today=fri)
+        self.assertEqual(exp, "2026-08-14")
+        self.assertEqual(dte, 7)
+
+    def test_thursday_picks_tomorrow_friday(self):
+        thu = __import__("datetime").date(2026, 8, 6)
+        exps = ["2026-08-07", "2026-08-14"]
+        exp, dte = find_nearest_expiry(exps, ticker="SPY", today=thu)
+        self.assertEqual(exp, "2026-08-07")
+        self.assertEqual(dte, 1)
 
 
 class TestInverseGate(unittest.TestCase):
