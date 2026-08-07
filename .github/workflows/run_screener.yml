@@ -9,9 +9,9 @@ on:
   workflow_dispatch:
 
 concurrency:
-  # مجموعة خاصة بالمسح الكامل — الرن الجديد يلغي السابق حتى لا تتراكم الطوابير
-  group: full-screener
-  cancel-in-progress: true
+  # نفس مجموعة كتّاب CSV (مع price_update / EOD) — يمنع سباق الكتابة على النتائج
+  group: repo-csv-writes
+  cancel-in-progress: false
 
 permissions:
   contents: write

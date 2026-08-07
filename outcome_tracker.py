@@ -1,8 +1,9 @@
 """
 outcome_tracker.py
 ------------------
-يسجّل توصيات BUY الجديدة في outcomes.csv
+يسجّل توصيات BUY و WAIT HOT الجديدة في outcomes.csv
 ويتحقق من النتائج للتوصيات المفتوحة (هل وصل Entry/TP1/TP2/TP3 أو ضرب Stop؟)
+إذا سُجّل WAIT HOT ثم صار BUY لنفس العقد — يُرقَّى الصف إلى BUY.
 
 كل عقد يُحفظ مستقلاً بمفتاح: Ticker + Strike + Expiry
 (نفس السهم بعقد مختلف = صف جديد في السجل)
@@ -1017,8 +1018,17 @@ def _same_contract(df, ticker, strike_f, expiry_key):
     return df[mask]
 
 
+_INVERSE_ETFS = frozenset({
+    "SQQQ", "SOXS", "SPXU", "SDOW", "FAZ", "TECS",
+    "UVIX", "VXX", "UVXY", "SVIX", "VIXY",
+})
+
+
 def _row_is_hot_wait(r) -> bool:
     if str(r.get("recommendation") or "").strip().upper() != "WAIT":
+        return False
+    ticker = str(r.get("Ticker") or r.get("ticker") or "").upper().strip()
+    if ticker in _INVERSE_ETFS:
         return False
     tier = str(r.get("wait_tier") or "").strip().upper()
     if tier in ("HOT", "FIRE"):
@@ -1034,6 +1044,15 @@ def _truthy_chase(val) -> bool:
     return s in ("1", "true", "yes", "y")
 
 
+def _outcomes_trading_day() -> str:
+    """يوم التداول بتوقيت أمريكا (متوافق مع تيليجرام) — مع fallback محلي."""
+    try:
+        from zoneinfo import ZoneInfo
+        return datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+    except Exception:
+        return datetime.now().strftime("%Y-%m-%d")
+
+
 def add_new_recommendations(outcomes_df):
     if not os.path.exists(RESULTS_FILE):
         print("⚠️  options_v3_results.csv غير موجود — تخطي إضافة توصيات جديدة")
@@ -1046,11 +1065,12 @@ def add_new_recommendations(outcomes_df):
 
     buy_rows = results[results["recommendation"] == "BUY"].copy()
     hot_rows = results[results.apply(_row_is_hot_wait, axis=1)].copy()
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = _outcomes_trading_day()
     added = 0
+    upgraded = 0
 
     def _append_row(r, rec_kind):
-        nonlocal outcomes_df, added
+        nonlocal outcomes_df, added, upgraded
         ticker = str(r.get("Ticker", "")).strip()
         if not ticker:
             return
@@ -1068,11 +1088,42 @@ def add_new_recommendations(outcomes_df):
         strike_f = _norm_strike(strike)
         expiry_key = _norm_expiry(r.get("expiry", ""))
 
+        try:
+            setup_pct = float(r.get("setup_pct")) if r.get("setup_pct") is not None else None
+        except (TypeError, ValueError):
+            setup_pct = None
+
+        def _refresh_fields(idx):
+            outcomes_df.at[idx, "score"] = r.get("Score", 0)
+            outcomes_df.at[idx, "confidence"] = r.get("confidence", 0)
+            outcomes_df.at[idx, "price_at_rec"] = r.get("Price", 0)
+            outcomes_df.at[idx, "entry_stock"] = entry
+            outcomes_df.at[idx, "stop_stock"] = float(r.get("stop_stock") or 0)
+            outcomes_df.at[idx, "tp1_stock"] = float(r.get("tp1_stock") or 0)
+            outcomes_df.at[idx, "tp2_stock"] = float(r.get("tp2_stock") or 0)
+            outcomes_df.at[idx, "tp3_stock"] = float(r.get("tp3_stock") or 0)
+            outcomes_df.at[idx, "premium"] = prem_f
+            outcomes_df.at[idx, "iv"] = r.get("iv")
+            outcomes_df.at[idx, "dte_num"] = r.get("dte_num")
+            outcomes_df.at[idx, "entry_chased"] = _truthy_chase(r.get("entry_chased"))
+            outcomes_df.at[idx, "setup_pct"] = setup_pct
+            outcomes_df.at[idx, "wait_tier"] = str(r.get("wait_tier") or "")
+            outcomes_df.at[idx, "scanned_at"] = str(r.get("scanned_at") or "")
+
         open_same = _same_contract(
             outcomes_df[outcomes_df["status"] == "open"],
             ticker, strike_f, expiry_key,
         )
         if not open_same.empty:
+            idx = open_same.index[0]
+            prev_kind = str(outcomes_df.at[idx, "rec_kind"] or "").strip().upper()
+            # WAIT_HOT → BUY يُرقّى؛ لا نُنزّل BUY إلى WAIT_HOT
+            if rec_kind == "BUY" and prev_kind in ("", "NAN", "NONE", "WAIT_HOT"):
+                outcomes_df.at[idx, "rec_kind"] = "BUY"
+                outcomes_df.at[idx, "data_quality_note"] = "صفقة مفتوحة"
+                _refresh_fields(idx)
+                upgraded += 1
+                print(f"  ↑ ترقية → BUY {ticker} strike={strike_f} expiry={expiry_key}")
             return
 
         already = _same_contract(
@@ -1080,12 +1131,16 @@ def add_new_recommendations(outcomes_df):
             ticker, strike_f, expiry_key,
         )
         if not already.empty:
+            idx = already.index[0]
+            prev_kind = str(outcomes_df.at[idx, "rec_kind"] or "").strip().upper()
+            if rec_kind == "BUY" and prev_kind in ("", "NAN", "NONE", "WAIT_HOT"):
+                if str(outcomes_df.at[idx, "status"] or "") == "open":
+                    outcomes_df.at[idx, "rec_kind"] = "BUY"
+                    outcomes_df.at[idx, "data_quality_note"] = "صفقة مفتوحة"
+                    _refresh_fields(idx)
+                    upgraded += 1
+                    print(f"  ↑ ترقية → BUY {ticker} strike={strike_f} expiry={expiry_key}")
             return
-
-        try:
-            setup_pct = float(r.get("setup_pct")) if r.get("setup_pct") is not None else None
-        except (TypeError, ValueError):
-            setup_pct = None
 
         new_row = {
             "date":           today,
@@ -1138,7 +1193,7 @@ def add_new_recommendations(outcomes_df):
     for _, r in hot_rows.iterrows():
         _append_row(r, "WAIT_HOT")
 
-    print(f"✅ أضفت {added} توصية جديدة (BUY + WAIT HOT)")
+    print(f"✅ أضفت {added} توصية جديدة · رقّيت {upgraded} (BUY + WAIT HOT)")
     return outcomes_df
 
 

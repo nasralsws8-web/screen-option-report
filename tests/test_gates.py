@@ -22,7 +22,11 @@ from cheap_options_screener_v3 import (  # noqa: E402
     next_friday_date,
 )
 from data_quality import classify_data_quality  # noqa: E402
-from outcome_tracker import resolve_first_touch  # noqa: E402
+from outcome_tracker import (  # noqa: E402
+    _row_is_hot_wait,
+    add_new_recommendations,
+    resolve_first_touch,
+)
 from telegram_notify import (  # noqa: E402
     alert_key,
     is_active_watch,
@@ -354,6 +358,76 @@ class TestTelegramDedupe(unittest.TestCase):
         pruned = prune_sent(sent, keep_days=21, today="2026-08-05")
         self.assertNotIn("2026-01-01|A|CALL|1.00|2026-01-10", pruned)
         self.assertIn("2026-08-05|B|CALL|1.00|2026-08-07", pruned)
+
+
+class TestOutcomeRecKindUpgrade(unittest.TestCase):
+    def test_inverse_not_hot_wait(self):
+        r = pd.Series({
+            "Ticker": "SQQQ", "recommendation": "WAIT",
+            "wait_tier": "FIRE", "setup_pct": 95,
+        })
+        self.assertFalse(_row_is_hot_wait(r))
+
+    def test_wait_hot_upgrades_to_buy(self):
+        with tempfile.TemporaryDirectory() as td:
+            prev = os.getcwd()
+            os.chdir(td)
+            try:
+                outcomes = pd.DataFrame([{
+                    "date": "2099-01-01",
+                    "ticker": "NVDA",
+                    "direction": "CALL",
+                    "score": 10,
+                    "confidence": 60,
+                    "price_at_rec": 180,
+                    "entry_stock": 179,
+                    "stop_stock": 175,
+                    "tp1_stock": 185,
+                    "tp2_stock": 188,
+                    "tp3_stock": 192,
+                    "expiry": "2099-01-10",
+                    "premium": 1.5,
+                    "strike": 180,
+                    "iv": 0.4,
+                    "dte_num": 5,
+                    "rec_kind": "WAIT_HOT",
+                    "entry_chased": False,
+                    "setup_pct": 80,
+                    "wait_tier": "HOT",
+                    "scanned_at": "",
+                    "status": "open",
+                    "data_quality": "open",
+                    "data_quality_note": "WAIT HOT",
+                }])
+                results = pd.DataFrame([{
+                    "Ticker": "NVDA",
+                    "recommendation": "BUY",
+                    "direction": "CALL",
+                    "Score": 22,
+                    "confidence": 70,
+                    "Price": 181,
+                    "entry_stock": 179.5,
+                    "stop_stock": 175,
+                    "tp1_stock": 186,
+                    "tp2_stock": 189,
+                    "tp3_stock": 193,
+                    "expiry": "2099-01-10",
+                    "premium": 1.6,
+                    "strike": 180,
+                    "iv": 0.41,
+                    "dte_num": 5,
+                    "entry_chased": False,
+                    "setup_pct": 88,
+                    "wait_tier": "HOT",
+                    "scanned_at": "2099-01-01 15:00 UTC",
+                }])
+                results.to_csv("options_v3_results.csv", index=False)
+                out = add_new_recommendations(outcomes)
+                row = out[(out["ticker"] == "NVDA") & (out["status"] == "open")].iloc[0]
+                self.assertEqual(str(row["rec_kind"]), "BUY")
+                self.assertEqual(len(out[out["ticker"] == "NVDA"]), 1)
+            finally:
+                os.chdir(prev)
 
 
 if __name__ == "__main__":

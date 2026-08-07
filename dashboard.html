@@ -230,7 +230,7 @@
   مطاردة BUY بعد تجاوز Entry بـ <strong>&gt;0.8%</strong> —
   <strong>HOT/FIRE</strong> = جاهز لدخول يدوي عند Entry (ليست BUY تلقائي).
   <span class="exec-badge" id="execWindowBadge">نافذة التنفيذ: …</span>
-  <div class="rule-warn" style="margin-top:4px">تحديث الأسعار اللحظي ≠ توصية جديدة. المسح الكامل فقط يمنح BUY — لا ترقية لحظية. ادخل يدوياً على HOT عند Entry.</div>
+  <div class="rule-warn" style="margin-top:4px">Finnhub اللحظي ≠ توصية جديدة (لا ترقية WAIT→BUY من السعر). زر ⚡ ومسح Actions = مسح كامل يمنح BUY/WAIT. ادخل يدوياً على HOT عند Entry.</div>
   <div class="rule-warn" style="margin-top:4px;color:#58a6ff">رابط مشترك للجهازين:
     <a href="https://nasralsws8-web.github.io/screen-option-report/dashboard.html" style="color:#79c0ff">github.io/dashboard.html</a>
     · البيانات من GitHub main · 🔄 بعد كل رن · كل جهاز بمفتاح Finnhub خاص
@@ -317,7 +317,7 @@ const OUTCOMES_URLS = [
   './outcomes.csv',
 ];
 const SHARED_DASH_URL = 'https://nasralsws8-web.github.io/screen-option-report/dashboard.html';
-/** أثناء الجلسة: أقدم من هذا = قديم (price_update كل ~15د) */
+/** أثناء الجلسة: أقدم من هذا = قديم (price_update كل ~5د + Full Scan كل ~15د) */
 const STALE_SOFT_MS = 45 * 60 * 1000;
 /** أقصى عمر مقبول لنفس جلسة التداول */
 const STALE_HARD_MS = 18 * 60 * 60 * 1000;
