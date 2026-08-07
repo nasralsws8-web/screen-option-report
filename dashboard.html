@@ -227,9 +227,10 @@
   Premium <strong>≥ $1</strong> —
   سبريد <strong>≤ 10%</strong> —
   R:R حي <strong>≥ 1.3</strong> —
-  لا مطاردة بعد Entry.
+  مطاردة BUY بعد تجاوز Entry بـ <strong>&gt;0.8%</strong> —
+  <strong>HOT/FIRE</strong> = جاهز لدخول يدوي عند Entry (ليست BUY تلقائي).
   <span class="exec-badge" id="execWindowBadge">نافذة التنفيذ: …</span>
-  <div class="rule-warn" style="margin-top:4px">تحديث الأسعار اللحظي ≠ توصية جديدة. المسح الكامل فقط يمنح BUY — لا ترقية لحظية.</div>
+  <div class="rule-warn" style="margin-top:4px">تحديث الأسعار اللحظي ≠ توصية جديدة. المسح الكامل فقط يمنح BUY — لا ترقية لحظية. ادخل يدوياً على HOT عند Entry.</div>
   <div class="rule-warn" style="margin-top:4px;color:#58a6ff">رابط مشترك للجهازين:
     <a href="https://nasralsws8-web.github.io/screen-option-report/dashboard.html" style="color:#79c0ff">github.io/dashboard.html</a>
     · البيانات من GitHub main · 🔄 بعد كل رن · كل جهاز بمفتاح Finnhub خاص
@@ -745,7 +746,7 @@ function planIsCall(plan) {
   return true;
 }
 
-const MAX_ENTRY_CHASE_PCT = 0.003; // 0.3% — مطابق للمحرك
+const MAX_ENTRY_CHASE_PCT = 0.008; // 0.8% — مطابق للمحرك (دخول يدوي)
 const INVERSE_ETFS = new Set([
   'SQQQ', 'SOXS', 'SPXU', 'SDOW', 'FAZ', 'TECS', 'UVIX', 'VXX', 'UVXY', 'SVIX', 'VIXY',
 ]);
@@ -802,7 +803,7 @@ function evalLiveStatus(plan, price) {
       const toTp = tp1 > 0 ? ((tp1 - price) / price * 100).toFixed(1) : null;
       return {
         cls: 'status-entry-wait',
-        label: '⛔ مطاردة — فات Entry (لا تدخل متأخراً)',
+        label: '⛔ مطاردة — تجاوز Entry >0.8% (انتظر رجوع)',
         dist: `R:R حي 1:${liveRr.toFixed(1)}` + (toTp ? ` · +${toTp}% إلى TP1` : ''),
         inTrade: false, chased: true, liveRr,
       };
@@ -811,7 +812,7 @@ function evalLiveStatus(plan, price) {
       const toTp = tp1 > 0 ? ((tp1 - price) / price * 100).toFixed(1) : null;
       return {
         cls: 'status-in-trade',
-        label: '🟢 داخل الصفقة — Entry تحقق',
+        label: '🟢 Entry تحقق',
         dist: `R:R حي 1:${liveRr.toFixed(1)}` + (toTp ? ` · +${toTp}% إلى TP1` : ''),
         inTrade: true, chased: false, liveRr,
       };
@@ -836,7 +837,7 @@ function evalLiveStatus(plan, price) {
     const toTp = tp1 > 0 ? ((price - tp1) / price * 100).toFixed(1) : null;
     return {
       cls: 'status-entry-wait',
-      label: '⛔ مطاردة — فات Entry (لا تدخل متأخراً)',
+      label: '⛔ مطاردة — تجاوز Entry >0.8% (انتظر رجوع)',
       dist: `R:R حي 1:${liveRr.toFixed(1)}` + (toTp ? ` · ${toTp}% إلى TP1` : ''),
       inTrade: false, chased: true, liveRr,
     };
@@ -845,7 +846,7 @@ function evalLiveStatus(plan, price) {
     const toTp = tp1 > 0 ? ((price - tp1) / price * 100).toFixed(1) : null;
     return {
       cls: 'status-in-trade',
-      label: '🟢 داخل الصفقة — Entry تحقق',
+      label: '🟢 Entry تحقق',
       dist: `R:R حي 1:${liveRr.toFixed(1)}` + (toTp ? ` · ${toTp}% إلى TP1` : ''),
       inTrade: true, chased: false, liveRr,
     };
@@ -929,8 +930,25 @@ function updateLiveTradeStatus(ticker, price) {
   const box  = document.getElementById('live-status-' + ticker);
   if (!plan || !box || !price || price <= 0) return;
   const st = evalLiveStatus(plan, price);
+  let label = st.label;
+  const tier = String(plan.waitTier || '').toUpperCase();
+  const hotish = tier === 'HOT' || tier === 'FIRE';
+  // WAIT ليس تنفيذاً تلقائياً — لا تُظهر "داخل الصفقة" كإشارة شراء
+  if (st.inTrade && (plan.rec === 'WAIT' || plan.rec === 'AVOID')) {
+    if (hotish) {
+      label = plan.rec === 'AVOID'
+        ? '⛔ AVOID — لا تدخل'
+        : `✋ ${tier} — جاهز لدخول يدوي (Entry تحقق)`;
+    } else if (plan.rec === 'AVOID') {
+      label = '⛔ AVOID — لا تدخل';
+    } else {
+      label = '✋ WAIT — Entry تحقق · دخول يدوي فقط إن ناسبك';
+    }
+  } else if (st.chased && hotish && plan.rec === 'WAIT') {
+    label = `✋ ${tier} — مطاردة خفيفة؛ ادخل عند رجوع Entry`;
+  }
   box.className = 'live-status ' + st.cls;
-  box.innerHTML = st.label + (st.dist ? `<div class="live-dist">${st.dist}</div>` : '');
+  box.innerHTML = label + (st.dist ? `<div class="live-dist">${st.dist}</div>` : '');
 
   const rrEl = document.getElementById('rr-live-' + ticker);
   if (rrEl) {
@@ -977,6 +995,7 @@ function registerTradePlans(rows) {
       spread: parseFloat(r.spread_pct) || 0,
       spyRegime: r.spy_regime || 'NEUTRAL',
       recNote: r.rec_note || '',
+      waitTier: String(r.wait_tier || '').toUpperCase(),
     };
   });
   updateExecWindowBadge();
@@ -996,7 +1015,7 @@ function applyScanGuards(rows) {
     if (eff !== (r.recommendation || 'AVOID')) {
       out.recommendation = eff;
       if (st.chased && eff === 'WAIT') {
-        out.rec_note = `مطاردة — السعر تجاوز Entry وR:R الحي 1:${(st.liveRr || 0).toFixed(1)} — لا تدخل متأخراً`;
+        out.rec_note = `مطاردة >0.8% — R:R الحي 1:${(st.liveRr || 0).toFixed(1)} — ادخل عند رجوع Entry`;
       } else if (plan.dte === 0 && eff === 'WAIT') {
         out.rec_note = '0DTE — لا BUY من المسح';
       } else if (eff === 'WAIT' && (r.recommendation || '') === 'BUY') {
@@ -1322,7 +1341,7 @@ function buildCard(r) {
       const active = graded.active_watch;
       return `<div style="background:${tier==='FIRE'?'#3d1a1a':'#3d2d00'};border:1px solid ${tier==='FIRE'?'#f85149':'#e3b341'};border-radius:8px;padding:8px 10px;margin-bottom:8px">
         <div style="font-size:12px;font-weight:800;color:${tier==='FIRE'?'#ff7b72':'#e3b341'};margin-bottom:4px">
-          ${tier==='FIRE'?'FIRE':'HOT'} WAIT — مراقبة نشطة (ليست BUY)
+          ${tier==='FIRE'?'FIRE':'HOT'} — جاهز لدخول يدوي عند Entry (ليست BUY)
         </div>
         <div style="font-size:11px;color:#c9d1d9;line-height:1.55">
           اكتمال الشروط <strong>${setup}</strong>
@@ -1331,7 +1350,9 @@ function buildCard(r) {
           · مطاردة <strong>${chase}</strong>
         </div>
         <div style="font-size:11px;margin-top:4px;font-weight:700;color:${active?'#3fb950':'#8b949e'}">
-          ${active ? 'مراقبة نشطة: مطاردة ≤1% + مجال TP2 ≥1.2 — دخول يدوي بحذر إن لزم' : 'راقب الرجوع لـ Entry أو استمرار الزخم بحذر'}
+          ${active
+            ? '✅ منطقة دخول يدوي: مطاردة ≤1% + مجال TP2 ≥1.2 — ادخل عند Entry/تراجع'
+            : 'راقب لمس Entry أو تراجع أنظف قبل الدخول اليدوي'}
         </div>
       </div>`;
     })()}
@@ -1772,7 +1793,7 @@ function buildStudyVerdict(scan, hist, price, liveRr, chased) {
       parts.push('الشروط الحالية تدعم التنفيذ (BUY + بدون مطاردة + R:R مقبول).');
     } else if (rec === 'WAIT' && (tier === 'FIRE' || tier === 'HOT')) {
       cls = tier === 'FIRE' ? 'ok' : 'warn';
-      parts.push(edge || `WAIT ساخنة — اكتمال الشروط ≈${Number.isFinite(setupPct) ? setupPct : '—'}٪. ليست BUY تلقائي؛ دخول يدوي بحذر إن بقي مجال للأهداف.`);
+      parts.push(edge || `WAIT ${tier} — جاهز لدخول يدوي عند Entry (اكتمال ≈${Number.isFinite(setupPct) ? setupPct : '—'}٪). ليست BUY تلقائي.`);
     } else if (chased || (liveRr != null && liveRr < 1.3)) {
       cls = 'warn';
       parts.push(edge || 'الوضع الحالي ضعيف كـ BUY: مطاردة أو R:R حي منخفض — راقب الرجوع أو استمرار الزخم بحذر.');

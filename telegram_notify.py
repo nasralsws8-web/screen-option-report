@@ -326,7 +326,7 @@ def create_card(row, kind="BUY") -> bytes:
     y = HDR_H + 14
 
     if is_watch:
-        banner = f"WAIT {tier} — مراقبة نشطة (ليست BUY)"
+        banner = f"WAIT {tier} — دخول يدوي عند Entry"
         draw.rounded_rectangle([PAD, y, W - PAD, y + 36], radius=8, fill=(48, 36, 10))
         draw.text((W // 2, y + 18), banner, font=F["sub"], fill=GOLD, anchor="mm")
         y += 48
@@ -416,15 +416,18 @@ def build_caption(row, kind="BUY") -> str:
         except (TypeError, ValueError):
             chase = "—"
         edge = str(row.get("wait_edge_note") or "").strip()
-        active = "نعم — مطاردة ≤1% ومجال TP2 ≥1.2" if is_active_watch(row) else "مراقبة فقط"
+        active = (
+            "نعم — منطقة دخول يدوي (مطاردة ≤1% + TP2 ≥1.2)"
+            if is_active_watch(row) else "انتظر لمس/رجوع Entry"
+        )
         return (
-            f"🟡 <b>WAIT {tier}</b> — ليست توصية BUY\n"
+            f"🟡 <b>WAIT {tier}</b> — جاهز لدخول يدوي عند Entry\n"
             f"<code>{symbol}</code>\n"
             f"━━━━━━━━━━━━━━━━━━\n"
             f"✅ اكتمال الشروط: <b>{setup}</b>\n"
             f"📐 R:R حي لـ TP2: <b>{tp2_rr}</b>\n"
             f"🏃 مطاردة Entry: <b>{chase}</b>\n"
-            f"👁 مراقبة نشطة: <b>{active}</b>\n"
+            f"✋ دخول يدوي: <b>{active}</b>\n"
             f"━━━━━━━━━━━━━━━━━━\n"
             f"💵 Entry: <b>{fmt(entry)}</b>  |  🛑 Stop: <b>{fmt(stop_v)}</b>\n"
             f"🎯 TP1: <b>{fmt(tp1)}</b> · TP2: <b>{fmt(tp2)}</b> · TP3: <b>{fmt(tp3)}</b>\n"
@@ -432,7 +435,7 @@ def build_caption(row, kind="BUY") -> str:
             f"💰 Premium: <b>{fmt(premium)}</b>  |  OI: <b>{fmt_oi(oi)}</b>\n"
             + (f"\n📝 {edge}\n" if edge else "\n")
             + f"{gemini_block}"
-            f"⚠️ <i>مراقبة / دخول يدوي بحذر — للأغراض التعليمية فقط</i>"
+            f"⚠️ <i>ليست BUY تلقائي — ادخل يدوياً عند Entry/تراجع · تعليمي فقط</i>"
         )
 
     return (
@@ -565,8 +568,8 @@ def main():
     if hots:
         send_message(
             f"📋 <b>Options Screener</b>\n"
-            f"🟡 <b>{len(hots)}</b> WAIT HOT/FIRE watch(es) ↓\n"
-            f"<i>ليست BUY — مراقبة / دخول يدوي بحذر</i>"
+            f"🟡 <b>{len(hots)}</b> WAIT HOT/FIRE ↓\n"
+            f"<i>ليست BUY — جاهزة لدخول يدوي عند Entry</i>"
         )
 
     dirty = False

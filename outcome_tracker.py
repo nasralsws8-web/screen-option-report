@@ -1124,7 +1124,7 @@ def add_new_recommendations(outcomes_df):
             "mae_pct":        None,
             "hold_expiry_pct": None,
             "data_quality":      "open",
-            "data_quality_note": "صفقة مفتوحة" if rec_kind == "BUY" else "WAIT HOT — مراقبة/تتبع",
+            "data_quality_note": "صفقة مفتوحة" if rec_kind == "BUY" else "WAIT HOT — دخول يدوي / تتبع",
         }
         outcomes_df = pd.concat(
             [outcomes_df, pd.DataFrame([new_row])],

@@ -108,13 +108,13 @@ class TestChase(unittest.TestCase):
         self.assertFalse(entry_is_chased(100.0, 100.0, True))
 
     def test_call_chased_beyond_limit(self):
-        self.assertTrue(entry_is_chased(100.5, 100.0, True))  # +0.5% > 0.3%
+        self.assertTrue(entry_is_chased(100.9, 100.0, True))  # +0.9% > 0.8%
 
     def test_call_within_tolerance(self):
-        self.assertFalse(entry_is_chased(100.2, 100.0, True))  # +0.2% < 0.3%
+        self.assertFalse(entry_is_chased(100.5, 100.0, True))  # +0.5% < 0.8%
 
     def test_put_chased_below_entry(self):
-        self.assertTrue(entry_is_chased(99.5, 100.0, False))
+        self.assertTrue(entry_is_chased(99.1, 100.0, False))  # -0.9% > 0.8%
 
 
 class TestExecWindow(unittest.TestCase):

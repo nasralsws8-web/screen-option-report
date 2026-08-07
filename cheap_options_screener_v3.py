@@ -84,7 +84,7 @@ DEFAULT_SCREENER_SOURCE = "both"
 RISK_FREE_RATE   = 0.053   # معدل الفائدة لـ Black-Scholes
 MIN_RR_TO_BUY    = 1.3     # أقل R:R لإعطاء BUY (من السعر الحي)
 MIN_CONF_TO_BUY  = 55      # أقل Confidence% لإعطاء BUY
-MAX_ENTRY_CHASE_PCT = 0.003  # إذا تجاوز السعر Entry بأكثر من 0.3% → مطاردة (لا BUY)
+MAX_ENTRY_CHASE_PCT = 0.008  # إذا تجاوز السعر Entry بأكثر من 0.8% → مطاردة (لا BUY)
 
 # قواعد التشغيل المتفق عليها (2026-07-31)
 REQUIRE_SPY_ALIGNMENT = True   # لا PUT والسوق صاعد / لا CALL والسوق هابط
@@ -671,12 +671,19 @@ def grade_wait_setup(
         edge = (
             f"مطاردة {'خفيفة' if mild_chase else ''} {chase_pct:.1f}% — "
             f"الشروط ≈{setup_pct}% · زخم قوي محتمل "
-            f"(مجال TP2 R:R حي 1:{rr_tp2:.1f}) — دخول يدوي بحذر فقط"
+            f"(مجال TP2 R:R حي 1:{rr_tp2:.1f}) — "
+            f"جاهز لدخول يدوي عند رجوع Entry (ليست BUY تلقائي)"
         ).replace("  ", " ").strip()
     elif tier == "FIRE":
-        edge = f"الشروط ≈{setup_pct}% — شبه BUY؛ راقب أقرب تراجع لدخول أنظف"
+        edge = (
+            f"الشروط ≈{setup_pct}% — جاهز لدخول يدوي عند Entry/تراجع "
+            f"(ليست BUY تلقائي؛ شبه مكتملة)"
+        )
     elif tier == "HOT":
-        edge = f"الشروط ≈{setup_pct}% — فرصة ساخنة تحت WAIT؛ راقب Entry/زخم"
+        edge = (
+            f"الشروط ≈{setup_pct}% — جاهز لدخول يدوي عند لمس Entry "
+            f"(ليست BUY تلقائي)"
+        )
     elif tier == "WARM":
         edge = f"الشروط ≈{setup_pct}% — متوسطة؛ لا تستعجل"
     else:
@@ -1723,8 +1730,8 @@ def compute_trade_plan(r, tech):
     elif chased:
         plan["recommendation"] = "WAIT"
         plan["rec_note"]       = (
-            f"مطاردة — السعر تجاوز Entry (${entry_s:.2f}) "
-            f"وR:R الحي 1:{live_rr:.1f} — لا تدخل متأخراً"
+            f"مطاردة >0.8% — السعر تجاوز Entry (${entry_s:.2f}) "
+            f"وR:R الحي 1:{live_rr:.1f} — ادخل عند رجوع Entry"
         )
     elif not prem_ok:
         plan["recommendation"] = "WAIT"
