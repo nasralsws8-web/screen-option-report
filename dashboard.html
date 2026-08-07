@@ -2085,14 +2085,20 @@ function outcomeNum(v) {
 }
 
 function outcomeWasChased(r) {
-  const flag = String(r.entry_chased ?? '').toLowerCase();
-  if (flag === 'true' || flag === '1' || flag === 'yes') return true;
-  if (flag === 'false' || flag === '0' || flag === 'no') return false;
+  // حد المطاردة = نفس المحرك (0.8%). لا تثق بـ entry_chased=false القديم
+  // إذا السعر وقت التوصية يتجاوز Entry — هذا مطاردة حتى لو العلم ناقص/قديم.
   const px = outcomeNum(r.price_at_rec);
   const entry = outcomeNum(r.entry_stock);
-  if (!(px > 0) || !(entry > 0)) return false;
-  const put = String(r.direction || '').toUpperCase().includes('PUT');
-  return put ? px < entry * 0.998 : px > entry * 1.002;
+  if (px > 0 && entry > 0) {
+    const put = String(r.direction || '').toUpperCase().includes('PUT');
+    const byPrice = put
+      ? px < entry * (1 - MAX_ENTRY_CHASE_PCT)
+      : px > entry * (1 + MAX_ENTRY_CHASE_PCT);
+    if (byPrice) return true;
+  }
+  const flag = String(r.entry_chased ?? '').toLowerCase();
+  if (flag === 'true' || flag === '1' || flag === 'yes') return true;
+  return false;
 }
 
 function outcomeRecKind(r) {
@@ -2261,7 +2267,9 @@ async function loadHistory(force) {
       <div style="background:#1a2a40;border:1px solid #388bfd66;border-radius:8px;padding:10px 12px;margin-bottom:14px;font-size:12px;color:#c9d1d9;line-height:1.55">
         النسب الإجمالية من صفوف <strong style="color:#3fb950">reliable فقط</strong>
         (${qCounts.reliable} معتمد / ${qCounts.partial} جزئي / ${qCounts.unreliable} ضعيف من ${closed.length} مغلق).
-        التقسيم أدناه: BUY نظيف / مطاردة / WAIT HOT (القديمة بدون rec_kind تُصنَّف بالسعر مقابل Entry).
+        التقسيم أدناه: BUY نظيف / مطاردة / WAIT HOT — أرقام البطاقات من <strong>reliable فقط</strong>
+        (لذلك n≈30+8 وليس كل الـ94). المطاردة = تجاوز Entry بـ &gt;0.8% وقت التوصية (نفس المحرك).
+        الصفوف القديمة بدون rec_kind تُصنَّف بالسعر. المطاردة الأعلى٪ لا تعني «اطرد» — عيّنة صغيرة + تحيّز تاريخي.
       </div>
       <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:16px">
         <div class="stat total"><div class="stat-num">${rows.length}</div><div class="stat-label">إجمالي التوصيات</div><div style="font-size:11px;color:#8b949e;margin-top:4px">${closed.length} مغلق</div></div>
@@ -2274,15 +2282,15 @@ async function loadHistory(force) {
 
       <div style="font-size:13px;font-weight:800;color:#58a6ff;margin:4px 0 10px">تفصيل المسارات</div>
       <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:18px">
-        ${renderBucketCard('BUY نظيف (قرب Entry)', '#3fb950', kClean)}
-        ${renderBucketCard('مطاردة (فوق Entry وقت التوصية)', '#e3b341', kChase)}
-        ${renderBucketCard('WAIT HOT / FIRE', '#ff7b72', kHot)}
+        ${renderBucketCard('BUY نظيف (قرب Entry) · معتمد', '#3fb950', kClean)}
+        ${renderBucketCard('مطاردة (>0.8% وقت التوصية) · معتمد', '#e3b341', kChase)}
+        ${renderBucketCard('WAIT HOT / FIRE · معتمد', '#ff7b72', kHot)}
       </div>
 
       <div style="background:#161b22;border:1px solid #30363d;border-radius:10px;padding:14px;margin-bottom:18px">
         <div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:baseline;margin-bottom:10px">
           <div style="font-size:13px;font-weight:800;color:#e6edf3">ملخص آخر 7 أيام</div>
-          <div style="font-size:11px;color:#8b949e">${week.start && week.end ? (week.start + ' → ' + week.end) : '—'}</div>
+          <div style="font-size:11px;color:#8b949e" dir="ltr">${week.start && week.end ? (week.start + ' → ' + week.end) : '—'}</div>
         </div>
         <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:12px">
           <div class="stat total"><div class="stat-num">${week.rows.length}</div><div class="stat-label">صفقات الأسبوع</div></div>
