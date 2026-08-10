@@ -1093,22 +1093,32 @@ def add_new_recommendations(outcomes_df):
         except (TypeError, ValueError):
             setup_pct = None
 
+        def _set_cell(idx, col, value):
+            """تعيين آمن — يتجنب TypeError عند float داخل عمود int64 (pandas 2.x / Py3.11)."""
+            if col not in outcomes_df.columns:
+                outcomes_df[col] = None
+            try:
+                outcomes_df.at[idx, col] = value
+            except (TypeError, ValueError):
+                outcomes_df[col] = outcomes_df[col].astype(object)
+                outcomes_df.at[idx, col] = value
+
         def _refresh_fields(idx):
-            outcomes_df.at[idx, "score"] = r.get("Score", 0)
-            outcomes_df.at[idx, "confidence"] = r.get("confidence", 0)
-            outcomes_df.at[idx, "price_at_rec"] = r.get("Price", 0)
-            outcomes_df.at[idx, "entry_stock"] = entry
-            outcomes_df.at[idx, "stop_stock"] = float(r.get("stop_stock") or 0)
-            outcomes_df.at[idx, "tp1_stock"] = float(r.get("tp1_stock") or 0)
-            outcomes_df.at[idx, "tp2_stock"] = float(r.get("tp2_stock") or 0)
-            outcomes_df.at[idx, "tp3_stock"] = float(r.get("tp3_stock") or 0)
-            outcomes_df.at[idx, "premium"] = prem_f
-            outcomes_df.at[idx, "iv"] = r.get("iv")
-            outcomes_df.at[idx, "dte_num"] = r.get("dte_num")
-            outcomes_df.at[idx, "entry_chased"] = _truthy_chase(r.get("entry_chased"))
-            outcomes_df.at[idx, "setup_pct"] = setup_pct
-            outcomes_df.at[idx, "wait_tier"] = str(r.get("wait_tier") or "")
-            outcomes_df.at[idx, "scanned_at"] = str(r.get("scanned_at") or "")
+            _set_cell(idx, "score", r.get("Score", 0))
+            _set_cell(idx, "confidence", r.get("confidence", 0))
+            _set_cell(idx, "price_at_rec", r.get("Price", 0))
+            _set_cell(idx, "entry_stock", float(entry))
+            _set_cell(idx, "stop_stock", float(r.get("stop_stock") or 0))
+            _set_cell(idx, "tp1_stock", float(r.get("tp1_stock") or 0))
+            _set_cell(idx, "tp2_stock", float(r.get("tp2_stock") or 0))
+            _set_cell(idx, "tp3_stock", float(r.get("tp3_stock") or 0))
+            _set_cell(idx, "premium", prem_f)
+            _set_cell(idx, "iv", r.get("iv"))
+            _set_cell(idx, "dte_num", r.get("dte_num"))
+            _set_cell(idx, "entry_chased", _truthy_chase(r.get("entry_chased")))
+            _set_cell(idx, "setup_pct", setup_pct)
+            _set_cell(idx, "wait_tier", str(r.get("wait_tier") or ""))
+            _set_cell(idx, "scanned_at", str(r.get("scanned_at") or ""))
 
         open_same = _same_contract(
             outcomes_df[outcomes_df["status"] == "open"],
