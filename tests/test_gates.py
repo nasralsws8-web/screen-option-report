@@ -14,6 +14,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from cheap_options_screener_v3 import (  # noqa: E402
+    assess_option_price_quality,
     entry_is_chased,
     find_nearest_expiry,
     grade_wait_setup,
@@ -39,6 +40,42 @@ from telegram_notify import (  # noqa: E402
 )
 
 ET = ZoneInfo("America/New_York")
+
+
+class TestPremiumQuality(unittest.TestCase):
+    def test_market_mid_ok(self):
+        q = assess_option_price_quality(
+            premium=2.50, bs_fair=2.40, iv_raw=0.35,
+            bid=2.40, ask=2.60, spread_pct=0.08,
+        )
+        self.assertEqual(q["premium_quality"], "market")
+        self.assertTrue(q["premium_ok_for_buy"])
+        self.assertTrue(q["show_bs_scenarios"])
+
+    def test_bs_near_zero_vs_market_unreliable(self):
+        q = assess_option_price_quality(
+            premium=2.40, bs_fair=0.01, iv_raw=0.016,
+            bid=2.30, ask=2.50, spread_pct=0.08,
+        )
+        self.assertEqual(q["premium_quality"], "unreliable")
+        self.assertFalse(q["premium_ok_for_buy"])
+        self.assertFalse(q["show_bs_scenarios"])
+
+    def test_synthetic_last_is_estimate(self):
+        q = assess_option_price_quality(
+            premium=1.80, bs_fair=1.70, iv_raw=0.40,
+            bid=1.75, ask=1.85, synthetic_quote=True,
+        )
+        self.assertEqual(q["premium_quality"], "estimate")
+        self.assertFalse(q["premium_ok_for_buy"])
+
+    def test_wide_divergence_unreliable(self):
+        q = assess_option_price_quality(
+            premium=2.00, bs_fair=0.80, iv_raw=0.30,
+            bid=1.90, ask=2.10, spread_pct=0.09,
+        )
+        self.assertEqual(q["premium_quality"], "unreliable")
+        self.assertFalse(q["show_bs_scenarios"])
 
 
 class TestExpiryFriday(unittest.TestCase):

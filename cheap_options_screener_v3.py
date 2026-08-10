@@ -70,6 +70,8 @@ PM_STALE_PCT   = 0.05    # تجاهل pm_high/pm_low إذا ابتعدت عن ا
 ENTRY_MAX_DRIFT = 0.05   # Entry يجب أن يكون ضمن ±5% من السعر الحالي
 MAX_STOCK_PRICE = 500.0  # رفض أسعار Yahoo الشاذة (مثل SNDK $1183)
 MIN_IV_DISPLAY  = 0.01   # IV أقل من 1% تُعامل كبيانات ناقصة
+MAX_BS_MID_DIVERGENCE = 0.50  # |BS−mid|/mid فوق 50% → سعر عقد غير موثوق
+MAX_SPREAD_FOR_MARKET = 0.25  # سبريد أوسع من 25% يقلّل ثقة سعر السوق
 DTE_TARGET       = 5       # تقريباً منتصف الأسبوع → أقرب جمعة
 DTE_WINDOW       = 4
 MAX_DTE          = 10      # رفض أي عقد أبعد من 10 أيام
@@ -277,6 +279,132 @@ def bs_greeks(S, K, T, r, sigma, opt):
         "gamma": round(gamma, 6),
         "theta": round(theta, 4),
         "vega":  round(vega,  4),
+    }
+
+
+def assess_option_price_quality(
+    *,
+    premium,
+    bs_fair,
+    iv_raw,
+    bid=None,
+    ask=None,
+    last=None,
+    spread_pct=None,
+    synthetic_quote=False,
+):
+    """
+    يقيّم موثوقية سعر العقد المعروض (عادة mid من Bid/Ask).
+    يرجع: quality ∈ market|estimate|unreliable ، ملاحظة، هل نعرض سيناريوهات BS.
+    """
+    try:
+        mid = float(premium or 0)
+    except (TypeError, ValueError):
+        mid = 0.0
+    try:
+        fair = float(bs_fair or 0)
+    except (TypeError, ValueError):
+        fair = 0.0
+    try:
+        iv = float(iv_raw or 0)
+    except (TypeError, ValueError):
+        iv = 0.0
+    try:
+        sp = float(spread_pct) if spread_pct is not None else None
+    except (TypeError, ValueError):
+        sp = None
+
+    iv_missing = iv < MIN_IV_DISPLAY
+    has_ba = False
+    try:
+        has_ba = float(bid or 0) > 0 and float(ask or 0) > 0
+    except (TypeError, ValueError):
+        has_ba = False
+
+    diverg = None
+    if mid > 0 and fair >= 0:
+        diverg = abs(fair - mid) / mid
+
+    # غير موثوق: لا mid، أو quote ملفّق، أو BS≈0 والعقد له سعر، أو انحراف كبير مع IV ناقص/سيء
+    if mid <= 0:
+        return {
+            "premium_quality": "unreliable",
+            "premium_quality_note": "لا يوجد سعر عقد صالح من Yahoo",
+            "bs_fair_price": round(fair, 2) if fair else None,
+            "show_bs_scenarios": False,
+            "premium_ok_for_buy": False,
+        }
+    if synthetic_quote:
+        return {
+            "premium_quality": "estimate",
+            "premium_quality_note": "Bid/Ask صفر — تقدير من Last فقط",
+            "bs_fair_price": round(fair, 2),
+            "show_bs_scenarios": (not iv_missing) and (diverg is None or diverg <= MAX_BS_MID_DIVERGENCE),
+            "premium_ok_for_buy": False,
+        }
+    if fair <= 0.02 and mid >= 0.40:
+        return {
+            "premium_quality": "unreliable",
+            "premium_quality_note": (
+                f"تسعير BS≈${fair:.2f} يناقض mid السوق ${mid:.2f} — IV/بيانات Yahoo ضعيفة"
+            ),
+            "bs_fair_price": round(fair, 2),
+            "show_bs_scenarios": False,
+            "premium_ok_for_buy": False,
+        }
+    if iv_missing and diverg is not None and diverg > 0.35:
+        return {
+            "premium_quality": "unreliable",
+            "premium_quality_note": (
+                f"IV ناقص وانحراف BS عن السوق {diverg*100:.0f}% — لا تعتمد سعر العقد"
+            ),
+            "bs_fair_price": round(fair, 2),
+            "show_bs_scenarios": False,
+            "premium_ok_for_buy": False,
+        }
+    if diverg is not None and diverg > MAX_BS_MID_DIVERGENCE:
+        return {
+            "premium_quality": "unreliable",
+            "premium_quality_note": (
+                f"انحراف BS عن mid السوق {diverg*100:.0f}% (> {MAX_BS_MID_DIVERGENCE*100:.0f}%)"
+            ),
+            "bs_fair_price": round(fair, 2),
+            "show_bs_scenarios": False,
+            "premium_ok_for_buy": False,
+        }
+    if sp is not None and sp > MAX_SPREAD_FOR_MARKET:
+        return {
+            "premium_quality": "estimate",
+            "premium_quality_note": f"سبريد واسع {sp*100:.0f}% — mid تقريبي",
+            "bs_fair_price": round(fair, 2),
+            "show_bs_scenarios": not iv_missing,
+            "premium_ok_for_buy": False,
+        }
+    if has_ba and not iv_missing and (diverg is None or diverg <= 0.35):
+        return {
+            "premium_quality": "market",
+            "premium_quality_note": f"mid سوق (Bid/Ask) · BS≈${fair:.2f}",
+            "bs_fair_price": round(fair, 2),
+            "show_bs_scenarios": True,
+            "premium_ok_for_buy": True,
+        }
+    if has_ba:
+        return {
+            "premium_quality": "estimate",
+            "premium_quality_note": (
+                "mid من Bid/Ask مع IV ضعيف — اعتمد السوق لا سيناريوهات BS"
+                if iv_missing else "mid سوق مع انحراف متوسط عن BS"
+            ),
+            "bs_fair_price": round(fair, 2),
+            "show_bs_scenarios": False,
+            "premium_ok_for_buy": not iv_missing,
+        }
+    return {
+        "premium_quality": "estimate",
+        "premium_quality_note": "سعر عقد تقديري — تحقق من البروكر قبل الدخول",
+        "bs_fair_price": round(fair, 2) if fair else None,
+        "show_bs_scenarios": False,
+        "premium_ok_for_buy": False,
     }
 
 
@@ -1141,20 +1269,42 @@ def _leg_from_atm(atm_row):
     bid  = float(atm_row.get("bid") or 0)
     ask  = float(atm_row.get("ask") or 0)
     last = float(atm_row.get("lastPrice") or 0)
+    synthetic = False
     if ask == 0 and bid == 0:
         if last > 0:
             bid = round(last * 0.97, 2)
             ask = round(last * 1.03, 2)
+            synthetic = True
         else:
             return None
     return {
         "premium":    round((bid + ask) / 2, 2),
+        "bid":        round(bid, 2),
+        "ask":        round(ask, 2),
+        "last":       round(last, 2) if last else None,
+        "synthetic_quote": synthetic,
         "iv":         round(float(atm_row.get("impliedVolatility") or 0), 4),
         "oi":         _safe_int(atm_row.get("openInterest")),
         "opt_vol":    _safe_int(atm_row.get("volume")),
         "spread_pct": round((ask - bid) / ask, 4) if ask > 0 else None,
         "strike":     float(atm_row.get("strike") or 0),
     }
+
+
+def _apply_leg_fields(target, leg):
+    if not leg:
+        return False
+    target["premium"]    = leg["premium"]
+    target["opt_bid"]    = leg.get("bid")
+    target["opt_ask"]    = leg.get("ask")
+    target["opt_last"]   = leg.get("last")
+    target["synthetic_quote"] = bool(leg.get("synthetic_quote"))
+    target["iv"]         = leg["iv"]
+    target["oi"]         = leg["oi"]
+    target["opt_vol"]    = leg["opt_vol"]
+    target["spread_pct"] = leg["spread_pct"]
+    target["strike"]     = leg["strike"]
+    return True
 
 
 def _pick_best_strike(chain_df, stock_price, is_call, ticker):
@@ -1222,18 +1372,6 @@ def _pick_best_strike(chain_df, stock_price, is_call, ticker):
         return loose[0][1]
 
     return _leg_from_atm(_atm_row(chain_df, stock_price))
-
-
-def _apply_leg_fields(target, leg):
-    if not leg:
-        return False
-    target["premium"]    = leg["premium"]
-    target["iv"]         = leg["iv"]
-    target["oi"]         = leg["oi"]
-    target["opt_vol"]    = leg["opt_vol"]
-    target["spread_pct"] = leg["spread_pct"]
-    target["strike"]     = leg["strike"]
-    return True
 
 
 def resolve_is_call(r, tech=None):
@@ -1550,6 +1688,26 @@ def compute_trade_plan(r, tech):
     # Greeks المحسوبة محليًا
     plan["greeks"] = bs_greeks(price, strike, T_entry, RISK_FREE_RATE, iv, opt_type)
 
+    # جودة سعر العقد: mid سوق مقابل BS (يمنع BUY عند Yahoo/IV فاسد)
+    bs_fair = round(bs_price(price, strike, T_entry, RISK_FREE_RATE, iv, opt_type), 2)
+    pq = assess_option_price_quality(
+        premium=premium,
+        bs_fair=bs_fair,
+        iv_raw=iv_raw,
+        bid=r.get("opt_bid"),
+        ask=r.get("opt_ask"),
+        last=r.get("opt_last"),
+        spread_pct=r.get("spread_pct"),
+        synthetic_quote=bool(r.get("synthetic_quote")),
+    )
+    plan["bs_fair_price"] = pq.get("bs_fair_price")
+    plan["premium_quality"] = pq.get("premium_quality", "estimate")
+    plan["premium_quality_note"] = pq.get("premium_quality_note", "")
+    plan["show_bs_scenarios"] = bool(pq.get("show_bs_scenarios"))
+    plan["premium_ok_for_buy"] = bool(pq.get("premium_ok_for_buy"))
+    if pq.get("premium_quality") == "unreliable" and not plan.get("rec_note"):
+        plan["rec_note"] = pq.get("premium_quality_note") or "سعر عقد غير موثوق"
+
     # ── Entry ─────────────────────────────────────────────────────────────
     pm_high = r.get("pm_high")
     pm_low  = r.get("pm_low")
@@ -1700,11 +1858,13 @@ def compute_trade_plan(r, tech):
     plan["exec_window_ok"] = exec_ok
     # الصناديق العكسية: لا BUY تلقائي أبداً (سقف WAIT حتى مع محاذاة)
     inverse_blocks_buy = is_inverse_ticker(ticker)
+    premium_quality_ok = bool(plan.get("premium_ok_for_buy"))
     almost_buy = (
         conf >= MIN_CONF_TO_BUY
         and live_rr >= MIN_RR_TO_BUY
         and liquid_ok
         and prem_ok
+        and premium_quality_ok
         and align_ok
         and not chased
         and dte > 0
@@ -1736,6 +1896,11 @@ def compute_trade_plan(r, tech):
     elif not prem_ok:
         plan["recommendation"] = "WAIT"
         plan["rec_note"]       = f"Premium ${premium:.2f} تحت الحد ${prem_min:.2f} — الوضع الأساسي ≥$1"
+    elif not premium_quality_ok:
+        plan["recommendation"] = "WAIT"
+        qnote = plan.get("premium_quality_note") or "سعر عقد غير موثوق من Yahoo"
+        qtag = plan.get("premium_quality") or "estimate"
+        plan["rec_note"] = f"سعر عقد ({qtag}) — {qnote}"
     elif not spread_ok:
         plan["recommendation"] = "WAIT"
         plan["rec_note"]       = f"سبريد مرتفع ({sp*100:.1f}%) — الحد {max_sp*100:.0f}%"
@@ -1893,10 +2058,19 @@ def print_trade_report(rank, r, tech, plan):
     # ── Contract ─────────────────────────────────────────────────────────
     print(f"{'─'*W}")
     print(f"  CONTRACT")
-    print(f"    Stock: ${price_n:.2f}    Strike: ${strike:.2f}    Premium: ${prem:.2f}")
+    pq_label = {
+        "market": "سوق",
+        "estimate": "تقدير",
+        "unreliable": "غير موثوق",
+    }.get(str(plan.get("premium_quality") or r.get("premium_quality") or ""), "—")
+    print(f"    Stock: ${price_n:.2f}    Strike: ${strike:.2f}    Premium: ${prem:.2f}  [{pq_label}]")
     print(f"    IV:    {iv_s}      DTE: {dte}d      Expiry: {r.get('expiry','N/A')}")
     print(f"    OI:    {oi:,}      OptVol: {opt_vol:,}      Spread: {sp_s}")
     print(f"    RVOL:  {rvol:.1f}x      ATR%: {atr_pct:.1f}%      Earnings: {earn_s}")
+    if plan.get("premium_quality_note") or r.get("premium_quality_note"):
+        print(f"    جودة السعر: {plan.get('premium_quality_note') or r.get('premium_quality_note')}")
+    if plan.get("bs_fair_price") is not None:
+        print(f"    BS fair ≈ ${float(plan['bs_fair_price']):.2f}")
 
     # Greeks المحسوبة محليًا
     if greeks:
@@ -1938,7 +2112,10 @@ def print_trade_report(rank, r, tech, plan):
                   f"${plan['tp3_option']:.2f}            1 : {plan['tp3_rr']:.1f}")
 
     # ── Scenarios ─────────────────────────────────────────────────────────
-    if strike and prem and iv and price_n:
+    show_bs = plan.get("show_bs_scenarios")
+    if show_bs is None:
+        show_bs = True
+    if strike and prem and iv and price_n and show_bs:
         is_call = "CALL" in str(direction).upper()
         opt_t   = "call" if is_call else "put"
         T_full  = max(dte / 365, 1 / 365)
@@ -1981,6 +2158,12 @@ def print_trade_report(rank, r, tech, plan):
             print(f"    بريكإيفن عند الانتهاء: ${be_exp['stock']:.2f} ({be_exp['move']*100:+.0f}%)")
         if x2:
             print(f"    تضاعف العقد (×2):      ${x2['stock']:.2f} ({x2['move']*100:+.0f}%)")
+    elif strike and prem and price_n and not show_bs:
+        print(f"{'─'*W}")
+        print("  SCENARIOS  — مخفية (سعر عقد/IV غير موثوق)")
+        note = plan.get("premium_quality_note") or r.get("premium_quality_note") or ""
+        if note:
+            print(f"    {note}")
 
     print(f"{'─'*W}")
     print(f"  Factors: {r.get('Notes','')}")
@@ -1993,6 +2176,8 @@ def print_trade_report(rank, r, tech, plan):
 
 SAVE_COLS = [
     "Ticker", "Price", "premium", "strike", "iv", "oi", "opt_vol", "spread_pct",
+    "opt_bid", "opt_ask", "opt_last", "synthetic_quote",
+    "premium_quality", "premium_quality_note", "bs_fair_price", "show_bs_scenarios",
     "atr_pct", "gap_pct", "RVOL", "pm_high", "pm_low", "pm_volume",
     "expiry", "dte_num", "direction", "earnings", "float_shares", "avg_vol",
     "entry_stock", "stop_stock", "tp1_stock", "tp2_stock", "tp3_stock", "tp1_rr",
@@ -2281,6 +2466,10 @@ def process_candidates(candidates_df, show_progress=True):
         row["entry_note"]     = plan.get("entry_note", "")
         row["rec_note"]       = plan.get("rec_note", "")
         row["spy_regime"]     = plan.get("spy_regime", row_regime)
+        row["premium_quality"] = plan.get("premium_quality", "estimate")
+        row["premium_quality_note"] = plan.get("premium_quality_note", "")
+        row["bs_fair_price"] = plan.get("bs_fair_price")
+        row["show_bs_scenarios"] = bool(plan.get("show_bs_scenarios", False))
         if is_spy_ticker(ticker):
             row["profile"] = "spy"
 
