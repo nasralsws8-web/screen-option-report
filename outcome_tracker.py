@@ -1097,6 +1097,9 @@ def add_new_recommendations(outcomes_df):
             """تعيين آمن — يتجنب TypeError عند float داخل عمود int64 (pandas 2.x / Py3.11)."""
             if col not in outcomes_df.columns:
                 outcomes_df[col] = None
+            if isinstance(value, float) and col in outcomes_df.columns:
+                if str(outcomes_df[col].dtype).startswith("int"):
+                    outcomes_df[col] = outcomes_df[col].astype("float64")
             try:
                 outcomes_df.at[idx, col] = value
             except (TypeError, ValueError):
