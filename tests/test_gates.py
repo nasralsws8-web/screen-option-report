@@ -96,6 +96,52 @@ class TestPremiumQuality(unittest.TestCase):
         self.assertFalse(q["show_bs_scenarios"])
 
 
+class TestBuyRequiresTrend(unittest.TestCase):
+    def test_entry_hit_without_trend_is_wait_not_buy(self):
+        """ثغرة SPCH: buy_ready + Entry بدون اتجاه كان يعطي BUY."""
+        import os
+        os.environ["IGNORE_EXEC_WINDOW"] = "1"
+        from cheap_options_screener_v3 import compute_trade_plan
+
+        r = {
+            "Ticker": "SPCH",
+            "price_num": 8.20,
+            "Price": 8.20,
+            "strike": 8.0,
+            "iv": 0.80,
+            "premium": 1.05,
+            "oi": 878,
+            "opt_vol": 600,
+            "spread_pct": 0.09,
+            "dte_num": 4,
+            "direction": "CALL",
+            "Score": 20,
+            "spy_regime": "BULL",
+            "RVOL": 1.5,
+            "atr_pct": 6.0,
+            "is_0dte": False,
+            "opt_bid": 1.00,
+            "opt_ask": 1.10,
+            "synthetic_quote": False,
+            "pm_high": 8.10,
+            "pm_low": 7.80,
+        }
+        tech = {
+            "atr14": 0.45,
+            "trend": "MIXED",  # conf ~ سيكون <75 → mixed_ok False
+            "above_ema20": False,
+            "above_ema50": False,
+            "above_vwap": True,
+            "rsi": 35,
+            "yesterday_high": 8.30,
+            "yesterday_low": 7.90,
+        }
+        plan = compute_trade_plan(r, tech)
+        # حتى لو السعر فوق Entry: بدون اتجاه مؤكد → لا BUY
+        self.assertNotEqual(plan["recommendation"], "BUY")
+        self.assertNotIn("Entry تحقق + شروط BUY مكتملة", plan.get("rec_note") or "")
+
+
 class TestExpiryFriday(unittest.TestCase):
     def test_next_friday_skips_today_when_friday(self):
         fri = __import__("datetime").date(2026, 8, 7)  # Friday

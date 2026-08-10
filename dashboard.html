@@ -909,6 +909,10 @@ function effectiveLiveRec(plan, st) {
     const note = String(plan.premiumQualityNote || '');
     if (/Last|سبريد واسع|تقديري/.test(note)) return 'WAIT';
   }
+  // BUY من المسح لكن السعر الحي رجع تحت Entry → لا تظهر BUY
+  if (plan.rec === 'BUY' && st && st.cls === 'status-entry-wait' && !st.chased) {
+    return 'WAIT';
+  }
   const rules = passesOpsRules(plan);
   if (!rules.ok) {
     if (plan.rec === 'BUY') return 'WAIT';
@@ -1037,6 +1041,8 @@ function applyScanGuards(rows) {
         const pqNote = String(plan.premiumQualityNote || '');
         if (pq === 'unreliable' || (pq === 'estimate' && /Last|سبريد واسع|تقديري/.test(pqNote))) {
           out.rec_note = plan.premiumQualityNote || 'سعر عقد غير موثوق — لا BUY';
+        } else if (st.cls === 'status-entry-wait' && !st.chased) {
+          out.rec_note = 'السعر الحي تحت Entry — انتظر لمس المستوى من جديد';
         } else {
           out.rec_note = `R:R الحي 1:${(st.liveRr || 0).toFixed(1)} ضعيف — انتظر`;
         }

@@ -1934,12 +1934,23 @@ def compute_trade_plan(r, tech):
         )
     elif buy_ready and (trend_ok or mixed_ok):
         plan["recommendation"] = "BUY"
-        plan["rec_note"]       = ("الاتجاه والزخم والسيولة مناسبة"
-                                   if trend_ok else "اختراق قوي رغم الاتجاه المختلط")
-    elif buy_ready and entry_hit_now:
-        # Entry تحقق يُسمح به فقط قرب المستوى + شروط BUY (بدون مطاردة)
-        plan["recommendation"] = "BUY"
-        plan["rec_note"]       = "Entry تحقق + شروط BUY مكتملة"
+        if entry_hit_now:
+            plan["rec_note"] = (
+                "Entry تحقق + الاتجاه والزخم مناسبان"
+                if trend_ok else "Entry تحقق + اختراق قوي رغم الاتجاه المختلط"
+            )
+        else:
+            plan["rec_note"] = (
+                "الاتجاه والزخم والسيولة مناسبة"
+                if trend_ok else "اختراق قوي رغم الاتجاه المختلط"
+            )
+    elif buy_ready and not (trend_ok or mixed_ok):
+        # لا BUY بمجرد لمس Entry بدون اتجاه — راقب تأكيد الزخم
+        plan["recommendation"] = "WAIT"
+        plan["rec_note"] = (
+            "شروط التنفيذ شبه مكتملة لكن الاتجاه غير مؤكد — انتظر تأكيد الزخم"
+            + (" · السعر عند/فوق Entry" if entry_hit_now else "")
+        )
     elif conf >= MIN_CONF_TO_BUY and (live_rr >= MIN_RR_TO_BUY or tp1_rr >= MIN_RR_TO_BUY):
         plan["recommendation"] = "WAIT"
         if not liquid_ok:
