@@ -320,6 +320,8 @@ def assess_option_price_quality(
         has_ba = float(bid or 0) > 0 and float(ask or 0) > 0
     except (TypeError, ValueError):
         has_ba = False
+    # premium من السلسلة = mid سوق ما لم يكن quote ملفّق من Last فقط
+    market_mid = mid > 0 and not bool(synthetic_quote)
 
     diverg = None
     if mid > 0 and fair >= 0:
@@ -380,24 +382,32 @@ def assess_option_price_quality(
             "show_bs_scenarios": not iv_missing,
             "premium_ok_for_buy": False,
         }
-    if has_ba and not iv_missing and (diverg is None or diverg <= 0.35):
+    # mid سوق موثوق: Bid/Ask أو premium من السلسلة (غير synthetic) + IV سليم + انحراف مقبول
+    if market_mid and not iv_missing and (diverg is None or diverg <= 0.35):
+        src = "Bid/Ask" if has_ba else "سلسلة Yahoo"
         return {
             "premium_quality": "market",
-            "premium_quality_note": f"mid سوق (Bid/Ask) · BS≈${fair:.2f}",
+            "premium_quality_note": f"mid سوق ({src}) · BS≈${fair:.2f}",
             "bs_fair_price": round(fair, 2),
             "show_bs_scenarios": True,
             "premium_ok_for_buy": True,
         }
-    if has_ba:
+    # mid سوق حقيقي مع IV ضعيف — اعتمد سعر السوق للـ BUY، اخفِ سيناريوهات BS
+    if market_mid and iv_missing and (diverg is None or diverg <= 0.35):
         return {
             "premium_quality": "estimate",
-            "premium_quality_note": (
-                "mid من Bid/Ask مع IV ضعيف — اعتمد السوق لا سيناريوهات BS"
-                if iv_missing else "mid سوق مع انحراف متوسط عن BS"
-            ),
+            "premium_quality_note": "mid سوق مع IV ناقص — اعتمد السوق لا سيناريوهات BS",
             "bs_fair_price": round(fair, 2),
             "show_bs_scenarios": False,
-            "premium_ok_for_buy": not iv_missing,
+            "premium_ok_for_buy": True,
+        }
+    if market_mid:
+        return {
+            "premium_quality": "estimate",
+            "premium_quality_note": "mid سوق مع انحراف متوسط عن BS",
+            "bs_fair_price": round(fair, 2),
+            "show_bs_scenarios": False,
+            "premium_ok_for_buy": True,
         }
     return {
         "premium_quality": "estimate",
@@ -2400,6 +2410,10 @@ def process_candidates(candidates_df, show_progress=True):
             "oi":           opts["oi"],
             "opt_vol":      opts["opt_vol"],
             "spread_pct":   opts["spread_pct"],
+            "opt_bid":      opts.get("opt_bid"),
+            "opt_ask":      opts.get("opt_ask"),
+            "opt_last":     opts.get("opt_last"),
+            "synthetic_quote": bool(opts.get("synthetic_quote")),
             "expiry":       opts["expiry"],
             "has_weekly":   opts["has_weekly"],
             "direction":    opts["direction"],

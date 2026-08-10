@@ -52,6 +52,24 @@ class TestPremiumQuality(unittest.TestCase):
         self.assertTrue(q["premium_ok_for_buy"])
         self.assertTrue(q["show_bs_scenarios"])
 
+    def test_market_without_bid_ask_still_buyable(self):
+        # ثغرة سابقة: بدون opt_bid/ask كانت الجودة estimate وتسد BUY
+        q = assess_option_price_quality(
+            premium=2.34, bs_fair=2.20, iv_raw=0.1094,
+            bid=None, ask=None, spread_pct=0.0043, synthetic_quote=False,
+        )
+        self.assertEqual(q["premium_quality"], "market")
+        self.assertTrue(q["premium_ok_for_buy"])
+
+    def test_iv_missing_market_mid_still_buyable(self):
+        q = assess_option_price_quality(
+            premium=2.50, bs_fair=2.45, iv_raw=0.0,
+            bid=2.40, ask=2.60, spread_pct=0.08,
+        )
+        self.assertEqual(q["premium_quality"], "estimate")
+        self.assertTrue(q["premium_ok_for_buy"])
+        self.assertFalse(q["show_bs_scenarios"])
+
     def test_bs_near_zero_vs_market_unreliable(self):
         q = assess_option_price_quality(
             premium=2.40, bs_fair=0.01, iv_raw=0.016,
