@@ -1759,7 +1759,7 @@ async function ensureOutcomesForStudy() {
   if (outcomeRows.length) return;
   try {
     const { text } = await fetchTextNoCache(OUTCOMES_URLS, {
-      preferColumns: ['data_quality'],
+      preferColumns: ['data_quality', 'premium_quality', 'tp1_rr_live', 'spy_regime'],
       preferNewestScan: true,
     });
     outcomeRows = enrichOutcomeQuality(parseCSV(text).filter(r => r.ticker));
@@ -2236,7 +2236,7 @@ async function loadHistory(force) {
   container.innerHTML = '<div class="loading"><div class="spinner"></div><br>جاري تحميل السجل...</div>';
   try {
     const { text, source } = await fetchTextNoCache(OUTCOMES_URLS, {
-      preferColumns: ['data_quality'],
+      preferColumns: ['data_quality', 'premium_quality', 'tp1_rr_live', 'spy_regime'],
       preferNewestScan: true,
     });
     const rows = enrichOutcomeQuality(parseCSV(text).filter(r => r.ticker));
@@ -2379,6 +2379,8 @@ async function loadHistory(force) {
           <th style="padding:10px;text-align:right;color:#8b949e">ثقة</th>
           <th style="padding:10px;text-align:right;color:#8b949e">DTE</th>
           <th style="padding:10px;text-align:right;color:#8b949e">IV</th>
+          <th style="padding:10px;text-align:right;color:#8b949e">SPY</th>
+          <th style="padding:10px;text-align:right;color:#8b949e">R:R حي</th>
           <th style="padding:10px;text-align:right;color:#8b949e">Entry</th>
           <th style="padding:10px;text-align:right;color:#8b949e">دخول تحقق</th>
           <th style="padding:10px;text-align:right;color:#8b949e">خروج</th>
@@ -2408,6 +2410,28 @@ async function loadHistory(force) {
             const isOpen = st === 'open';
             const prem = parseFloat(r.premium);
             const premStr = isNaN(prem) ? '—' : '$'+prem.toFixed(2);
+            const pqRaw = String(r.premium_quality || '').toLowerCase();
+            const pqLabel = pqRaw === 'market' ? 'سوق'
+              : pqRaw === 'estimate' ? 'تقدير'
+              : pqRaw === 'unreliable' ? 'غير موثوق'
+              : '';
+            const pqColor = pqRaw === 'market' ? '#3fb950'
+              : pqRaw === 'estimate' ? '#e3b341'
+              : pqRaw === 'unreliable' ? '#f85149'
+              : '#8b949e';
+            const pqNote = String(r.premium_quality_note || '').replace(/"/g, '&quot;');
+            const bsFairN = parseFloat(r.bs_fair_price);
+            const premInHtml = isNaN(prem)
+              ? '<span style="color:#8b949e">—</span>'
+              : `<div style="font-weight:700;color:#e3b341" title="${pqNote}">${premStr}</div>`
+                + (pqLabel ? `<div style="font-size:10px;color:${pqColor};margin-top:2px">${pqLabel}${!isNaN(bsFairN) ? ' · BS $'+bsFairN.toFixed(2) : ''}</div>` : '');
+            const spyReg = String(r.spy_regime || '').toUpperCase();
+            const spyHtml = spyReg ? `<span style="color:#58a6ff;font-size:12px">${spyReg}</span>` : '<span style="color:#8b949e">—</span>';
+            const rrLiveN = parseFloat(r.tp1_rr_live);
+            const rrLiveHtml = Number.isFinite(rrLiveN)
+              ? `<span style="color:${rrLiveN>=1.3?'#3fb950':'#e3b341'}">1:${rrLiveN.toFixed(1)}</span>`
+              : '<span style="color:#8b949e">—</span>';
+            const recNoteTitle = String(r.rec_note || '').replace(/"/g, '&quot;');
             const expOptN = parseFloat(r.option_pnl_expiry_pct);
             const expPremN = parseFloat(r.expiry_premium);
             const expSrc = String(r.expiry_premium_source || '').toLowerCase();
@@ -2564,6 +2588,8 @@ async function loadHistory(force) {
               <td style="padding:10px;color:${confColor(r.confidence)}">${r.confidence||0}%</td>
               <td style="padding:10px;color:#8b949e">${dteRecStr}</td>
               <td style="padding:10px;color:#8b949e">${ivStr}</td>
+              <td style="padding:10px" title="${recNoteTitle}">${spyHtml}</td>
+              <td style="padding:10px">${rrLiveHtml}</td>
               <td style="padding:10px">$${parseFloat(r.entry_stock||0).toFixed(2)}${entryHit ? ' ✓' : ''}</td>
               <td style="padding:10px;color:#8b949e;font-size:12px">${entryHitDateStr}</td>
               <td style="padding:10px;color:#8b949e;font-size:12px">${exitDateStr}</td>
@@ -2573,7 +2599,7 @@ async function loadHistory(force) {
               <td style="padding:10px;color:#3fb950">${tp2Str}</td>
               <td style="padding:10px;color:#58a6ff">${tp3Str}</td>
               <td style="padding:10px;color:#f85149">$${parseFloat(r.stop_stock||0).toFixed(2)}</td>
-              <td style="padding:10px;color:#e3b341">${premStr}</td>
+              <td style="padding:10px;line-height:1.25">${premInHtml}</td>
               <td style="padding:10px;line-height:1.25">${exitPremHtml}</td>
               <td style="padding:10px;line-height:1.25">${optHtml}</td>
               <td style="padding:10px;line-height:1.25">${resHtml}</td>

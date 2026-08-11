@@ -521,12 +521,28 @@ class TestOutcomeRecKindUpgrade(unittest.TestCase):
                     "setup_pct": 88,
                     "wait_tier": "HOT",
                     "scanned_at": "2099-01-01 15:00 UTC",
+                    "premium_quality": "market",
+                    "premium_quality_note": "mid سوق (Bid/Ask)",
+                    "bs_fair_price": 1.55,
+                    "opt_bid": 1.50,
+                    "opt_ask": 1.70,
+                    "spread_pct": 0.05,
+                    "oi": 2000,
+                    "tp1_rr_live": 1.8,
+                    "chase_pct": 0.2,
+                    "spy_regime": "BULL",
+                    "rec_note": "الاتجاه والزخم والسيولة مناسبة",
                 }])
                 results.to_csv("options_v3_results.csv", index=False)
                 out = add_new_recommendations(outcomes)
                 row = out[(out["ticker"] == "NVDA") & (out["status"] == "open")].iloc[0]
                 self.assertEqual(str(row["rec_kind"]), "BUY")
                 self.assertEqual(len(out[out["ticker"] == "NVDA"]), 1)
+                self.assertEqual(str(row.get("premium_quality")), "market")
+                self.assertEqual(float(row.get("tp1_rr_live")), 1.8)
+                self.assertEqual(str(row.get("spy_regime")), "BULL")
+                self.assertIn("الاتجاه", str(row.get("rec_note") or ""))
+                self.assertEqual(float(row.get("opt_bid")), 1.5)
             finally:
                 os.chdir(prev)
 

@@ -8,6 +8,10 @@ outcome_tracker.py
 كل عقد يُحفظ مستقلاً بمفتاح: Ticker + Strike + Expiry
 (نفس السهم بعقد مختلف = صف جديد في السجل)
 
+عند الإضافة تُحفظ أيضاً لقطة تدقيق من المسح:
+  premium_quality / bs_fair / bid-ask / spread / oi /
+  tp1_rr_live / chase_pct / spy_regime / rec_note
+
 result_pct      = حركة السهم % (للمرجع)
 option_pnl_pct  = ربح/خسارة العقد % من premium الدخول → exit_premium
 exit_premium    = سعر العقد عند الخروج (يفضّل إغلاق Yahoo اليومي الحقيقي)
@@ -49,6 +53,10 @@ OUTCOMES_COLS = [
     "premium", "strike", "iv", "dte_num",
     "rec_kind",       # BUY | WAIT_HOT
     "entry_chased", "setup_pct", "wait_tier", "scanned_at",
+    # لقطة من المسح عند التسجيل (تدقيق / نظافة السجل)
+    "premium_quality", "premium_quality_note", "bs_fair_price",
+    "opt_bid", "opt_ask", "spread_pct", "oi",
+    "tp1_rr_live", "chase_pct", "spy_regime", "rec_note",
     "entry_hit", "entry_hit_date", "exit_date", "exit_stock",
     "exit_premium", "exit_premium_source",
     "status",   # open / tp1_hit / tp2_hit / tp3_hit / stop_hit / expired
@@ -1093,6 +1101,14 @@ def add_new_recommendations(outcomes_df):
         except (TypeError, ValueError):
             setup_pct = None
 
+        def _opt_float(val):
+            if val is None or val == "":
+                return None
+            try:
+                return float(val)
+            except (TypeError, ValueError):
+                return None
+
         def _set_cell(idx, col, value):
             """تعيين آمن — يتجنب TypeError عند float داخل عمود int64 (pandas 2.x / Py3.11)."""
             if col not in outcomes_df.columns:
@@ -1122,6 +1138,17 @@ def add_new_recommendations(outcomes_df):
             _set_cell(idx, "setup_pct", setup_pct)
             _set_cell(idx, "wait_tier", str(r.get("wait_tier") or ""))
             _set_cell(idx, "scanned_at", str(r.get("scanned_at") or ""))
+            _set_cell(idx, "premium_quality", str(r.get("premium_quality") or ""))
+            _set_cell(idx, "premium_quality_note", str(r.get("premium_quality_note") or "")[:180])
+            _set_cell(idx, "bs_fair_price", _opt_float(r.get("bs_fair_price")))
+            _set_cell(idx, "opt_bid", _opt_float(r.get("opt_bid")))
+            _set_cell(idx, "opt_ask", _opt_float(r.get("opt_ask")))
+            _set_cell(idx, "spread_pct", _opt_float(r.get("spread_pct")))
+            _set_cell(idx, "oi", _opt_float(r.get("oi")))
+            _set_cell(idx, "tp1_rr_live", _opt_float(r.get("tp1_rr_live")))
+            _set_cell(idx, "chase_pct", _opt_float(r.get("chase_pct")))
+            _set_cell(idx, "spy_regime", str(r.get("spy_regime") or ""))
+            _set_cell(idx, "rec_note", str(r.get("rec_note") or "")[:220])
 
         open_same = _same_contract(
             outcomes_df[outcomes_df["status"] == "open"],
@@ -1185,6 +1212,17 @@ def add_new_recommendations(outcomes_df):
             "setup_pct":      setup_pct,
             "wait_tier":      str(r.get("wait_tier") or ""),
             "scanned_at":     str(r.get("scanned_at") or ""),
+            "premium_quality": str(r.get("premium_quality") or ""),
+            "premium_quality_note": str(r.get("premium_quality_note") or "")[:180],
+            "bs_fair_price":  _opt_float(r.get("bs_fair_price")),
+            "opt_bid":        _opt_float(r.get("opt_bid")),
+            "opt_ask":        _opt_float(r.get("opt_ask")),
+            "spread_pct":     _opt_float(r.get("spread_pct")),
+            "oi":             _opt_float(r.get("oi")),
+            "tp1_rr_live":    _opt_float(r.get("tp1_rr_live")),
+            "chase_pct":      _opt_float(r.get("chase_pct")),
+            "spy_regime":     str(r.get("spy_regime") or ""),
+            "rec_note":       str(r.get("rec_note") or "")[:220],
             "entry_hit":      False,
             "entry_hit_date": "",
             "exit_date":      "",
