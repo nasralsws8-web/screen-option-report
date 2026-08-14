@@ -2127,7 +2127,7 @@ function showTab(tab) {
 const OUTCOMES_URL = OUTCOMES_URLS[0];
 let historyLoaded = false;
 /** فلاتر جدول السجل — الافتراضي: مفتوح + إخفاء المنتهي (أقل ازدحام يوم الجمعة) */
-let historyFilter = { scope: 'open', hideExpired: true, month: '', includeExpiry: false };
+let historyFilter = { scope: 'open', hideExpired: true, month: '' };
 
 const AR_MONTH_NAMES = {
   '01': 'يناير', '02': 'فبراير', '03': 'مارس', '04': 'أبريل',
@@ -2150,9 +2150,7 @@ function historyRowMonths(r) {
 function rowInHistoryMonth(r, ym) {
   if (!ym) return true;
   const m = historyRowMonths(r);
-  if (m.rec === ym) return true;
-  if (historyFilter.includeExpiry && m.exp === ym) return true;
-  return false;
+  return m.rec === ym || m.exp === ym;
 }
 
 function historyMonthKeys(rows) {
@@ -2160,7 +2158,7 @@ function historyMonthKeys(rows) {
   (rows || []).forEach(r => {
     const m = historyRowMonths(r);
     if (m.rec) set.add(m.rec);
-    if (historyFilter.includeExpiry && m.exp) set.add(m.exp);
+    if (m.exp) set.add(m.exp);
   });
   return [...set].sort();
 }
@@ -2230,14 +2228,6 @@ function setHistoryScope(scope) {
 
 function toggleHistoryHideExpired() {
   historyFilter.hideExpired = !historyFilter.hideExpired;
-  if (outcomeRows.length) {
-    historyLoaded = false;
-    loadHistory(true);
-  }
-}
-
-function toggleHistoryIncludeExpiry() {
-  historyFilter.includeExpiry = !historyFilter.includeExpiry;
   if (outcomeRows.length) {
     historyLoaded = false;
     loadHistory(true);
@@ -2438,7 +2428,6 @@ function last7DaysRows(rows) {
 }
 
 function renderBucketCard(title, color, k) {
-  if (!k || (!k.n && !k.open)) return '';
   return `<div style="flex:1;min-width:160px;background:#161b22;border:1px solid #30363d;border-radius:10px;padding:12px">
     <div style="font-size:12px;font-weight:800;color:${color};margin-bottom:8px">${title}</div>
     <div style="font-size:22px;font-weight:800;color:#e6edf3">${k.n ? fmtKpiPct(k.tpRate, 0) : '—'}</div>
@@ -2447,126 +2436,6 @@ function renderBucketCard(title, color, k) {
       Win ${k.label}: <strong>${fmtKpiPct(k.winRate, 0)}</strong><br>
       Avg عقد: <strong style="color:${(k.avgOpt||0)>=0?'#3fb950':'#f85149'}">${fmtKpiSigned(k.avgOpt)}</strong><br>
       Avg MFE: <strong style="color:#3fb950">${fmtKpiSigned(k.avgMfe)}</strong>
-    </div>
-  </div>`;
-}
-
-function bookTicker(r) {
-  return String(r.Ticker || r.ticker || '').toUpperCase().trim();
-}
-
-function bookDir(r) {
-  const d = String(r.direction || '').toUpperCase();
-  if (d.includes('PUT')) return 'PUT';
-  if (d.includes('CALL')) return 'CALL';
-  return '—';
-}
-
-function bookStrike(r) {
-  const n = parseFloat(r.strike);
-  if (!Number.isFinite(n)) return '—';
-  return Number.isInteger(n) ? String(n) : n.toFixed(2);
-}
-
-function bookExpShort(r) {
-  const e = String(r.expiry || '').slice(0, 10);
-  return e.length >= 10 ? e.slice(5) : '—';
-}
-
-function bookLivePx(ticker) {
-  const lp = livePrices[ticker];
-  if (lp && lp.price > 0) return '$' + Number(lp.price).toFixed(2);
-  return '';
-}
-
-function bookLine(r, extra) {
-  const t = bookTicker(r);
-  const px = bookLivePx(t);
-  return `<div style="padding:6px 0;border-bottom:1px solid #21262d;font-size:12px;line-height:1.35">
-    <span style="font-weight:800;color:#e6edf3">${t}</span>
-    <span style="color:${bookDir(r)==='PUT'?'#f85149':'#3fb950'}"> ${bookDir(r)}</span>
-    <span style="color:#e3b341"> ${bookStrike(r)}</span>
-    <span style="color:#8b949e"> · ${bookExpShort(r)}</span>
-    ${px ? `<span style="color:#58a6ff"> · ${px}</span>` : ''}
-    ${extra ? `<div style="font-size:10px;color:#8b949e;margin-top:2px">${extra}</div>` : ''}
-  </div>`;
-}
-
-function buildTodayBook(outcomes, scan) {
-  const today = todayEtDateStr();
-  const scanList = Array.isArray(scan) ? scan : [];
-  const outList = Array.isArray(outcomes) ? outcomes : [];
-  const recOf = (r) => String(r.recommendation || '').toUpperCase();
-  const execute = scanList.filter(r => recOf(r) === 'BUY');
-  const watch = scanList.filter(r => {
-    if (recOf(r) !== 'WAIT') return false;
-    const tier = String(r.wait_tier || '').toUpperCase();
-    return tier === 'HOT' || tier === 'FIRE';
-  });
-  const diesToday = outList.filter(r =>
-    String(r.expiry || '').slice(0, 10) === today && String(r.status || '') === 'open'
-  );
-  const seenCarry = new Set();
-  const carry = [];
-  scanList.forEach(s => {
-    const rec = recOf(s);
-    if (rec === 'AVOID') return;
-    const t = bookTicker(s);
-    const exp = String(s.expiry || '').slice(0, 10);
-    if (!t || exp === today) return;
-    const prev = outList.filter(o => {
-      if (bookTicker(o) !== t) return false;
-      const odate = String(o.date || '').slice(0, 10);
-      const oexp = String(o.expiry || '').slice(0, 10);
-      return odate && odate < today && oexp && oexp !== exp;
-    });
-    if (!prev.length || seenCarry.has(t)) return;
-    seenCarry.add(t);
-    const latest = prev.slice().sort((a, b) => String(b.date).localeCompare(String(a.date)))[0];
-    carry.push({ scan: s, prev: latest, rec });
-  });
-  return { today, execute, watch, diesToday, carry };
-}
-
-function renderTodayBookCol(title, color, count, body) {
-  return `<div style="flex:1;min-width:180px;background:#161b22;border:1px solid #30363d;border-radius:10px;padding:12px">
-    <div style="font-size:12px;font-weight:800;color:${color};margin-bottom:4px">${title}</div>
-    <div style="font-size:22px;font-weight:800;color:#e6edf3;margin-bottom:8px">${count}</div>
-    ${body}
-  </div>`;
-}
-
-function renderTodayBook(book) {
-  const empty = '<div style="font-size:12px;color:#8b949e">لا شيء</div>';
-  const execBody = book.execute.length
-    ? book.execute.map(r => bookLine(r, 'BUY مسح اليوم')).join('')
-    : empty;
-  const watchBody = book.watch.length
-    ? book.watch.map(r => {
-        const tier = String(r.wait_tier || '').toUpperCase();
-        const chase = parseFloat(r.chase_pct);
-        const extra = (tier || 'HOT') + (Number.isFinite(chase) && chase > 0.8 ? ' · ارجع Entry' : ' · لمس Entry');
-        return bookLine(r, extra);
-      }).join('')
-    : empty;
-  const diesBody = book.diesToday.length
-    ? book.diesToday.map(r => bookLine(r, 'ينتهي اليوم · لا تخلطه مع الأسبوع الجاي')).join('')
-    : empty;
-  const carryBody = book.carry.length
-    ? book.carry.map(c => {
-        const from = `${bookDir(c.prev)} ${bookStrike(c.prev)} · ${bookExpShort(c.prev)}`;
-        const extra = `${c.rec} ← كان ${from}`;
-        return bookLine(c.scan, extra);
-      }).join('')
-    : empty;
-  return `<div style="margin-bottom:18px">
-    <div style="font-size:13px;font-weight:800;color:#e6edf3;margin-bottom:4px">دفتر اليوم</div>
-    <div style="font-size:11px;color:#8b949e;margin-bottom:10px">تشغيل حي · ${book.today} ET · المسح الحالي + العقود المفتوحة التي تنتهي اليوم</div>
-    <div style="display:flex;gap:12px;flex-wrap:wrap">
-      ${renderTodayBookCol('نفّذ · BUY', '#3fb950', book.execute.length, execBody)}
-      ${renderTodayBookCol('راقب يدوي · HOT', '#e3b341', book.watch.length, watchBody)}
-      ${renderTodayBookCol('يموت اليوم', '#f85149', book.diesToday.length, diesBody)}
-      ${renderTodayBookCol('ترحيل لأسبوع جديد', '#58a6ff', book.carry.length, carryBody)}
     </div>
   </div>`;
 }
@@ -2659,10 +2528,7 @@ async function loadHistory(force) {
       ? 'الأسعار الحية من Finnhub'
       : '⚙️ أضف Finnhub Key للأسعار الحية — حالياً آخر سعر مسجّل';
 
-    const todayBook = buildTodayBook(rows, typeof scanRows !== 'undefined' ? scanRows : []);
-
     container.innerHTML = `
-      ${renderTodayBook(todayBook)}
       <p style="font-size:12px;color:#8b949e;margin-bottom:12px">${finnhubHint} · مصدر السجل: ${srcLabel} · يتحدث عند فتح التبويب أو 🔄 تحديث</p>
       <div style="background:#1a2a40;border:1px solid #388bfd66;border-radius:8px;padding:10px 12px;margin-bottom:14px;font-size:12px;color:#c9d1d9;line-height:1.55">
         النسب الإجمالية من صفوف <strong style="color:#3fb950">reliable فقط</strong>
@@ -2723,15 +2589,11 @@ async function loadHistory(force) {
         <span style="font-size:12px;font-weight:800;color:#8b949e">الشهر</span>
         ${historyMonthChip('', 'كل الشهور')}
         ${historyMonthKeys(rows).map(ym => historyMonthChip(ym, formatHistoryMonthLabel(ym))).join('')}
-        <label style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:${historyFilter.month ? '#c9d1d9' : '#8b949e'};margin-right:4px;cursor:${historyFilter.month ? 'pointer' : 'default'}">
-          <input type="checkbox" ${historyFilter.includeExpiry ? 'checked' : ''} ${historyFilter.month ? '' : 'disabled'} onchange="toggleHistoryIncludeExpiry()" style="accent-color:#58a6ff">
-          أضف ما ينتهي هذا الشهر
-        </label>
         <label style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:#c9d1d9;margin-right:8px;cursor:pointer">
           <input type="checkbox" ${historyFilter.hideExpired ? 'checked' : ''} ${historyFilter.month ? 'disabled' : ''} onchange="toggleHistoryHideExpired()" style="accent-color:#58a6ff">
           إخفاء المنتهي
         </label>
-        <span style="font-size:11px;color:#8b949e;margin-right:auto">عرض <strong style="color:#e6edf3">${filterHistoryRows(rows).length}</strong> من ${rows.length} · اليوم ET ${todayEtDateStr()}${historyFilter.month ? ' · شهر التوصية ' + formatHistoryMonthLabel(historyFilter.month) + (historyFilter.includeExpiry ? ' + الانتهاء' : '') : ''}</span>
+        <span style="font-size:11px;color:#8b949e;margin-right:auto">عرض <strong style="color:#e6edf3">${filterHistoryRows(rows).length}</strong> من ${rows.length} · اليوم ET ${todayEtDateStr()}${historyFilter.month ? ' · توصية أو انتهاء في ' + formatHistoryMonthLabel(historyFilter.month) : ''}</span>
       </div>
 
       <div style="overflow-x:auto">
@@ -2963,7 +2825,7 @@ async function loadHistory(force) {
             let dateHint = '';
             if (ymSel && months.rec && months.exp && months.rec !== months.exp) {
               if (months.rec === ymSel && months.exp !== ymSel) dateHint = 'توصية هذا الشهر · انتهاء ' + formatHistoryMonthLabel(months.exp);
-              else if (historyFilter.includeExpiry && months.exp === ymSel && months.rec !== ymSel) dateHint = 'توصية ' + formatHistoryMonthLabel(months.rec) + ' · انتهاء هذا الشهر';
+              else if (months.exp === ymSel && months.rec !== ymSel) dateHint = 'توصية ' + formatHistoryMonthLabel(months.rec) + ' · انتهاء هذا الشهر';
             }
             const dateHtml = `<div>${r.date||'—'}</div>`
               + (dateHint ? `<div style="font-size:10px;color:#58a6ff;margin-top:2px">${dateHint}</div>` : '');
