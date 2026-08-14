@@ -200,29 +200,12 @@
   }
 
   /* SPY — توصية خاصة */
-  .spy-regime {
-    background: #161b22; border: 1px solid #388bfd66; border-radius: 10px;
-    padding: 14px 16px; margin-bottom: 16px;
-    display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap;
-  }
-  .spy-kicker { font-size: 11px; color: #8b949e; font-weight: 700; }
-  .spy-regime-val { font-size: 22px; font-weight: 800; color: #58a6ff; margin: 4px 0; }
-  .spy-conf { font-size: 12px; color: #8b949e; margin-top: 6px; }
-  .spy-empty { text-align: center; padding: 20px; color: #8b949e; font-size: 13px; border: 1px dashed #30363d; border-radius: 10px; margin-bottom: 16px; }
-  .clock-scan { font-size: 11px; color: #8b949e; margin-top: 4px; font-weight: 600; }
-  .clock-live { font-size: 13px; font-weight: 700; color: #e6edf3; margin-top: 4px; }
-  .clock-live .card-price { font-size: 16px; display: inline; margin: 0; }
-  .hot-strip {
-    background: #3d2d00; border: 1px solid #e3b341; border-radius: 10px;
-    padding: 12px 14px; margin-bottom: 16px;
-  }
-  .hot-strip-title { font-size: 12px; font-weight: 800; color: #e3b341; margin-bottom: 8px; }
-  .hot-line {
-    display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
-    padding: 6px 0; border-bottom: 1px solid #30363d; font-size: 13px;
-  }
-  .hot-line:last-child { border-bottom: none; }
-  .hot-ticker { font-weight: 800; color: #e6edf3; min-width: 56px; }
+  .spy-hero { background: linear-gradient(135deg, #1a2a40 0%, #161b22 100%); border: 2px solid #58a6ff; border-radius: 14px; padding: 20px 24px; margin-bottom: 20px; box-shadow: 0 0 24px rgba(88,166,255,0.15); }
+  .spy-hero-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 14px; flex-wrap: wrap; gap: 12px; }
+  .spy-badge { background: #1f6feb; color: #fff; font-size: 11px; font-weight: 700; padding: 4px 12px; border-radius: 20px; letter-spacing: 0.5px; }
+  .spy-title { font-size: 26px; font-weight: 800; color: #58a6ff; }
+  .spy-sub { font-size: 12px; color: #8b949e; margin-top: 4px; }
+  .spy-empty { text-align: center; padding: 28px; color: #8b949e; font-size: 13px; border: 1px dashed #30363d; border-radius: 12px; margin-bottom: 20px; }
   .fold-block {
     background: #161b22; border: 1px solid #30363d; border-radius: 10px;
     padding: 10px 14px; margin-bottom: 12px;
@@ -1058,7 +1041,9 @@ function syncExecLayout() {
   lastExecLayoutKey = key;
   syncingExecLayout = true;
   try {
-    renderCards(scanRows);
+    const { spy, rest } = splitSpyRows(scanRows);
+    renderSpySection(spy);
+    renderCards(rest);
     scanRows.forEach(r => {
       const lp = livePrices[r.Ticker];
       const p = (lp && lp.price) || parsePrice(r.Price || r.price_num);
@@ -1367,31 +1352,23 @@ function splitSpyRows(rows) {
 function renderSpySection(spyRow) {
   const box = document.getElementById('spySection');
   if (!spyRow) {
-    box.innerHTML = `<div class="spy-empty">SPY — بانتظار المسح</div>`;
+    box.innerHTML = `<div class="spy-empty">📌 SPY — بانتظار أول مسح (يُحدّث تلقائياً كل 15 دقيقة)</div>`;
     return;
   }
-  const rec = spyRow.recommendation || 'AVOID';
-  const regime = spyRow.spy_regime || '—';
-  const conf = spyRow.confidence || 0;
-  const scanPx = parsePrice(spyRow.Price || spyRow.price_num);
-  const scanClock = formatScanClock(spyRow.scanned_at);
-  const spyIsBuy = rec === 'BUY';
-  const priceId = spyIsBuy ? 'price-SPY-regime' : 'price-SPY';
-  const badgeId = spyIsBuy ? 'rec-badge-SPY-regime' : 'rec-badge-SPY';
   box.innerHTML = `
-    <div class="spy-regime">
-      <div>
-        <div class="spy-kicker">نظام السوق · SPY</div>
-        <div class="spy-regime-val">${regime}</div>
-        <div class="clock-scan">توصية المسح: ${rec}${scanClock ? ' · ' + scanClock : ''}</div>
-        <div class="clock-live">السعر الآن: <span class="card-price" id="${priceId}">$${scanPx.toFixed(2)}</span>
-          <span class="change-badge" id="${spyIsBuy ? 'change-SPY-regime' : 'change-SPY'}"></span>
+    <div class="spy-hero">
+      <div class="spy-hero-header">
+        <div>
+          <span class="spy-badge">📌 توصية SPY الخاصة</span>
+          <div class="spy-title">${spyRow.Ticker}</div>
+          <div class="spy-sub">S&P 500 ETF · خطة سهم أولاً · ${spyRow.expiry ? 'عقد '+spyRow.expiry : ''}${parseInt(spyRow.dte_num)===0 ? ' · 0DTE' : spyRow.dte_num ? ' · '+spyRow.dte_num+' أيام' : ''} · Strike $${parsePrice(spyRow.strike).toFixed(0)} · Prem $${parsePrice(spyRow.premium).toFixed(2)}</div>
+        </div>
+        <div style="text-align:left">
+          <span class="rec-badge ${spyRow.recommendation || 'AVOID'}">${spyRow.recommendation || 'AVOID'}</span>
+          <div style="font-size:12px;color:#8b949e;margin-top:6px">ثقة ${spyRow.confidence || 0}% · Score ${spyRow.Score || 0}</div>
         </div>
       </div>
-      <div style="text-align:left">
-        <span class="rec-badge ${rec}" id="${badgeId}">${rec}</span>
-        <div class="spy-conf">ثقة ${conf}%</div>
-      </div>
+      ${buildCard(spyRow)}
     </div>`;
 }
 
@@ -1435,48 +1412,32 @@ function compactWatchLine(r, extra) {
 }
 
 function focusCardsGroup(g) {
-  if (g === 'buy') {
-    document.getElementById('cardsBuy')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    return;
-  }
-  if (g === 'wait' || g === 'avoid') {
-    cardsFold[g] = true;
-    const el = document.getElementById(g === 'wait' ? 'foldWait' : 'foldAvoid');
-    if (el) {
-      el.open = true;
-      el.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    }
-  }
+  const id = g === 'buy' ? 'cardsBuy' : g === 'wait' ? 'cardsWait' : g === 'avoid' ? 'cardsAvoid' : '';
+  if (id) document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 function renderCards(rows) {
-  const buy = rows.filter(r => rowLiveRec(r) === 'BUY');
-  const waitAll = rows.filter(r => rowLiveRec(r) === 'WAIT');
-  const hot = waitAll.filter(isHotWaitRow);
-  const waitRest = waitAll.filter(r => !isHotWaitRow(r) && !isSpyRow(r));
-  const wait0 = waitRest.filter(isZeroDteRow);
-  const waitLive = waitRest.filter(r => !isZeroDteRow(r));
-  const avoid = rows.filter(r => rowLiveRec(r) === 'AVOID' && !isSpyRow(r));
+  const list = rows.filter(r => !isSpyRow(r));
+  const buy = list.filter(r => rowLiveRec(r) === 'BUY');
+  const wait = list.filter(r => rowLiveRec(r) === 'WAIT');
+  const wait0 = wait.filter(isZeroDteRow);
+  const waitLive = wait.filter(r => !isZeroDteRow(r));
+  const avoid = list.filter(r => rowLiveRec(r) === 'AVOID');
   const suggestedFri = nextFridayISO();
-  const waitCount = waitLive.length + wait0.length;
 
   let html = '';
 
-  if (hot.length) {
-    html += `<div class="hot-strip">
-      <div class="hot-strip-title">HOT يدوي — ليست BUY · رمز · اتجاه · Entry</div>
-      ${hot.map(r => {
-        const tier = String(enrichWaitGrade(r).wait_tier || '').toUpperCase();
-        const wasBuy = String(r.recommendation || '').toUpperCase() === 'BUY';
-        const extra = [tier, wasBuy ? 'كان BUY' : ''].filter(Boolean).join(' · ');
-        return compactWatchLine(r, extra);
-      }).join('')}
+  if (!buy.length && wait0.length) {
+    html += `<div style="background:#3d2d00;border:1px solid #e3b341;border-radius:10px;padding:12px 14px;margin-bottom:16px;font-size:13px;color:#e3b341;line-height:1.6">
+      <strong>مراقبة فقط — عقود 0DTE</strong><br>
+      لا BUY تلقائي لنفس اليوم (ثيتا عالية). يُفضّل عقد <strong>الجمعة الجاية ${suggestedFri}</strong>
+      — المسح الجديد يحاول اختيارها تلقائياً بدل 0DTE.
     </div>`;
   }
 
   html += `<div id="cardsBuy">`;
   if (buy.length) {
-    html += `<div class="section-title">BUY حي — ${buy.length} للتنفيذ</div><div class="cards">`;
+    html += `<div class="section-title">🟢 BUY — ${buy.length} فرصة</div><div class="cards">`;
     buy.forEach(r => html += buildCard(r));
     html += '</div>';
   } else {
@@ -1484,26 +1445,25 @@ function renderCards(rows) {
   }
   html += `</div>`;
 
-  html += `<details class="fold-block" id="foldWait" ${cardsFold.wait ? 'open' : ''} ontoggle="cardsFold.wait=this.open">
-    <summary>WAIT — ${waitCount} ليست للتنفيذ${hot.length ? ' · HOT أعلاه' : ''}</summary>`;
-  if (wait0.length) {
-    html += `<div class="fold-note">عقود 0DTE — مراقبة فقط. يُفضّل جمعة ${suggestedFri}</div>`;
-    html += wait0.map(r => compactWatchLine(r, '0DTE')).join('');
+  if (waitLive.length) {
+    html += `<div id="cardsWait" class="section-title">🟡 WAIT — ${waitLive.length} فرصة</div><div class="cards">`;
+    waitLive.forEach(r => html += buildCard(r));
+    html += '</div>';
   }
-  html += waitLive.length
-    ? waitLive.map(r => compactWatchLine(r)).join('')
-    : (!wait0.length ? `<div class="fold-note">لا WAIT خارج HOT</div>` : '');
-  html += `</details>`;
-
-  html += `<details class="fold-block" id="foldAvoid" ${cardsFold.avoid ? 'open' : ''} ontoggle="cardsFold.avoid=this.open">
-    <summary>AVOID — ${avoid.length}</summary>`;
-  html += avoid.length
-    ? avoid.map(r => compactWatchLine(r)).join('')
-    : `<div class="fold-note">لا AVOID</div>`;
-  html += `</details>`;
+  if (wait0.length) {
+    html += `<div class="section-title">👁 مراقبة فقط (0DTE) — ${wait0.length} · جمعة مقترحة ${suggestedFri}</div><div class="cards">`;
+    wait0.forEach(r => html += buildCard(r));
+    html += '</div>';
+  }
+  if (avoid.length) {
+    html += `<div id="cardsAvoid" class="section-title">🔴 AVOID — ${avoid.length}</div><div class="cards">`;
+    avoid.slice(0,6).forEach(r => html += buildCard(r));
+    if (avoid.length > 6) html += `<div style="color:#8b949e;padding:16px">...و ${avoid.length-6} آخرين</div>`;
+    html += '</div>';
+  }
 
   document.getElementById('cardsView').innerHTML = html || '<div class="loading">لا توجد نتائج بعد — شغّل الـ workflow من GitHub Actions</div>';
-  lastExecLayoutKey = execLayoutKey(rows);
+  lastExecLayoutKey = execLayoutKey(scanRows.length ? scanRows : rows);
 }
 
 function calcBreakEven(r) {
@@ -1534,7 +1494,7 @@ function calcEntry(r) {
 }
 
 function buildCard(r) {
-  const rec = r.recommendation || 'AVOID';
+  const rec = rowLiveRec(r);
   const conf = parseInt(r.confidence) || 0;
   const iv = parseFloat(r.iv) || 0;
   const spread = parseFloat(r.spread_pct) || 0;
@@ -1603,18 +1563,15 @@ function buildCard(r) {
   const hideBsHint = showBs === 'false' || pqRaw === 'unreliable' || (pqRaw === 'estimate' && showBs !== 'true');
 
   const staleCls = (lastScanFreshness && lastScanFreshness.level !== 'ok') ? ' stale-muted' : '';
-  const scanClock = formatScanClock(r.scanned_at);
 
   return `
   <div class="card ${recClass(rec)}${staleCls}" id="card-${r.Ticker}">
     <div class="card-header">
       <div>
         <div class="ticker">${r.Ticker}</div>
-        <div class="clock-scan">توصية المسح: ${rec}${scanClock ? ' · ' + scanClock : ''}</div>
-        <div class="clock-live">السعر الآن: <span class="card-price price-live" id="price-${r.Ticker}">$${parsePrice(r.Price || r.price_num).toFixed(2)}</span>
-          <span class="change-badge" id="change-${r.Ticker}">جاري التحديث...</span>
-        </div>
-        <button type="button" class="btn-study" onclick="event.stopPropagation();openStockStudy('${r.Ticker}')">دراسة السهم</button>
+        <div class="card-price price-live" id="price-${r.Ticker}">$${parsePrice(r.Price || r.price_num).toFixed(2)}</div>
+  <div style="font-size:11px;margin-bottom:4px"><span class="change-badge" id="change-${r.Ticker}">جاري التحديث...</span></div>
+        <button type="button" class="btn-study" onclick="event.stopPropagation();openStockStudy('${r.Ticker}')">🔬 دراسة السهم</button>
       </div>
       <div style="text-align:left">
         <span class="rec-badge ${rec}" id="rec-badge-${r.Ticker}">${rec}</span>
@@ -1639,6 +1596,32 @@ function buildCard(r) {
         ${chasedFlag ? `<div style="font-size:10px;color:#f85149;margin-top:2px;font-weight:700">⚠ مطاردة Entry</div>` : ''}
       </div>
     </div>
+    ${(() => {
+      const graded = enrichWaitGrade(r);
+      const tier = String(graded.wait_tier || '').toUpperCase();
+      if (rec !== 'WAIT' || (tier !== 'HOT' && tier !== 'FIRE')) return '';
+      const setup = Number.isFinite(graded.setup_pct) ? graded.setup_pct + '%' : '—';
+      const tp2rr = Number.isFinite(graded.tp2_rr_live) ? '1:' + graded.tp2_rr_live.toFixed(1) : '—';
+      const chase = Number.isFinite(graded.chase_pct) ? graded.chase_pct.toFixed(1) + '%' : '—';
+      const toTp2 = graded.to_tp2_pct != null ? ((graded.to_tp2_pct >= 0 ? '+' : '') + graded.to_tp2_pct.toFixed(1) + '%') : '—';
+      const active = graded.active_watch;
+      return `<div style="background:${tier==='FIRE'?'#3d1a1a':'#3d2d00'};border:1px solid ${tier==='FIRE'?'#f85149':'#e3b341'};border-radius:8px;padding:8px 10px;margin-bottom:8px">
+        <div style="font-size:12px;font-weight:800;color:${tier==='FIRE'?'#ff7b72':'#e3b341'};margin-bottom:4px">
+          ${tier==='FIRE'?'FIRE':'HOT'} — جاهز لدخول يدوي عند Entry (ليست BUY)
+        </div>
+        <div style="font-size:11px;color:#c9d1d9;line-height:1.55">
+          اكتمال الشروط <strong>${setup}</strong>
+          · R:R حي TP2 <strong>${tp2rr}</strong>
+          · متبقي لـ TP2 <strong>${toTp2}</strong>
+          · مطاردة <strong>${chase}</strong>
+        </div>
+        <div style="font-size:11px;margin-top:4px;font-weight:700;color:${active?'#3fb950':'#8b949e'}">
+          ${active
+            ? '✅ منطقة دخول يدوي: مطاردة ≤1% + مجال TP2 ≥1.2 — ادخل عند Entry/تراجع'
+            : 'راقب لمس Entry أو تراجع أنظف قبل الدخول اليدوي'}
+        </div>
+      </div>`;
+    })()}
       ${recNote || againstSpy || inverseNoBuy || premWarn ? `
     <div style="font-size:11px;color:${againstSpy ? '#f85149' : '#e3b341'};background:${againstSpy ? '#3d1a1a' : '#3d2d00'};border-radius:6px;padding:6px 8px;margin-bottom:8px">
       ${recNote || (againstSpy ? 'صندوق عكسي ضد SPY → AVOID' : (inverseNoBuy ? 'صندوق عكسي — لا BUY تلقائي (رافعة)' : ''))}${premWarn ? ((recNote || againstSpy || inverseNoBuy) ? ' · ' : '') + 'Premium تحت $1' : ''}
@@ -1664,9 +1647,8 @@ function buildCard(r) {
       ${geminiRaw.replace(/</g,'&lt;')}
     </div>` : ((rec === 'BUY' || rec === 'WAIT') ? `
     <div style="font-size:10px;color:#8b949e;margin-bottom:8px">Gemini: لا ملاحظة بعد (تحقق من المفتاح/المسح الكامل)</div>` : '')}
-    <div class="live-clock-cap">ساعة السعر — لا تغيّر توصية المسح</div>
     <div class="live-status status-entry-wait" id="live-status-${r.Ticker}">
-      ربط السعر اللحظي...
+      ⏳ ربط السعر اللحظي...
       <div class="live-dist">Finnhub → Entry / Stop / TP</div>
     </div>
 
@@ -1872,7 +1854,7 @@ async function loadData() {
       ? `آخر مسح: ${scanTs}<span style="color:${stampColor}"> ${stampTag}${ageLabel}</span>`
       : 'آخر تحديث: ' + new Date().toLocaleTimeString('ar-SA');
 
-    renderCards(rows);
+    renderCards(rest);
     renderTable(rest);
 
     document.getElementById('loadingDiv').style.display = 'none';
