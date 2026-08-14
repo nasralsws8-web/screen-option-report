@@ -335,7 +335,8 @@ let currentTickers = [];
 let tradePlans = {};  // خطة الصفقة لكل ticker — تربط Finnhub بـ Entry/Stop/TP
 let outcomeRows = []; // صفوف السجل — للتحديث الحي
 let outcomeOpenTickers = [];
-let scanRows = [];    // صفوف آخر مسح — لدراسة السهم
+let scanRows = [];    // صفوف آخر مسح بعد الحراسة (عرض البطاقات)
+let scanRowsRaw = []; // قبل تخفيض BUY→WAIT إذا المسح قديم
 let studyTicker = '';
 let wsReconnectMs = 3000;
 let lastWsMsgAt = 0;
@@ -1656,6 +1657,7 @@ async function loadData() {
     updateStaleBanner(freshness);
 
     registerTradePlans(rowsRaw);
+    scanRowsRaw = rowsRaw.slice();
     let rows = applyScanGuards(rowsRaw);
     rows = applyStaleRecGuard(rows, freshness);
     registerTradePlans(rows); // بعد تصحيح المطاردة/R:R + حداثة المسح
@@ -2440,6 +2442,150 @@ function renderBucketCard(title, color, k) {
   </div>`;
 }
 
+function bookTicker(r) {
+  return String(r.Ticker || r.ticker || '').toUpperCase().trim();
+}
+
+function bookDir(r) {
+  const d = String(r.direction || '').toUpperCase();
+  if (d.includes('PUT')) return 'PUT';
+  if (d.includes('CALL')) return 'CALL';
+  return '—';
+}
+
+function bookStrike(r) {
+  const n = parseFloat(r.strike);
+  if (!Number.isFinite(n)) return '—';
+  return Number.isInteger(n) ? String(n) : n.toFixed(2);
+}
+
+function bookExpShort(r) {
+  const e = String(r.expiry || '').slice(0, 10);
+  return e.length >= 10 ? e.slice(5) : '—';
+}
+
+function bookLivePx(ticker) {
+  const lp = livePrices[ticker];
+  if (lp && lp.price > 0) return '$' + Number(lp.price).toFixed(2);
+  return '';
+}
+
+function bookLine(r, extra) {
+  const t = bookTicker(r);
+  const px = bookLivePx(t);
+  return `<div style="padding:6px 0;border-bottom:1px solid #21262d;font-size:12px;line-height:1.35">
+    <span style="font-weight:800;color:#e6edf3">${t}</span>
+    <span style="color:${bookDir(r)==='PUT'?'#f85149':'#3fb950'}"> ${bookDir(r)}</span>
+    <span style="color:#e3b341"> ${bookStrike(r)}</span>
+    <span style="color:#8b949e"> · ${bookExpShort(r)}</span>
+    ${px ? `<span style="color:#58a6ff"> · ${px}</span>` : ''}
+    ${extra ? `<div style="font-size:10px;color:#8b949e;margin-top:2px">${extra}</div>` : ''}
+  </div>`;
+}
+
+function buildTodayBook(outcomes, scanGuarded, scanRaw) {
+  const today = todayEtDateStr();
+  const scanList = Array.isArray(scanGuarded) ? scanGuarded : [];
+  const rawList = Array.isArray(scanRaw) && scanRaw.length ? scanRaw : scanList;
+  const outList = Array.isArray(outcomes) ? outcomes : [];
+  const recOf = (r) => String(r.recommendation || '').toUpperCase();
+  const executeLive = scanList.filter(r => recOf(r) === 'BUY');
+  const liveKey = (r) => `${bookTicker(r)}|${bookDir(r)}|${bookStrike(r)}|${String(r.expiry || '').slice(0, 10)}`;
+  const liveKeys = new Set(executeLive.map(liveKey));
+  const loggedBuy = outList.filter(o => {
+    if (String(o.date || '').slice(0, 10) !== today) return false;
+    if (outcomeRecKind(o) !== 'BUY') return false;
+    if (String(o.expiry || '').slice(0, 10) === today) return false;
+    return !liveKeys.has(liveKey(o));
+  });
+  const watch = scanList.filter(r => {
+    if (recOf(r) !== 'WAIT') return false;
+    const tier = String(r.wait_tier || '').toUpperCase();
+    return tier === 'HOT' || tier === 'FIRE';
+  });
+  const diesToday = outList.filter(r =>
+    String(r.expiry || '').slice(0, 10) === today && String(r.status || '') === 'open'
+  );
+  const seenCarry = new Set();
+  const carry = [];
+  const rollSource = rawList.length ? rawList : scanList;
+  rollSource.forEach(s => {
+    const rec = recOf(s);
+    if (rec === 'AVOID') return;
+    const t = bookTicker(s);
+    const exp = String(s.expiry || '').slice(0, 10);
+    if (!t || exp === today) return;
+    const prev = outList.filter(o => {
+      if (bookTicker(o) !== t) return false;
+      const odate = String(o.date || '').slice(0, 10);
+      const oexp = String(o.expiry || '').slice(0, 10);
+      return odate && odate < today && oexp && oexp !== exp;
+    });
+    if (!prev.length || seenCarry.has(t)) return;
+    seenCarry.add(t);
+    const latest = prev.slice().sort((a, b) => String(b.date).localeCompare(String(a.date)))[0];
+    carry.push({ scan: s, prev: latest, rec });
+  });
+  const stale = lastScanFreshness && lastScanFreshness.level !== 'ok';
+  return { today, executeLive, loggedBuy, watch, diesToday, carry, stale };
+}
+
+function renderTodayBookCol(title, color, count, body) {
+  return `<div style="flex:1;min-width:180px;background:#161b22;border:1px solid #30363d;border-radius:10px;padding:12px">
+    <div style="font-size:12px;font-weight:800;color:${color};margin-bottom:4px">${title}</div>
+    <div style="font-size:22px;font-weight:800;color:#e6edf3;margin-bottom:8px">${count}</div>
+    ${body}
+  </div>`;
+}
+
+function renderTodayBook(book) {
+  const empty = (msg) => `<div style="font-size:12px;color:#8b949e">${msg || 'لا شيء'}</div>`;
+  const liveLines = book.executeLive.map(r => bookLine(r, 'BUY حي من المسح — للتنفيذ'));
+  const loggedNote = book.stale
+    ? 'مسجّل اليوم · المسح قديم — لا تنفّذ على هذا السطر'
+    : 'مسجّل اليوم · ليس BUY في المسح الحالي';
+  const loggedLines = book.loggedBuy.map(r => bookLine(r, loggedNote));
+  let execBody;
+  if (liveLines.length) {
+    execBody = liveLines.join('') + loggedLines.join('');
+  } else if (loggedLines.length) {
+    execBody = empty(book.stale ? 'لا BUY حي (مسح غير حديث)' : 'لا BUY في المسح الحالي') + loggedLines.join('');
+  } else {
+    execBody = empty(book.stale ? 'لا BUY حي — المسح قديم' : 'لا BUY في المسح الحالي');
+  }
+  const watchBody = book.watch.length
+    ? book.watch.map(r => {
+        const tier = String(r.wait_tier || '').toUpperCase();
+        const chase = parseFloat(r.chase_pct);
+        const extra = (tier || 'HOT') + (Number.isFinite(chase) && chase > 0.8 ? ' · ارجع Entry' : ' · لمس Entry');
+        return bookLine(r, extra);
+      }).join('')
+    : empty();
+  const diesBody = book.diesToday.length
+    ? book.diesToday.map(r => bookLine(r)).join('')
+    : empty();
+  const carryBody = book.carry.length
+    ? book.carry.map(c => {
+        const from = `${bookDir(c.prev)} ${bookStrike(c.prev)} · ${bookExpShort(c.prev)}`;
+        return bookLine(c.scan, `${c.rec} ← كان ${from}`);
+      }).join('')
+    : empty();
+  const liveN = book.executeLive.length;
+  const loggedN = book.loggedBuy.length;
+  const execCount = liveN;
+  const execSub = loggedN ? `<div style="font-size:10px;color:#8b949e;margin-top:-6px;margin-bottom:8px">${loggedN} مسجّلة اليوم ليست حية</div>` : '';
+  return `<div style="margin-bottom:18px">
+    <div style="font-size:13px;font-weight:800;color:#e6edf3;margin-bottom:4px">دفتر اليوم</div>
+    <div style="font-size:11px;color:#8b949e;margin-bottom:10px">تشغيل حي · ${book.today} ET · BUY الحي من المسح · المسجّل لا يُنفَّذ إن لم يكن حياً</div>
+    <div style="display:flex;gap:12px;flex-wrap:wrap">
+      ${renderTodayBookCol('نفّذ · BUY حي', '#3fb950', execCount, execSub + execBody)}
+      ${renderTodayBookCol('راقب يدوي · HOT', '#e3b341', book.watch.length, watchBody)}
+      ${renderTodayBookCol('يموت اليوم', '#f85149', book.diesToday.length, (book.diesToday.length ? '<div style="font-size:10px;color:#f85149;margin-bottom:6px">لا تخلط مع الأسبوع الجاي</div>' : '') + diesBody)}
+      ${renderTodayBookCol('ترحيل لأسبوع جديد', '#58a6ff', book.carry.length, carryBody)}
+    </div>
+  </div>`;
+}
+
 async function loadHistory(force) {
   if (historyLoaded && !force) return;
   const container = document.getElementById('historyContent');
@@ -2528,7 +2674,14 @@ async function loadHistory(force) {
       ? 'الأسعار الحية من Finnhub'
       : '⚙️ أضف Finnhub Key للأسعار الحية — حالياً آخر سعر مسجّل';
 
+    const todayBook = buildTodayBook(
+      rows,
+      typeof scanRows !== 'undefined' ? scanRows : [],
+      typeof scanRowsRaw !== 'undefined' ? scanRowsRaw : [],
+    );
+
     container.innerHTML = `
+      ${renderTodayBook(todayBook)}
       <p style="font-size:12px;color:#8b949e;margin-bottom:12px">${finnhubHint} · مصدر السجل: ${srcLabel} · يتحدث عند فتح التبويب أو 🔄 تحديث</p>
       <div style="background:#1a2a40;border:1px solid #388bfd66;border-radius:8px;padding:10px 12px;margin-bottom:14px;font-size:12px;color:#c9d1d9;line-height:1.55">
         النسب الإجمالية من صفوف <strong style="color:#3fb950">reliable فقط</strong>
