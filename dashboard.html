@@ -2755,7 +2755,7 @@ async function loadHistory(force) {
               <td style="padding:10px;font-weight:700;color:${statusColor[st]||'#8b949e'}">${statusLabel[st]||st}</td>
               <td id="hist-live-${key}" style="padding:10px;font-size:12px;color:${liveSt ? (liveSt.cls==='status-stop'?'#f85149':liveSt.cls==='status-tp'?'#58a6ff':liveSt.cls==='status-in-trade'?'#3fb950':'#e3b341') : '#8b949e'}">${liveSt ? liveSt.label + (liveSt.dist ? ' · '+liveSt.dist : '') : (isOpen ? 'بانتظار سعر…' : '—')}</td>
             </tr>`;
-          }).join('')}
+          }).join('') || `<tr><td colspan="32" style="padding:28px;text-align:center;color:#8b949e">لا صفوف ضمن الفلتر الحالي — جرّب «الكل» أو ألغِ إخفاء المنتهي</td></tr>`}
         </tbody>
       </table>
       </div>`;
