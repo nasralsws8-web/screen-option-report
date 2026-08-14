@@ -393,6 +393,8 @@ let lastWsMsgAt = 0;
 let lastScanFreshness = { level: 'ok', ageMs: 0, scanDate: null };
 let cardsFold = { wait: false, avoid: false };
 let historyLedgerPreferOpen = null;
+let lastExecLayoutKey = '';
+let syncingExecLayout = false;
 
 /** يستخرج أحدث scanned_at من نص CSV للمقارنة بين المصادر */
 function csvScanMs(text) {
@@ -1024,6 +1026,49 @@ function effectiveLiveRec(plan, st) {
   return plan.rec;
 }
 
+function rowLiveRec(r) {
+  const t = r && (r.Ticker || r.ticker);
+  const plan = t ? tradePlans[t] : null;
+  if (!plan) return String((r && r.recommendation) || 'AVOID').toUpperCase();
+  const lp = livePrices[t];
+  const price = (lp && lp.price) || parsePrice(r.Price || r.price_num);
+  if (!price) return String(plan.rec || r.recommendation || 'AVOID').toUpperCase();
+  return effectiveLiveRec(plan, evalLiveStatus(plan, price));
+}
+
+function execLayoutKey(rows) {
+  const buy = [];
+  const hot = [];
+  (rows || []).forEach(r => {
+    const t = String(r.Ticker || '');
+    if (!t) return;
+    if (rowLiveRec(r) === 'BUY') buy.push(t);
+    else if (isHotWaitRow(r)) hot.push(t);
+  });
+  buy.sort();
+  hot.sort();
+  return 'b:' + buy.join(',') + '|h:' + hot.join(',');
+}
+
+function syncExecLayout() {
+  if (syncingExecLayout) return;
+  if (!scanRows.length) return;
+  const key = execLayoutKey(scanRows);
+  if (key === lastExecLayoutKey) return;
+  lastExecLayoutKey = key;
+  syncingExecLayout = true;
+  try {
+    renderCards(scanRows);
+    scanRows.forEach(r => {
+      const lp = livePrices[r.Ticker];
+      const p = (lp && lp.price) || parsePrice(r.Price || r.price_num);
+      if (p > 0) updateLiveTradeStatus(r.Ticker, p);
+    });
+  } finally {
+    syncingExecLayout = false;
+  }
+}
+
 function refreshLiveStats() {
   let buy = 0, wait = 0, avoid = 0;
   Object.keys(tradePlans).forEach(t => {
@@ -1038,15 +1083,19 @@ function refreshLiveStats() {
     const eff = effectiveLiveRec(plan, st);
     if (eff === 'BUY') buy++; else if (eff === 'WAIT') wait++; else avoid++;
   });
-  document.getElementById('statBuy').textContent = buy;
-  document.getElementById('statWait').textContent = wait;
-  document.getElementById('statAvoid').textContent = avoid;
+  const buyEl = document.getElementById('statBuy');
+  const waitEl = document.getElementById('statWait');
+  const avoidEl = document.getElementById('statAvoid');
+  if (buyEl) buyEl.textContent = buy;
+  if (waitEl) waitEl.textContent = wait;
+  if (avoidEl) avoidEl.textContent = avoid;
+  syncExecLayout();
 }
 
 function updateLiveTradeStatus(ticker, price) {
   const plan = tradePlans[ticker];
+  if (!plan || !price || price <= 0) return;
   const box  = document.getElementById('live-status-' + ticker);
-  if (!plan || !box || !price || price <= 0) return;
   const st = evalLiveStatus(plan, price);
   let label = st.label;
   const tier = String(plan.waitTier || '').toUpperCase();
@@ -1065,8 +1114,10 @@ function updateLiveTradeStatus(ticker, price) {
   } else if (st.chased && hotish && plan.rec === 'WAIT') {
     label = `✋ ${tier} — مطاردة خفيفة؛ ادخل عند رجوع Entry`;
   }
-  box.className = 'live-status ' + st.cls;
-  box.innerHTML = label + (st.dist ? `<div class="live-dist">${st.dist}</div>` : '');
+  if (box) {
+    box.className = 'live-status ' + st.cls;
+    box.innerHTML = label + (st.dist ? `<div class="live-dist">${st.dist}</div>` : '');
+  }
 
   const rrEl = document.getElementById('rr-live-' + ticker);
   if (rrEl) {
@@ -1359,7 +1410,7 @@ function isZeroDteRow(r) {
 }
 
 function isHotWaitRow(r) {
-  if (String(r.recommendation || '').toUpperCase() !== 'WAIT') return false;
+  if (rowLiveRec(r) !== 'WAIT') return false;
   const tier = String(enrichWaitGrade(r).wait_tier || '').toUpperCase();
   return tier === 'HOT' || tier === 'FIRE';
 }
@@ -1399,13 +1450,13 @@ function focusCardsGroup(g) {
 }
 
 function renderCards(rows) {
-  const buy = rows.filter(r => r.recommendation === 'BUY');
-  const waitAll = rows.filter(r => r.recommendation === 'WAIT');
+  const buy = rows.filter(r => rowLiveRec(r) === 'BUY');
+  const waitAll = rows.filter(r => rowLiveRec(r) === 'WAIT');
   const hot = waitAll.filter(isHotWaitRow);
   const waitRest = waitAll.filter(r => !isHotWaitRow(r) && !isSpyRow(r));
   const wait0 = waitRest.filter(isZeroDteRow);
   const waitLive = waitRest.filter(r => !isZeroDteRow(r));
-  const avoid = rows.filter(r => !['BUY', 'WAIT'].includes(r.recommendation) && !isSpyRow(r));
+  const avoid = rows.filter(r => rowLiveRec(r) === 'AVOID' && !isSpyRow(r));
   const suggestedFri = nextFridayISO();
   const waitCount = waitLive.length + wait0.length;
 
@@ -1416,7 +1467,9 @@ function renderCards(rows) {
       <div class="hot-strip-title">HOT يدوي — ليست BUY · رمز · اتجاه · Entry</div>
       ${hot.map(r => {
         const tier = String(enrichWaitGrade(r).wait_tier || '').toUpperCase();
-        return compactWatchLine(r, tier);
+        const wasBuy = String(r.recommendation || '').toUpperCase() === 'BUY';
+        const extra = [tier, wasBuy ? 'كان BUY' : ''].filter(Boolean).join(' · ');
+        return compactWatchLine(r, extra);
       }).join('')}
     </div>`;
   }
@@ -1427,7 +1480,7 @@ function renderCards(rows) {
     buy.forEach(r => html += buildCard(r));
     html += '</div>';
   } else {
-    html += `<div class="empty-buy">لا BUY حي في المسح الحالي</div>`;
+    html += `<div class="empty-buy">لا BUY حي للتنفيذ</div>`;
   }
   html += `</div>`;
 
@@ -1450,6 +1503,7 @@ function renderCards(rows) {
   html += `</details>`;
 
   document.getElementById('cardsView').innerHTML = html || '<div class="loading">لا توجد نتائج بعد — شغّل الـ workflow من GitHub Actions</div>';
+  lastExecLayoutKey = execLayoutKey(rows);
 }
 
 function calcBreakEven(r) {
@@ -2613,7 +2667,7 @@ function buildTodayBook(outcomes, scanGuarded, scanRaw) {
   const rawList = Array.isArray(scanRaw) && scanRaw.length ? scanRaw : scanList;
   const outList = Array.isArray(outcomes) ? outcomes : [];
   const recOf = (r) => String(r.recommendation || '').toUpperCase();
-  const executeLive = scanList.filter(r => recOf(r) === 'BUY');
+  const executeLive = scanList.filter(r => rowLiveRec(r) === 'BUY');
   const liveKey = (r) => `${bookTicker(r)}|${bookDir(r)}|${bookStrike(r)}|${String(r.expiry || '').slice(0, 10)}`;
   const liveKeys = new Set(executeLive.map(liveKey));
   const loggedBuy = outList.filter(o => {
