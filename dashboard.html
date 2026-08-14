@@ -2117,6 +2117,73 @@ function showTab(tab) {
 // ── Outcome History ──────────────────────────────────────────
 const OUTCOMES_URL = OUTCOMES_URLS[0];
 let historyLoaded = false;
+/** فلاتر جدول السجل — الافتراضي: مفتوح + إخفاء المنتهي (أقل ازدحام يوم الجمعة) */
+let historyFilter = { scope: 'open', hideExpired: true };
+
+function todayEtDateStr() {
+  try {
+    return new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'America/New_York',
+      year: 'numeric', month: '2-digit', day: '2-digit',
+    }).format(new Date());
+  } catch (_) {
+    return new Date().toISOString().slice(0, 10);
+  }
+}
+
+function outcomeExpiryDate(r) {
+  return String(r.expiry || '').slice(0, 10);
+}
+
+function isContractExpired(r, today = todayEtDateStr()) {
+  const exp = outcomeExpiryDate(r);
+  if (!exp || !/^\d{4}-\d{2}-\d{2}$/.test(exp)) return false;
+  return exp < today;
+}
+
+function filterHistoryRows(rows) {
+  const today = todayEtDateStr();
+  let out = Array.isArray(rows) ? rows.slice() : [];
+  const scope = historyFilter.scope || 'all';
+  if (scope === 'open') out = out.filter(r => String(r.status || '') === 'open');
+  else if (scope === 'today') out = out.filter(r => String(r.date || '').slice(0, 10) === today);
+  else if (scope === 'buy') {
+    out = out.filter(r => {
+      const b = outcomeBucket(r);
+      return b === 'buy_clean' || b === 'buy_chase';
+    });
+  } else if (scope === 'hot') {
+    out = out.filter(r => outcomeBucket(r) === 'wait_hot');
+  }
+  if (historyFilter.hideExpired) {
+    out = out.filter(r => !isContractExpired(r, today));
+  }
+  return out;
+}
+
+function setHistoryScope(scope) {
+  historyFilter.scope = scope;
+  if (outcomeRows.length) {
+    historyLoaded = false;
+    loadHistory(true);
+  }
+}
+
+function toggleHistoryHideExpired() {
+  historyFilter.hideExpired = !historyFilter.hideExpired;
+  if (outcomeRows.length) {
+    historyLoaded = false;
+    loadHistory(true);
+  }
+}
+
+function historyFilterChip(id, label) {
+  const on = historyFilter.scope === id;
+  return `<button type="button" onclick="setHistoryScope('${id}')"
+    style="border:1px solid ${on ? '#58a6ff' : '#30363d'};background:${on ? '#1a2a40' : '#21262d'};
+    color:${on ? '#58a6ff' : '#c9d1d9'};border-radius:8px;padding:6px 12px;font-size:12px;
+    font-weight:${on ? 800 : 600};cursor:pointer">${label}</button>`;
+}
 
 function outcomeToPlan(r) {
   return {
@@ -2429,6 +2496,20 @@ async function loadHistory(force) {
         </table></div>` : '<div style="color:#8b949e;font-size:12px">لا بيانات أسبوعية بعد.</div>'}
       </div>
 
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:0 0 12px;padding:10px 12px;background:#161b22;border:1px solid #30363d;border-radius:10px">
+        <span style="font-size:12px;font-weight:800;color:#8b949e;margin-left:4px">فلتر الجدول</span>
+        ${historyFilterChip('open', 'مفتوح')}
+        ${historyFilterChip('today', 'اليوم')}
+        ${historyFilterChip('buy', 'BUY')}
+        ${historyFilterChip('hot', 'HOT/FIRE')}
+        ${historyFilterChip('all', 'الكل')}
+        <label style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:#c9d1d9;margin-right:8px;cursor:pointer">
+          <input type="checkbox" ${historyFilter.hideExpired ? 'checked' : ''} onchange="toggleHistoryHideExpired()" style="accent-color:#58a6ff">
+          إخفاء المنتهي
+        </label>
+        <span style="font-size:11px;color:#8b949e;margin-right:auto">عرض <strong style="color:#e6edf3">${filterHistoryRows(rows).length}</strong> من ${rows.length} · اليوم ET ${todayEtDateStr()}</span>
+      </div>
+
       <div style="overflow-x:auto">
       <table style="width:100%;border-collapse:collapse;font-size:13px">
         <thead><tr style="background:#21262d">
@@ -2466,7 +2547,7 @@ async function loadHistory(force) {
           <th style="padding:10px;text-align:right;color:#8b949e">الحالة الحية</th>
         </tr></thead>
         <tbody>
-          ${rows.sort((a,b)=>b.date>a.date?1:-1).map(r=>{
+          ${filterHistoryRows(rows).sort((a,b)=>b.date>a.date?1:-1).map(r=>{
             const key = historyRowKey(r);
             const st = r.status || 'open';
             const isOpen = st === 'open';
