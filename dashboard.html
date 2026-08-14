@@ -445,7 +445,15 @@ function warnIfFileProtocol() {
 function parseScanDate(scannedAt) {
   if (!scannedAt) return null;
   try {
-    const d = new Date(String(scannedAt).trim().replace(' UTC', 'Z'));
+    let s = String(scannedAt).trim();
+    // رفض قيم تالفة من parseCSV القديم (مثل نص عربي عشوائي)
+    if (!/^\d{4}-\d{2}-\d{2}/.test(s)) return null;
+    // 2026-08-14 13:54 UTC → ISO
+    s = s.replace(/\s+UTC$/i, 'Z').replace(' ', 'T');
+    if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}Z$/.test(s)) s = s.replace(/Z$/, ':00Z');
+    else if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(s)) s += ':00Z';
+    else if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/.test(s)) s += 'Z';
+    const d = new Date(s);
     return isNaN(d.getTime()) ? null : d;
   } catch (_) { return null; }
 }
@@ -1061,14 +1069,63 @@ function parsePrice(val) {
   return isNaN(n) || n <= 0 ? 0 : n;
 }
 
+/** CSV RFC-style: يحترم الفواصل داخل الحقول المقتبسة (مثل gemini_note). */
+function splitCSVLine(line) {
+  const vals = [];
+  let cur = '';
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (c === '"') {
+      if (inQuotes && line[i + 1] === '"') {
+        cur += '"';
+        i++;
+      } else {
+        inQuotes = !inQuotes;
+      }
+    } else if (c === ',' && !inQuotes) {
+      vals.push(cur);
+      cur = '';
+    } else {
+      cur += c;
+    }
+  }
+  vals.push(cur);
+  return vals;
+}
+
+/** يقسم النص إلى صفوف مع احترام الأسطر داخل الحقول المقتبسة. */
+function splitCSVRows(text) {
+  const rows = [];
+  let cur = '';
+  let inQuotes = false;
+  const src = String(text || '').replace(/^\uFEFF/, '');
+  for (let i = 0; i < src.length; i++) {
+    const c = src[i];
+    if (c === '"') {
+      inQuotes = !inQuotes;
+      cur += c;
+    } else if ((c === '\n' || c === '\r') && !inQuotes) {
+      if (c === '\r' && src[i + 1] === '\n') i++;
+      if (cur.length) rows.push(cur);
+      cur = '';
+    } else {
+      cur += c;
+    }
+  }
+  if (cur.length) rows.push(cur);
+  return rows;
+}
+
 function parseCSV(text) {
-  const lines = text.trim().split('\n');
-  const headers = lines[0].split(',').map(h => h.trim().replace(/^"|"$/g,''));
+  const lines = splitCSVRows(text);
+  if (!lines.length) return [];
+  const headers = splitCSVLine(lines[0]).map(h => h.trim().replace(/^"|"$/g, ''));
   return lines.slice(1).map(line => {
-    const vals = line.match(/(".*?"|[^,]+|(?<=,)(?=,)|^(?=,)|(?<=,)$)/g) || line.split(',');
+    const vals = splitCSVLine(line);
     const obj = {};
     headers.forEach((h, i) => {
-      obj[h] = (vals[i] || '').replace(/^"|"$/g,'').trim();
+      obj[h] = String(vals[i] ?? '').replace(/^"|"$/g, '').trim();
     });
     return obj;
   }).filter(r => r.Ticker || r.ticker);
@@ -1580,7 +1637,12 @@ async function loadData() {
     }
 
     const rowsRaw = parseCSV(text);
-    const scanTs = rowsRaw.find(r => r.scanned_at)?.scanned_at;
+    let scanTs = rowsRaw.find(r => parseScanDate(r.scanned_at))?.scanned_at;
+    if (!scanTs) {
+      // احتياطي إذا تعطل صف واحد: التقط scanned_at من النص الخام
+      const m = String(text).match(/(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(?::\d{2})?(?:\s*UTC)?)/);
+      if (m) scanTs = m[1];
+    }
     const freshness = getScanFreshness(scanTs);
     updateStaleBanner(freshness);
 
