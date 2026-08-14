@@ -182,6 +182,11 @@
   .wait-tier.HOT { background: #3d2d00; color: #e3b341; border: 1px solid #e3b341; }
   .wait-tier.WARM { background: #21262d; color: #c9d1d9; border: 1px solid #30363d; }
   .wait-tier.COLD { background: #161b22; color: #8b949e; border: 1px solid #30363d; }
+  .setup-tier {
+    display: inline-block; margin-top: 4px; padding: 2px 8px; border-radius: 6px;
+    font-size: 10px; font-weight: 800; letter-spacing: 0.2px;
+    background: #1a4731; color: #3fb950; border: 1px solid #3fb950;
+  }
 
   /* SPY — توصية خاصة */
   .spy-hero { background: linear-gradient(135deg, #1a2a40 0%, #161b22 100%); border: 2px solid #58a6ff; border-radius: 14px; padding: 20px 24px; margin-bottom: 20px; box-shadow: 0 0 24px rgba(88,166,255,0.15); }
@@ -228,7 +233,8 @@
   سبريد <strong>≤ 10%</strong> —
   R:R حي <strong>≥ 1.3</strong> —
   مطاردة BUY بعد تجاوز Entry بـ <strong>&gt;0.8%</strong> —
-  <strong>HOT/FIRE</strong> = جاهز لدخول يدوي عند Entry (ليست BUY تلقائي).
+  <strong>HOT/FIRE على WAIT</strong> = دخول يدوي عند Entry (ليست BUY) —
+  <strong>FIRE على BUY</strong> = قوة الإعداد لا انتظار.
   <span class="exec-badge" id="execWindowBadge">نافذة التنفيذ: …</span>
   <div class="rule-warn" style="margin-top:4px">Finnhub اللحظي ≠ توصية جديدة (لا ترقية WAIT→BUY من السعر). زر ⚡ ومسح Actions = مسح كامل يمنح BUY/WAIT. ادخل يدوياً على HOT عند Entry.</div>
   <div class="rule-warn" style="margin-top:4px;color:#58a6ff">رابط مشترك للجهازين:
@@ -1409,12 +1415,15 @@ function buildCard(r) {
       <div style="text-align:left">
         <span class="rec-badge ${rec}" id="rec-badge-${r.Ticker}">${rec}</span>
         ${(() => {
-          if (rec !== 'WAIT') return '';
           const g = enrichWaitGrade(r);
           const tier = String(g.wait_tier || '').toUpperCase();
           if (!tier) return '';
-          const label = tier === 'FIRE' ? 'FIRE' : tier === 'HOT' ? 'HOT' : tier === 'WARM' ? 'WARM' : 'COLD';
           const pctStr = Number.isFinite(g.setup_pct) ? ` ${g.setup_pct}%` : '';
+          if (rec === 'BUY') {
+            return `<div class="setup-tier">إعداد ${tier}${pctStr}</div>`;
+          }
+          if (rec !== 'WAIT') return '';
+          const label = tier === 'FIRE' ? 'FIRE' : tier === 'HOT' ? 'HOT' : tier === 'WARM' ? 'WARM' : 'COLD';
           return `<div class="wait-tier ${tier}">${label}${pctStr}</div>`;
         })()}
         <div style="font-size:11px;color:${dirColor};margin-top:4px;font-weight:700">${dirLabel}</div>
@@ -2040,7 +2049,7 @@ function renderStockStudy(ticker) {
           <div class="sub">إلى Stop ${price && plan?.stop ? fmtPctSigned(pctDist(price, plan.stop)) : '—'}</div></div>
         <div class="study-metric"><div class="lbl">اكتمال الشروط</div>
           <div class="val">${scan?.setup_pct != null && scan?.setup_pct !== '' ? scan.setup_pct + '%' : '—'}</div>
-          <div class="sub">${scan?.wait_tier ? 'WAIT ' + scan.wait_tier : '—'}${scan?.chase_pct ? ' · مطاردة ' + parseFloat(scan.chase_pct).toFixed(1) + '%' : ''}</div></div>
+          <div class="sub">${scan?.wait_tier ? ((scan.recommendation || '').toUpperCase() === 'BUY' ? 'إعداد ' : 'WAIT ') + scan.wait_tier : '—'}${scan?.chase_pct ? ' · مطاردة ' + parseFloat(scan.chase_pct).toFixed(1) + '%' : ''}</div></div>
         <div class="study-metric"><div class="lbl">ملاحظة المسح</div>
           <div class="val" style="font-size:13px;font-weight:600;line-height:1.4">${(scan?.rec_note || '—').replace(/</g, '&lt;')}</div></div>
       </div>
@@ -2281,11 +2290,14 @@ function outcomeWasChased(r) {
 }
 
 function outcomeRecKind(r) {
-  const k = String(r.rec_kind || '').toUpperCase();
+  const k = String(r.rec_kind || '').toUpperCase().trim();
+  // rec_kind يتقدّم: BUY مع wait_tier=FIRE يبقى BUY (الدرجة وقت المسح، مو نوع التوصية)
   if (k === 'WAIT_HOT' || k === 'HOT' || k === 'FIRE') return 'WAIT_HOT';
-  const tier = String(r.wait_tier || '').toUpperCase();
+  if (k === 'BUY') return 'BUY';
+  const tier = String(r.wait_tier || '').toUpperCase().trim();
   if (tier === 'HOT' || tier === 'FIRE') return 'WAIT_HOT';
-  return 'BUY';
+  // صفوف قديمة بلا rec_kind — لا تُحسب BUY
+  return 'LEGACY';
 }
 
 function isInverseOutcome(r) {
@@ -2297,6 +2309,7 @@ function outcomeBucket(r) {
   if (isInverseOutcome(r)) return 'inverse';
   const kind = outcomeRecKind(r);
   if (kind === 'WAIT_HOT') return 'wait_hot';
+  if (kind !== 'BUY') return 'legacy';
   return outcomeWasChased(r) ? 'buy_chase' : 'buy_clean';
 }
 
@@ -2724,10 +2737,14 @@ async function loadHistory(force) {
             const bucket = outcomeBucket(r);
             const pathLabel = bucket === 'inverse' ? 'عكسي'
               : bucket === 'wait_hot' ? 'WAIT HOT'
-              : bucket === 'buy_chase' ? 'مطاردة' : 'BUY نظيف';
+              : bucket === 'buy_chase' ? 'مطاردة'
+              : bucket === 'buy_clean' ? 'BUY نظيف'
+              : 'قديم';
             const pathColor = bucket === 'inverse' ? '#8b949e'
               : bucket === 'wait_hot' ? '#ff7b72'
-              : bucket === 'buy_chase' ? '#e3b341' : '#3fb950';
+              : bucket === 'buy_chase' ? '#e3b341'
+              : bucket === 'buy_clean' ? '#3fb950'
+              : '#8b949e';
             const tgFlag = String(r.telegram_sent ?? '').toLowerCase();
             const tgSent = tgFlag === 'true' || tgFlag === '1' || tgFlag === 'yes';
             const tgAt = String(r.telegram_sent_at || '').replace(/"/g, '&quot;');

@@ -515,6 +515,42 @@ class TestTelegramOutcomeSync(unittest.TestCase):
             self.assertEqual(bbb.iloc[0]["telegram_kind"], "WAIT_HOT")
             self.assertIn("telegram_sent", str(bbb.iloc[0]["rec_note"]))
 
+    def test_buy_kind_not_overwritten_by_wait_hot(self):
+        with tempfile.TemporaryDirectory() as td:
+            sent_path = os.path.join(td, "telegram_sent.json")
+            save_sent({
+                "sent": {
+                    "2026-08-11|NVDA|CALL|217.50|2026-08-14": "2026-08-11T18:32:11Z",
+                    "WAIT_HOT|2026-08-11|NVDA|CALL|217.50|2026-08-14": "2026-08-11T14:59:11Z",
+                }
+            }, sent_path)
+            outcomes = pd.DataFrame([{
+                "date": "2026-08-11",
+                "ticker": "NVDA",
+                "direction": "CALL",
+                "score": 21,
+                "confidence": 88,
+                "price_at_rec": 217.35,
+                "entry_stock": 217.35,
+                "stop_stock": 215.0,
+                "tp1_stock": 222.0,
+                "tp2_stock": 228.0,
+                "tp3_stock": 236.0,
+                "expiry": "2026-08-14",
+                "premium": 2.74,
+                "strike": 217.5,
+                "rec_kind": "BUY",
+                "entry_hit": True,
+                "status": "open",
+                "data_quality": "open",
+                "telegram_kind": "",
+            }])
+            out = sync_telegram_sent_flags(outcomes, sent_path=sent_path, add_missing=False)
+            row = out.iloc[0]
+            self.assertTrue(bool(row["telegram_sent"]))
+            self.assertEqual(row["telegram_kind"], "BUY")
+            self.assertEqual(len(out), 1)
+
 
 class TestOutcomeRecKindUpgrade(unittest.TestCase):
     def test_inverse_not_hot_wait(self):

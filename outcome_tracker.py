@@ -1142,8 +1142,15 @@ def sync_telegram_sent_flags(outcomes_df, sent_path="telegram_sent.json", add_mi
         if not hit.empty:
             idx = hit.index[0]
             outcomes_df.at[idx, "telegram_sent"] = True
-            outcomes_df.at[idx, "telegram_sent_at"] = str(sent_at or "")
-            outcomes_df.at[idx, "telegram_kind"] = info["kind"]
+            prev_kind = str(outcomes_df.at[idx, "telegram_kind"] or "").upper()
+            new_kind = str(info["kind"] or "").upper()
+            # BUY يتقدّم على WAIT_HOT لنفس العقد (ترقية لا تُمسَح)
+            keep_buy = prev_kind == "BUY" and new_kind != "BUY"
+            if not keep_buy:
+                outcomes_df.at[idx, "telegram_kind"] = info["kind"]
+                outcomes_df.at[idx, "telegram_sent_at"] = str(sent_at or "")
+            elif not str(outcomes_df.at[idx, "telegram_sent_at"] or "").strip():
+                outcomes_df.at[idx, "telegram_sent_at"] = str(sent_at or "")
             marked += 1
             continue
 
