@@ -2129,6 +2129,46 @@ let historyLoaded = false;
 /** فلاتر جدول السجل — الافتراضي: مفتوح + إخفاء المنتهي (أقل ازدحام يوم الجمعة) */
 let historyFilter = { scope: 'open', hideExpired: true, month: '' };
 
+const AR_MONTH_NAMES = {
+  '01': 'يناير', '02': 'فبراير', '03': 'مارس', '04': 'أبريل',
+  '05': 'مايو', '06': 'يونيو', '07': 'يوليو', '08': 'أغسطس',
+  '09': 'سبتمبر', '10': 'أكتوبر', '11': 'نوفمبر', '12': 'ديسمبر',
+};
+
+function ymFromDateStr(s) {
+  const d = String(s || '').slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(d) ? d.slice(0, 7) : '';
+}
+
+function historyRowMonths(r) {
+  return {
+    rec: ymFromDateStr(r.date),
+    exp: ymFromDateStr(r.expiry),
+  };
+}
+
+function rowInHistoryMonth(r, ym) {
+  if (!ym) return true;
+  const m = historyRowMonths(r);
+  return m.rec === ym || m.exp === ym;
+}
+
+function historyMonthKeys(rows) {
+  const set = new Set();
+  (rows || []).forEach(r => {
+    const m = historyRowMonths(r);
+    if (m.rec) set.add(m.rec);
+    if (m.exp) set.add(m.exp);
+  });
+  return [...set].sort();
+}
+
+function formatHistoryMonthLabel(ym) {
+  const [y, mo] = String(ym || '').split('-');
+  const name = AR_MONTH_NAMES[mo] || mo;
+  return name ? `${name} ${y || ''}`.trim() : ym;
+}
+
 function todayEtDateStr() {
   try {
     return new Intl.DateTimeFormat('en-CA', {
@@ -2169,12 +2209,11 @@ function filterHistoryRows(rows) {
       return f === 'true' || f === '1' || f === 'yes';
     });
   }
-  if (historyFilter.hideExpired) {
+  const ym = historyFilter.month || '';
+  if (ym) out = out.filter(r => rowInHistoryMonth(r, ym));
+  // شهر محدد يشمل المنتهي في ذلك الشهر (يوليو→أغسطس) — لا تُخفَى
+  if (historyFilter.hideExpired && !ym) {
     out = out.filter(r => !isContractExpired(r, today));
-  }
-  const month = String(historyFilter.month || '');
-  if (month && /^\d{4}-\d{2}$/.test(month)) {
-    out = out.filter(r => String(r.date || '').slice(0, 7) === month);
   }
   return out;
 }
@@ -2195,32 +2234,24 @@ function toggleHistoryHideExpired() {
   }
 }
 
-function historyMonthOptions(rows) {
-  const keys = [...new Set((rows || []).map(r => String(r.date || '').slice(0, 7)).filter(m => /^\d{4}-\d{2}$/.test(m)))].sort().reverse();
-  const ar = ['يناير','فبراير','مارس','أبريل','مايو','يونيو','يوليو','أغسطس','سبتمبر','أكتوبر','نوفمبر','ديسمبر'];
-  const cur = String(historyFilter.month || '');
-  const opts = [`<option value="" ${cur ? '' : 'selected'}>كل الأشهر</option>`];
-  keys.forEach(k => {
-    const y = k.slice(0, 4);
-    const mi = parseInt(k.slice(5, 7), 10) - 1;
-    const label = (ar[mi] || k) + ' ' + y;
-    opts.push(`<option value="${k}" ${cur === k ? 'selected' : ''}>${label}</option>`);
-  });
-  return opts.join('');
-}
-
-function setHistoryMonth(month) {
-  historyFilter.month = String(month || '');
-  if (historyFilter.month) {
-    if (historyFilter.scope === 'open' || historyFilter.scope === 'today') {
-      historyFilter.scope = 'all';
-    }
-    historyFilter.hideExpired = false;
+function setHistoryMonth(ym) {
+  historyFilter.month = ym || '';
+  if (ym && (historyFilter.scope === 'open' || historyFilter.scope === 'today')) {
+    historyFilter.scope = 'all';
   }
   if (outcomeRows.length) {
     historyLoaded = false;
     loadHistory(true);
   }
+}
+
+function historyMonthChip(ym, label) {
+  const on = (historyFilter.month || '') === (ym || '');
+  const arg = ym ? `'${ym}'` : "''";
+  return `<button type="button" onclick="setHistoryMonth(${arg})"
+    style="border:1px solid ${on ? '#3fb950' : '#30363d'};background:${on ? '#132d1a' : '#21262d'};
+    color:${on ? '#3fb950' : '#c9d1d9'};border-radius:8px;padding:6px 12px;font-size:12px;
+    font-weight:${on ? 800 : 600};cursor:pointer">${label}</button>`;
 }
 
 function historyFilterChip(id, label) {
@@ -2554,18 +2585,15 @@ async function loadHistory(force) {
         ${historyFilterChip('hot', 'HOT/FIRE')}
         ${historyFilterChip('tg', 'تيليجرام')}
         ${historyFilterChip('all', 'الكل')}
-        <label style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:#8b949e;margin-right:4px">
-          الشهر
-          <select onchange="setHistoryMonth(this.value)"
-            style="background:#21262d;color:#e6edf3;border:1px solid ${historyFilter.month ? '#58a6ff' : '#30363d'};border-radius:8px;padding:6px 10px;font-size:12px;font-weight:700;cursor:pointer">
-            ${historyMonthOptions(rows)}
-          </select>
-        </label>
+        <span style="width:1px;height:18px;background:#30363d;margin:0 4px"></span>
+        <span style="font-size:12px;font-weight:800;color:#8b949e">الشهر</span>
+        ${historyMonthChip('', 'كل الشهور')}
+        ${historyMonthKeys(rows).map(ym => historyMonthChip(ym, formatHistoryMonthLabel(ym))).join('')}
         <label style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:#c9d1d9;margin-right:8px;cursor:pointer">
-          <input type="checkbox" ${historyFilter.hideExpired ? 'checked' : ''} onchange="toggleHistoryHideExpired()" style="accent-color:#58a6ff">
+          <input type="checkbox" ${historyFilter.hideExpired ? 'checked' : ''} ${historyFilter.month ? 'disabled' : ''} onchange="toggleHistoryHideExpired()" style="accent-color:#58a6ff">
           إخفاء المنتهي
         </label>
-        <span style="font-size:11px;color:#8b949e;margin-right:auto">عرض <strong style="color:#e6edf3">${filterHistoryRows(rows).length}</strong> من ${rows.length} · اليوم ET ${todayEtDateStr()}</span>
+        <span style="font-size:11px;color:#8b949e;margin-right:auto">عرض <strong style="color:#e6edf3">${filterHistoryRows(rows).length}</strong> من ${rows.length} · اليوم ET ${todayEtDateStr()}${historyFilter.month ? ' · توصية أو انتهاء في ' + formatHistoryMonthLabel(historyFilter.month) : ''}</span>
       </div>
 
       <div style="overflow-x:auto">
@@ -2792,8 +2820,17 @@ async function loadHistory(force) {
               ? `<div style="font-weight:800;color:#58a6ff;font-size:11px" title="${tgAt}">TG ✓</div>`
                 + (tgKind ? `<div style="font-size:10px;color:#8b949e;margin-top:2px">${tgKind}</div>` : '')
               : '<span style="color:#484f58">—</span>';
+            const ymSel = historyFilter.month || '';
+            const months = historyRowMonths(r);
+            let dateHint = '';
+            if (ymSel && months.rec && months.exp && months.rec !== months.exp) {
+              if (months.rec === ymSel && months.exp !== ymSel) dateHint = 'توصية هذا الشهر · انتهاء ' + formatHistoryMonthLabel(months.exp);
+              else if (months.exp === ymSel && months.rec !== ymSel) dateHint = 'توصية ' + formatHistoryMonthLabel(months.rec) + ' · انتهاء هذا الشهر';
+            }
+            const dateHtml = `<div>${r.date||'—'}</div>`
+              + (dateHint ? `<div style="font-size:10px;color:#58a6ff;margin-top:2px">${dateHint}</div>` : '');
             return `<tr style="border-bottom:1px solid #21262d">
-              <td style="padding:10px;color:#8b949e">${r.date||'—'}</td>
+              <td style="padding:10px;color:#8b949e;line-height:1.25">${dateHtml}</td>
               <td style="padding:10px;font-weight:700;color:${pathColor};font-size:11px">${pathLabel}</td>
               <td style="padding:10px;line-height:1.25">${tgHtml}</td>
               <td style="padding:10px;line-height:1.25">${contractHtml}</td>
