@@ -2211,8 +2211,11 @@ function historyMonthOptions(rows) {
 
 function setHistoryMonth(month) {
   historyFilter.month = String(month || '');
-  if (historyFilter.month && (historyFilter.scope === 'open' || historyFilter.scope === 'today')) {
-    historyFilter.scope = 'all';
+  if (historyFilter.month) {
+    if (historyFilter.scope === 'open' || historyFilter.scope === 'today') {
+      historyFilter.scope = 'all';
+    }
+    historyFilter.hideExpired = false;
   }
   if (outcomeRows.length) {
     historyLoaded = false;
