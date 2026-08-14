@@ -2127,7 +2127,7 @@ function showTab(tab) {
 const OUTCOMES_URL = OUTCOMES_URLS[0];
 let historyLoaded = false;
 /** فلاتر جدول السجل — الافتراضي: مفتوح + إخفاء المنتهي (أقل ازدحام يوم الجمعة) */
-let historyFilter = { scope: 'open', hideExpired: true };
+let historyFilter = { scope: 'open', hideExpired: true, month: '' };
 
 function todayEtDateStr() {
   try {
@@ -2172,6 +2172,10 @@ function filterHistoryRows(rows) {
   if (historyFilter.hideExpired) {
     out = out.filter(r => !isContractExpired(r, today));
   }
+  const month = String(historyFilter.month || '');
+  if (month && /^\d{4}-\d{2}$/.test(month)) {
+    out = out.filter(r => String(r.date || '').slice(0, 7) === month);
+  }
   return out;
 }
 
@@ -2185,6 +2189,31 @@ function setHistoryScope(scope) {
 
 function toggleHistoryHideExpired() {
   historyFilter.hideExpired = !historyFilter.hideExpired;
+  if (outcomeRows.length) {
+    historyLoaded = false;
+    loadHistory(true);
+  }
+}
+
+function historyMonthOptions(rows) {
+  const keys = [...new Set((rows || []).map(r => String(r.date || '').slice(0, 7)).filter(m => /^\d{4}-\d{2}$/.test(m)))].sort().reverse();
+  const ar = ['يناير','فبراير','مارس','أبريل','مايو','يونيو','يوليو','أغسطس','سبتمبر','أكتوبر','نوفمبر','ديسمبر'];
+  const cur = String(historyFilter.month || '');
+  const opts = [`<option value="" ${cur ? '' : 'selected'}>كل الأشهر</option>`];
+  keys.forEach(k => {
+    const y = k.slice(0, 4);
+    const mi = parseInt(k.slice(5, 7), 10) - 1;
+    const label = (ar[mi] || k) + ' ' + y;
+    opts.push(`<option value="${k}" ${cur === k ? 'selected' : ''}>${label}</option>`);
+  });
+  return opts.join('');
+}
+
+function setHistoryMonth(month) {
+  historyFilter.month = String(month || '');
+  if (historyFilter.month && (historyFilter.scope === 'open' || historyFilter.scope === 'today')) {
+    historyFilter.scope = 'all';
+  }
   if (outcomeRows.length) {
     historyLoaded = false;
     loadHistory(true);
@@ -2522,6 +2551,13 @@ async function loadHistory(force) {
         ${historyFilterChip('hot', 'HOT/FIRE')}
         ${historyFilterChip('tg', 'تيليجرام')}
         ${historyFilterChip('all', 'الكل')}
+        <label style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:#8b949e;margin-right:4px">
+          الشهر
+          <select onchange="setHistoryMonth(this.value)"
+            style="background:#21262d;color:#e6edf3;border:1px solid ${historyFilter.month ? '#58a6ff' : '#30363d'};border-radius:8px;padding:6px 10px;font-size:12px;font-weight:700;cursor:pointer">
+            ${historyMonthOptions(rows)}
+          </select>
+        </label>
         <label style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:#c9d1d9;margin-right:8px;cursor:pointer">
           <input type="checkbox" ${historyFilter.hideExpired ? 'checked' : ''} onchange="toggleHistoryHideExpired()" style="accent-color:#58a6ff">
           إخفاء المنتهي
