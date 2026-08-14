@@ -2154,6 +2154,11 @@ function filterHistoryRows(rows) {
     });
   } else if (scope === 'hot') {
     out = out.filter(r => outcomeBucket(r) === 'wait_hot');
+  } else if (scope === 'tg') {
+    out = out.filter(r => {
+      const f = String(r.telegram_sent ?? '').toLowerCase();
+      return f === 'true' || f === '1' || f === 'yes';
+    });
   }
   if (historyFilter.hideExpired) {
     out = out.filter(r => !isContractExpired(r, today));
@@ -2502,6 +2507,7 @@ async function loadHistory(force) {
         ${historyFilterChip('today', 'اليوم')}
         ${historyFilterChip('buy', 'BUY')}
         ${historyFilterChip('hot', 'HOT/FIRE')}
+        ${historyFilterChip('tg', 'تيليجرام')}
         ${historyFilterChip('all', 'الكل')}
         <label style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:#c9d1d9;margin-right:8px;cursor:pointer">
           <input type="checkbox" ${historyFilter.hideExpired ? 'checked' : ''} onchange="toggleHistoryHideExpired()" style="accent-color:#58a6ff">
@@ -2515,6 +2521,7 @@ async function loadHistory(force) {
         <thead><tr style="background:#21262d">
           <th style="padding:10px;text-align:right;color:#8b949e">التاريخ</th>
           <th style="padding:10px;text-align:right;color:#8b949e">المسار</th>
+          <th style="padding:10px;text-align:right;color:#8b949e">TG</th>
           <th style="padding:10px;text-align:right;color:#8b949e">العقد</th>
           <th style="padding:10px;text-align:right;color:#8b949e">جودة</th>
           <th style="padding:10px;text-align:right;color:#8b949e">الاتجاه</th>
@@ -2721,9 +2728,18 @@ async function loadHistory(force) {
             const pathColor = bucket === 'inverse' ? '#8b949e'
               : bucket === 'wait_hot' ? '#ff7b72'
               : bucket === 'buy_chase' ? '#e3b341' : '#3fb950';
+            const tgFlag = String(r.telegram_sent ?? '').toLowerCase();
+            const tgSent = tgFlag === 'true' || tgFlag === '1' || tgFlag === 'yes';
+            const tgAt = String(r.telegram_sent_at || '').replace(/"/g, '&quot;');
+            const tgKind = String(r.telegram_kind || '').toUpperCase();
+            const tgHtml = tgSent
+              ? `<div style="font-weight:800;color:#58a6ff;font-size:11px" title="${tgAt}">TG ✓</div>`
+                + (tgKind ? `<div style="font-size:10px;color:#8b949e;margin-top:2px">${tgKind}</div>` : '')
+              : '<span style="color:#484f58">—</span>';
             return `<tr style="border-bottom:1px solid #21262d">
               <td style="padding:10px;color:#8b949e">${r.date||'—'}</td>
               <td style="padding:10px;font-weight:700;color:${pathColor};font-size:11px">${pathLabel}</td>
+              <td style="padding:10px;line-height:1.25">${tgHtml}</td>
               <td style="padding:10px;line-height:1.25">${contractHtml}</td>
               <td style="padding:10px;line-height:1.25">${qHtml}</td>
               <td style="padding:10px;color:${dirColor}">${dirLabel}</td>
@@ -2755,7 +2771,7 @@ async function loadHistory(force) {
               <td style="padding:10px;font-weight:700;color:${statusColor[st]||'#8b949e'}">${statusLabel[st]||st}</td>
               <td id="hist-live-${key}" style="padding:10px;font-size:12px;color:${liveSt ? (liveSt.cls==='status-stop'?'#f85149':liveSt.cls==='status-tp'?'#58a6ff':liveSt.cls==='status-in-trade'?'#3fb950':'#e3b341') : '#8b949e'}">${liveSt ? liveSt.label + (liveSt.dist ? ' · '+liveSt.dist : '') : (isOpen ? 'بانتظار سعر…' : '—')}</td>
             </tr>`;
-          }).join('') || `<tr><td colspan="32" style="padding:28px;text-align:center;color:#8b949e">لا صفوف ضمن الفلتر الحالي — جرّب «الكل» أو ألغِ إخفاء المنتهي</td></tr>`}
+          }).join('') || `<tr><td colspan="33" style="padding:28px;text-align:center;color:#8b949e">لا صفوف ضمن الفلتر الحالي — جرّب «الكل» أو ألغِ إخفاء المنتهي</td></tr>`}
         </tbody>
       </table>
       </div>`;

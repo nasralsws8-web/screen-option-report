@@ -29,6 +29,7 @@ exit_premium_source = market | intrinsic | estimate
   exit_date       = تاريخ إغلاق الصفقة المدارة (TP/Stop/Expiry)
 """
 
+import json
 import math
 import os
 from datetime import datetime, timedelta
@@ -57,6 +58,8 @@ OUTCOMES_COLS = [
     "premium_quality", "premium_quality_note", "bs_fair_price",
     "opt_bid", "opt_ask", "spread_pct", "oi",
     "tp1_rr_live", "chase_pct", "spy_regime", "rec_note",
+    # ربط بتنبيهات تيليجرام
+    "telegram_sent", "telegram_sent_at", "telegram_kind",
     "entry_hit", "entry_hit_date", "exit_date", "exit_stock",
     "exit_premium", "exit_premium_source",
     "status",   # open / tp1_hit / tp2_hit / tp3_hit / stop_hit / expired
@@ -1047,6 +1050,149 @@ def _row_is_hot_wait(r) -> bool:
         return False
 
 
+def _norm_direction(val) -> str:
+    s = str(val or "").upper()
+    if "PUT" in s:
+        return "PUT"
+    if "CALL" in s:
+        return "CALL"
+    return s.strip() or "?"
+
+
+def parse_telegram_alert_key(key: str):
+    """يفك مفتاح telegram_sent.json → kind/day/ticker/direction/strike/expiry."""
+    raw = str(key or "").strip()
+    if not raw:
+        return None
+    parts = raw.split("|")
+    kind = "BUY"
+    if parts and parts[0].upper() == "WAIT_HOT":
+        kind = "WAIT_HOT"
+        parts = parts[1:]
+    if len(parts) < 5:
+        return None
+    day, ticker, direction, strike, expiry = parts[0], parts[1], parts[2], parts[3], parts[4]
+    return {
+        "kind": kind,
+        "day": str(day)[:10],
+        "ticker": str(ticker).upper().strip(),
+        "direction": _norm_direction(direction),
+        "strike": _norm_strike(strike),
+        "expiry": _norm_expiry(expiry),
+        "key": raw,
+    }
+
+
+def sync_telegram_sent_flags(outcomes_df, sent_path="telegram_sent.json", add_missing=True):
+    """
+    يعلّم صفوف السجل التي أُرسلت على تيليجرام من telegram_sent.json.
+    إذا add_missing: يضيف صفاً مختصراً للتنبيهات الناقصة حتى تُتابع من السجل.
+    """
+    if outcomes_df is None:
+        outcomes_df = pd.DataFrame(columns=OUTCOMES_COLS)
+    for col, default in (
+        ("telegram_sent", False),
+        ("telegram_sent_at", ""),
+        ("telegram_kind", ""),
+    ):
+        if col not in outcomes_df.columns:
+            outcomes_df[col] = default
+
+    if not os.path.exists(sent_path):
+        print("⚠️  telegram_sent.json غير موجود — تخطي مزامنة تيليجرام")
+        return outcomes_df
+
+    try:
+        with open(sent_path, encoding="utf-8") as f:
+            store = json.load(f)
+        sent_map = store.get("sent") if isinstance(store, dict) else {}
+        if not isinstance(sent_map, dict):
+            sent_map = {}
+    except Exception as e:
+        print(f"⚠️  قراءة telegram_sent.json فشلت: {e}")
+        return outcomes_df
+
+    marked = 0
+    added = 0
+    missing = 0
+
+    def _match_mask(ticker, strike_f, expiry_key, direction=None, day=None):
+        if outcomes_df.empty:
+            return outcomes_df.iloc[0:0]
+        hit = _same_contract(outcomes_df, ticker, strike_f, expiry_key)
+        if hit.empty:
+            return hit
+        if direction:
+            dirs = hit["direction"].map(_norm_direction)
+            hit = hit[dirs == direction]
+        if day and not hit.empty:
+            same = hit[hit["date"].astype(str).str[:10] == day]
+            if not same.empty:
+                return same
+        return hit
+
+    for key, sent_at in sorted(sent_map.items()):
+        info = parse_telegram_alert_key(key)
+        if not info or not info.get("ticker") or info.get("strike") is None:
+            continue
+        hit = _match_mask(
+            info["ticker"], info["strike"], info["expiry"],
+            direction=info["direction"], day=info["day"],
+        )
+        if not hit.empty:
+            idx = hit.index[0]
+            outcomes_df.at[idx, "telegram_sent"] = True
+            outcomes_df.at[idx, "telegram_sent_at"] = str(sent_at or "")
+            outcomes_df.at[idx, "telegram_kind"] = info["kind"]
+            marked += 1
+            continue
+
+        missing += 1
+        if not add_missing:
+            continue
+        # صف متابعة مختصر — حتى ما يضيع تنبيه تيليجرام من السجل
+        exp_d = parse_date(info["expiry"])
+        today = datetime.now().date()
+        if exp_d and exp_d < today:
+            status = "expired"
+            dq, note = "unreliable", "من تيليجرام فقط — عقد منتهٍ بلا صف مسح كامل"
+        else:
+            status = "open"
+            dq, note = "open", "من تيليجرام فقط — بانتظار اكتمال بيانات المسح"
+        new_row = {c: None for c in OUTCOMES_COLS}
+        new_row.update({
+            "date": info["day"],
+            "ticker": info["ticker"],
+            "direction": info["direction"],
+            "score": 0,
+            "confidence": 0,
+            "price_at_rec": None,
+            "entry_stock": 0,
+            "stop_stock": 0,
+            "tp1_stock": 0,
+            "tp2_stock": 0,
+            "tp3_stock": 0,
+            "expiry": info["expiry"],
+            "premium": None,
+            "strike": info["strike"],
+            "rec_kind": info["kind"],
+            "entry_chased": False,
+            "telegram_sent": True,
+            "telegram_sent_at": str(sent_at or ""),
+            "telegram_kind": info["kind"],
+            "entry_hit": False,
+            "status": status,
+            "data_quality": dq,
+            "data_quality_note": note,
+            "rec_note": "أُضيف من telegram_sent — للتنبّع فقط",
+        })
+        outcomes_df = pd.concat([outcomes_df, pd.DataFrame([new_row])], ignore_index=True)
+        added += 1
+
+    print(f"📨 تيليجرام→سجل: علّمت {marked} · أضفت الناقص {added} · ناقص بدون إضافة {max(0, missing - added)}")
+    return outcomes_df
+
+
 def _truthy_chase(val) -> bool:
     s = str(val).strip().lower()
     return s in ("1", "true", "yes", "y")
@@ -1223,6 +1369,9 @@ def add_new_recommendations(outcomes_df):
             "chase_pct":      _opt_float(r.get("chase_pct")),
             "spy_regime":     str(r.get("spy_regime") or ""),
             "rec_note":       str(r.get("rec_note") or "")[:220],
+            "telegram_sent":  False,
+            "telegram_sent_at": "",
+            "telegram_kind":  "",
             "entry_hit":      False,
             "entry_hit_date": "",
             "exit_date":      "",
@@ -1683,6 +1832,7 @@ if __name__ == "__main__":
     outcomes = enrich_market_exit_premiums(outcomes)
     outcomes = enrich_expiry_option_premiums(outcomes, hist_cache=hist_cache)
     outcomes = apply_data_quality(outcomes)
+    outcomes = sync_telegram_sent_flags(outcomes, sent_path="telegram_sent.json", add_missing=True)
 
     # حفظ بترتيب الأعمدة القياسي
     for col in OUTCOMES_COLS:

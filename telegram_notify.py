@@ -184,7 +184,14 @@ def prune_sent(sent: dict, keep_days=SENT_KEEP_DAYS, today=None) -> dict:
         cutoff = (datetime.strptime(today, "%Y-%m-%d") - timedelta(days=keep_days)).strftime("%Y-%m-%d")
     except Exception:
         return sent
-    return {k: v for k, v in sent.items() if str(k).split("|", 1)[0] >= cutoff}
+
+    def _key_day(k: str) -> str:
+        parts = str(k).split("|")
+        if parts and parts[0].upper() == "WAIT_HOT" and len(parts) > 1:
+            return parts[1][:10]
+        return (parts[0] if parts else "")[:10]
+
+    return {k: v for k, v in sent.items() if _key_day(k) >= cutoff}
 
 
 def save_sent(data: dict, path=SENT_FILE):
@@ -582,6 +589,18 @@ def main():
     save_sent(store, SENT_FILE)
     if dirty:
         print(f"💾 حدّث {SENT_FILE} ({len(sent_map)} مفتاح)")
+        try:
+            from outcome_tracker import OUTCOMES_COLS, OUTCOMES_FILE, load_outcomes, sync_telegram_sent_flags
+            outcomes = load_outcomes()
+            outcomes = sync_telegram_sent_flags(outcomes, sent_path=SENT_FILE, add_missing=True)
+            for col in OUTCOMES_COLS:
+                if col not in outcomes.columns:
+                    outcomes[col] = None
+            outcomes = outcomes[[c for c in OUTCOMES_COLS if c in outcomes.columns]]
+            outcomes.to_csv(OUTCOMES_FILE, index=False)
+            print("💾 حدّث وسم تيليجرام في outcomes.csv")
+        except Exception as e:
+            print(f"⚠️  مزامنة وسم تيليجرام فشلت: {e}")
 
 
 if __name__ == "__main__":

@@ -26,7 +26,9 @@ from data_quality import classify_data_quality  # noqa: E402
 from outcome_tracker import (  # noqa: E402
     _row_is_hot_wait,
     add_new_recommendations,
+    parse_telegram_alert_key,
     resolve_first_touch,
+    sync_telegram_sent_flags,
 )
 from telegram_notify import (  # noqa: E402
     alert_key,
@@ -455,10 +457,63 @@ class TestTelegramDedupe(unittest.TestCase):
         sent = {
             "2026-01-01|A|CALL|1.00|2026-01-10": "old",
             "2026-08-05|B|CALL|1.00|2026-08-07": "new",
+            "WAIT_HOT|2026-01-02|C|PUT|2.00|2026-01-10": "old_hot",
+            "WAIT_HOT|2026-08-04|D|CALL|3.00|2026-08-07": "new_hot",
         }
         pruned = prune_sent(sent, keep_days=21, today="2026-08-05")
         self.assertNotIn("2026-01-01|A|CALL|1.00|2026-01-10", pruned)
+        self.assertNotIn("WAIT_HOT|2026-01-02|C|PUT|2.00|2026-01-10", pruned)
         self.assertIn("2026-08-05|B|CALL|1.00|2026-08-07", pruned)
+        self.assertIn("WAIT_HOT|2026-08-04|D|CALL|3.00|2026-08-07", pruned)
+
+
+class TestTelegramOutcomeSync(unittest.TestCase):
+    def test_parse_wait_hot_key(self):
+        info = parse_telegram_alert_key("WAIT_HOT|2026-08-13|CRWV|PUT|110.00|2026-08-14")
+        self.assertEqual(info["kind"], "WAIT_HOT")
+        self.assertEqual(info["ticker"], "CRWV")
+        self.assertEqual(info["direction"], "PUT")
+        self.assertEqual(info["strike"], 110.0)
+        self.assertEqual(info["expiry"], "2026-08-14")
+
+    def test_sync_marks_and_adds_missing(self):
+        with tempfile.TemporaryDirectory() as td:
+            sent_path = os.path.join(td, "telegram_sent.json")
+            save_sent({
+                "sent": {
+                    "2026-08-10|AAA|CALL|100.00|2026-08-14": "2026-08-10T12:00:00Z",
+                    "WAIT_HOT|2026-08-10|BBB|PUT|50.00|2026-08-14": "2026-08-10T13:00:00Z",
+                }
+            }, sent_path)
+            outcomes = pd.DataFrame([{
+                "date": "2026-08-10",
+                "ticker": "AAA",
+                "direction": "CALL",
+                "score": 10,
+                "confidence": 60,
+                "price_at_rec": 100,
+                "entry_stock": 99,
+                "stop_stock": 95,
+                "tp1_stock": 105,
+                "tp2_stock": 108,
+                "tp3_stock": 110,
+                "expiry": "2026-08-14",
+                "premium": 1.2,
+                "strike": 100,
+                "rec_kind": "BUY",
+                "entry_hit": False,
+                "status": "open",
+                "data_quality": "open",
+            }])
+            out = sync_telegram_sent_flags(outcomes, sent_path=sent_path, add_missing=True)
+            aaa = out[out["ticker"] == "AAA"].iloc[0]
+            self.assertTrue(bool(aaa["telegram_sent"]))
+            self.assertEqual(aaa["telegram_kind"], "BUY")
+            bbb = out[out["ticker"] == "BBB"]
+            self.assertEqual(len(bbb), 1)
+            self.assertTrue(bool(bbb.iloc[0]["telegram_sent"]))
+            self.assertEqual(bbb.iloc[0]["telegram_kind"], "WAIT_HOT")
+            self.assertIn("telegram_sent", str(bbb.iloc[0]["rec_note"]))
 
 
 class TestOutcomeRecKindUpgrade(unittest.TestCase):
