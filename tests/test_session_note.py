@@ -85,8 +85,11 @@ class TestSessionNote(unittest.TestCase):
         self.assertIn("[[السجل]]", md)
         self.assertIn("[[2026-08-13]]", md)
         self.assertIn("هذا اليوم فقط", md)
+        self.assertIn("## فشلت", md)
+        self.assertIn("هدف بلا اعتماد", md)
+        self.assertNotIn("## كل الصفوف", md)
 
-    def test_ledger_holds_kpi_and_every_row(self):
+    def test_ledger_splits_after_audit(self):
         df = pd.DataFrame([
             _row(ticker="JUL", rec_kind="", date="2026-07-24", exit_date="2026-07-24",
                  status="tp1_hit", data_quality="partial"),
@@ -98,18 +101,28 @@ class TestSessionNote(unittest.TestCase):
                  option_pnl_pct="", data_quality="open"),
         ])
         md = build_ledger_markdown(df, "2026-08-14")
+        verified = md[md.index("## محققة"): md.index("## فشلت")]
+        failed = md[md.index("## فشلت"): md.index("## انتظار")]
+        waiting = md[md.index("## انتظار"):]
+        self.assertIn("| BUY1 |", verified)
+        self.assertIn("| HOT |", verified)
+        self.assertNotIn("| BUY2 |", verified)
+        self.assertIn("| BUY2 |", failed)
+        self.assertIn("| JUL |", failed)
+        self.assertIn("هدف بلا اعتماد", failed)
+        self.assertIn("| OPEN |", waiting)
+        self.assertNotIn("| OPEN |", verified)
         self.assertIn("2 / 30", md)
         self.assertIn("هدف: 1 · وقف: 1", md)
         self.assertIn("WAIT_HOT في السجل: 1", md)
         self.assertIn("يوليو/بلا نوع: 1", md)
-        self.assertIn("| JUL |", md)
-        self.assertIn("| HOT |", md)
-        self.assertIn("| OPEN |", md)
         self.assertIn("[[2026-07-24]]", md)
         self.assertIn("[[2026-08-14]]", md)
         self.assertIn("from: 2026-07-24", md)
         self.assertIn("to: 2026-08-14", md)
         self.assertIn("لا ترقية WAIT→BUY", md)
+        self.assertIn("تلقائي بعد إغلاق السوق", md)
+        self.assertNotIn("## كل الصفوف", md)
 
     def test_write_all_covers_start_to_last_close(self):
         df = pd.DataFrame([

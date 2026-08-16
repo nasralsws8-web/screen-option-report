@@ -38,6 +38,21 @@ KIND_AR = {
     "LEGACY": "بلا نوع",
 }
 
+QUALITY_AR = {
+    "reliable": "معتمد",
+    "partial": "جزئي",
+    "unreliable": "ضعيف",
+    "open": "لم يُغلق",
+}
+
+KIND_HEADING = {
+    "BUY": "تنفيذ BUY — هذا وحده يدخل القياس",
+    "WAIT_HOT": "مراقبة WAIT_HOT — خارج القياس",
+    "LEGACY": "بلا نوع (يوليو) — خارج القياس",
+}
+
+FAIL_ORDER = ("وقف", "انتهاء", "هدف بلا اعتماد", "أخرى")
+
 
 def default_session_date(now: datetime | None = None) -> str:
     """تاريخ جلسة ET. السبت/الأحد → الجمعة السابقة (آخر إغلاق)."""
@@ -109,6 +124,35 @@ def is_closed(row) -> bool:
     return str(row.get("status") or "").strip() not in ("", "open")
 
 
+def _quality(row) -> str:
+    return str(row.get("data_quality") or "").strip().lower()
+
+
+def _status(row) -> str:
+    return str(row.get("status") or "").strip()
+
+
+def audit_group(row) -> str:
+    """بعد التدقيق: محققة = هدف + جودة معتمدة. انتظار = لم يُغلق. الباقي فشلت."""
+    closed = row["_closed"] if "_closed" in row else is_closed(row)
+    if not closed:
+        return "انتظار"
+    if _quality(row) == "reliable" and _status(row).startswith("tp"):
+        return "محققة"
+    return "فشلت"
+
+
+def fail_reason(row) -> str:
+    st = _status(row)
+    if st == "stop_hit":
+        return "وقف"
+    if st == "expired":
+        return "انتهاء"
+    if st.startswith("tp") and _quality(row) != "reliable":
+        return "هدف بلا اعتماد"
+    return "أخرى"
+
+
 def load_outcomes(path: Path | None = None) -> pd.DataFrame:
     p = path or OUTCOMES_FILE
     if not p.exists():
@@ -130,7 +174,20 @@ def annotate(df: pd.DataFrame) -> list[dict]:
         r["_date"] = _ymd(r.get("date"))
         r["_exit"] = _ymd(r.get("exit_date"))
         r["_closed"] = is_closed(r)
+        r["_group"] = audit_group(r)
+        r["_fail"] = fail_reason(r) if r["_group"] == "فشلت" else ""
     return rows
+
+
+def _sort_rows(rows: list[dict]) -> list[dict]:
+    return sorted(
+        rows,
+        key=lambda r: (
+            r.get("_date") or "9999",
+            str(r.get("ticker") or ""),
+            r.get("_exit") or "",
+        ),
+    )
 
 
 def session_dates(df: pd.DataFrame) -> list[str]:
@@ -149,54 +206,93 @@ def last_close_date(df: pd.DataFrame, now: datetime | None = None) -> str:
     return past[-1] if past else cap
 
 
-def _table(rows: list[dict], with_dates: bool = False) -> str:
+def _table(rows: list[dict], with_dates: bool = True) -> str:
+    rows = _sort_rows(rows)
     if not rows:
-        return "_لا صفوف._\n"
-    if with_dates:
-        lines = [
-            "| تاريخ | سهم | اتجاه | نوع | حالة | سعر | دخول | خروج | إغلاق | قسط | P&L عقد | جودة |",
-            "|-------|-----|--------|-----|------|-----|------|------|-------|-----|---------|------|",
-        ]
-    else:
-        lines = [
-            "| سهم | نوع | حالة | سعر | دخول | خروج | قسط | P&L عقد | جودة |",
-            "|-----|-----|------|-----|------|------|-----|---------|------|",
-        ]
+        return "_لا صفوف في هذا القسم._\n"
+    lines = [
+        "| سهم | النوع | النتيجة | سعر | دخول | خروج | العقد | التدقيق | سُجّل | أُغلق |",
+        "|-----|--------|---------|-----|------|------|-------|---------|------|------|",
+    ]
     for r in rows:
         kind = rec_kind(r)
-        status = str(r.get("status") or "").strip() or "—"
-        if with_dates:
-            lines.append(
-                "| {dt} | {ticker} | {dir} | {kind} | {status} | {px} | {entry} | {exit} | {xd} | {prem} | {pnl} | {q} |".format(
-                    dt=_cell(r.get("_date") or r.get("date")),
-                    ticker=_cell(r.get("ticker")),
-                    dir=_cell(r.get("direction")),
-                    kind=KIND_AR.get(kind, kind),
-                    status=STATUS_AR.get(status, status),
-                    px=_fmt_px(r.get("price_at_rec")),
-                    entry=_fmt_px(r.get("entry_stock")),
-                    exit=_fmt_px(r.get("exit_stock")),
-                    xd=_cell(r.get("_exit") or r.get("exit_date")) if r.get("_closed") or is_closed(r) else "—",
-                    prem=_fmt_px(r.get("premium")),
-                    pnl=_fmt_pct(r.get("option_pnl_pct")),
-                    q=_cell(r.get("data_quality")) or "—",
-                )
+        status = _status(r) or "—"
+        q = _quality(r)
+        closed = r["_closed"] if "_closed" in r else is_closed(r)
+        lines.append(
+            "| {ticker} | {kind} | {status} | {px} | {entry} | {exit} | {pnl} | {q} | {dt} | {xd} |".format(
+                ticker=_cell(r.get("ticker")),
+                kind=KIND_AR.get(kind, kind),
+                status=STATUS_AR.get(status, status),
+                px=_fmt_px(r.get("price_at_rec")),
+                entry=_fmt_px(r.get("entry_stock")),
+                exit=_fmt_px(r.get("exit_stock")) if closed else "—",
+                pnl=_fmt_pct(r.get("option_pnl_pct")) if closed else "—",
+                q=QUALITY_AR.get(q, _cell(r.get("data_quality")) or "—"),
+                dt=_cell(r.get("_date") or r.get("date")),
+                xd=_cell(r.get("_exit") or r.get("exit_date")) if closed else "—",
             )
-        else:
-            lines.append(
-                "| {ticker} | {kind} | {status} | {px} | {entry} | {exit} | {prem} | {pnl} | {q} |".format(
-                    ticker=_cell(r.get("ticker")),
-                    kind=KIND_AR.get(kind, kind),
-                    status=STATUS_AR.get(status, status),
-                    px=_fmt_px(r.get("price_at_rec")),
-                    entry=_fmt_px(r.get("entry_stock")),
-                    exit=_fmt_px(r.get("exit_stock")),
-                    prem=_fmt_px(r.get("premium")),
-                    pnl=_fmt_pct(r.get("option_pnl_pct")),
-                    q=_cell(r.get("data_quality")) or "—",
-                )
-            )
+        )
     return "\n".join(lines) + "\n"
+
+
+def _kind_blocks(rows: list[dict]) -> list[str]:
+    lines: list[str] = []
+    for kind in ("BUY", "WAIT_HOT", "LEGACY"):
+        chunk = [r for r in rows if r.get("_kind") == kind]
+        if not chunk:
+            continue
+        lines += [
+            f"### {KIND_HEADING[kind]} ({len(chunk)})",
+            "",
+            _table(chunk),
+        ]
+    if not lines:
+        return ["_لا صفوف في هذا القسم._", ""]
+    return lines
+
+
+def _fail_blocks(rows: list[dict]) -> list[str]:
+    lines: list[str] = []
+    for reason in FAIL_ORDER:
+        chunk = [r for r in rows if r.get("_fail") == reason]
+        if not chunk:
+            continue
+        lines += [
+            f"### {reason} ({len(chunk)})",
+            "",
+            _table(chunk),
+        ]
+    if not lines:
+        return ["_لا صفوف في هذا القسم._", ""]
+    return lines
+
+
+def _audit_sections(rows: list[dict]) -> list[str]:
+    groups = {
+        "محققة": [r for r in rows if r["_group"] == "محققة"],
+        "فشلت": [r for r in rows if r["_group"] == "فشلت"],
+        "انتظار": [r for r in rows if r["_group"] == "انتظار"],
+    }
+    blurbs = {
+        "محققة": "أُغلق على هدف، والتدقيق اعتمد الصف (جودة موثوق). القياس فقط من BUY هنا.",
+        "فشلت": "وقف، أو انتهاء، أو هدف لكن التدقيق لم يعتمدها (جزئي/ضعيف).",
+        "انتظار": "ما زال مفتوحاً في السجل. ليس قائمة تنفيذ اليوم.",
+    }
+    lines: list[str] = []
+    for name in ("محققة", "فشلت", "انتظار"):
+        chunk = groups[name]
+        lines += [
+            f"## {name} ({len(chunk)})",
+            "",
+            blurbs[name],
+            "",
+        ]
+        if name == "فشلت":
+            lines += _fail_blocks(chunk)
+        else:
+            lines += _kind_blocks(chunk)
+    return lines
 
 
 def _count_quality(rows: list[dict]) -> dict[str, int]:
@@ -289,12 +385,15 @@ def build_markdown(
     session_date: str,
     all_dates: list[str] | None = None,
 ) -> str:
-    """يوم واحد: ما سُجّل وما أُغلق في ذلك التاريخ. القياس الكامل في [[السجل]]."""
+    """يوم واحد بعد التدقيق: محققة / فشلت / انتظار. القياس الكامل في [[السجل]]."""
     rows = annotate(df)
     dates = all_dates if all_dates is not None else session_dates(df)
-    closed_today = [r for r in rows if r["_exit"] == session_date]
-    dated_today = [r for r in rows if r["_date"] == session_date]
-    q_closed = _count_quality(closed_today)
+    day = [
+        r for r in rows
+        if r["_date"] == session_date or r["_exit"] == session_date
+    ]
+    n_new = len([r for r in day if r["_date"] == session_date])
+    n_closed = len([r for r in day if r["_exit"] == session_date])
 
     lines = [
         "---",
@@ -309,24 +408,15 @@ def build_markdown(
         "",
         "مصدر: السجل بعد الإغلاق فقط. ليست توصية وليست شاشة تنفيذ. لا ترقية WAIT→BUY.",
         "",
-        f"هذا اليوم فقط. السجل من البداية حتى آخر إغلاق: [[السجل]].",
+        "هذا اليوم فقط. السجل الكامل: [[السجل]].",
         "",
-        f"- سُجّل: {len(dated_today)} · أُغلق: {len(closed_today)}"
-        f" · جودة الإغلاق: موثوق {q_closed['reliable']} · جزئي {q_closed['partial']} · ضعيف {q_closed['unreliable']}",
-        f"- من المسجَّل اليوم: BUY {len([r for r in dated_today if r['_kind']=='BUY'])}"
-        f" · WAIT_HOT {len([r for r in dated_today if r['_kind']=='WAIT_HOT'])}"
-        f" · بلا نوع {len([r for r in dated_today if r['_kind']=='LEGACY'])}",
+        f"سُجّل اليوم **{n_new}** · أُغلق اليوم **{n_closed}**.",
         "",
-        f"## أُغلق في {session_date}",
+        "يتحدّث تلقائياً بعد إغلاق السوق من السجل. لا يتحدّث أثناء التداول.",
         "",
-        f"{len(closed_today)} صف — الأسعار من السجل (أعمدة يومية).",
-        "",
-        _table(closed_today, with_dates=True),
-        f"## سُجّل بتاريخ {session_date}",
-        "",
-        f"{len(dated_today)} صف.",
-        "",
-        _table(dated_today, with_dates=True),
+    ]
+    lines += _audit_sections(day)
+    lines += [
         "[[القاعدة]] · [[الشركاء]] · [[السجل]]",
         "",
     ]
@@ -335,12 +425,7 @@ def build_markdown(
 
 def build_ledger_markdown(df: pd.DataFrame, last_close: str) -> str:
     rows = annotate(df)
-    rows_sorted = sorted(
-        rows,
-        key=lambda r: (r["_date"] or "9999", str(r.get("ticker") or ""), r["_exit"] or ""),
-    )
     k = _kpi(rows)
-    q = k["quality"]
     dates = [d for d in session_dates(df) if d <= last_close]
     first = dates[0] if dates else last_close
     day_links = " · ".join(f"[[{d}]]" for d in dates)
@@ -355,45 +440,19 @@ def build_ledger_markdown(df: pd.DataFrame, last_close: str) -> str:
         "",
         "# السجل",
         "",
-        f"من **{first}** إلى آخر إغلاق **{last_close}**. المصدر: `outcomes.csv` فقط. ليست توصية. لا ترقية WAIT→BUY.",
+        f"من **{first}** إلى آخر إغلاق **{last_close}**. المصدر: `outcomes.csv` فقط.",
+        "",
+        "ليست توصية. ليست شاشة تنفيذ. لا ترقية WAIT→BUY.",
+        "",
+        "**التحديث:** تلقائي بعد إغلاق السوق (4:30 و 5:30 ET) من السجل. يُضاف ما أُغلق ويُنقل من انتظار. لا يتحدّث أثناء التداول. على الجهاز يظهر بعد سحب GitHub.",
         "",
     ]
-    lines += _kpi_block(k)
+    lines += _kpi_block(k, heading="## قياس النظام")
+    lines += _audit_sections(rows)
     lines += [
-        "## جودة السجل",
-        "",
-        f"- الكل: موثوق {q['reliable']} · جزئي {q['partial']} · ضعيف {q['unreliable']} · مفتوح {q['open']}",
-        f"- الصفوف: {len(rows)}",
-        "",
-        "## الجلسات",
+        "## الأيام",
         "",
         day_links if day_links else "_لا أيام._",
-        "",
-        "## كل الصفوف",
-        "",
-        _table(rows_sorted, with_dates=True),
-        "## ما زال مفتوحاً — BUY",
-        "",
-        f"{len(k['buy_open'])} صف BUY مفتوح (ليس قائمة تنفيذ).",
-        "",
-        _table(k["buy_open"], with_dates=True),
-        "## ما زال مفتوحاً — WAIT_HOT",
-        "",
-        f"{len(k['wait_open'])} صف مراقبة. المفتوح حتى EOD ليس تنفيذاً.",
-        "",
-    ]
-    if k["wait_open"]:
-        tickers = ", ".join(
-            f"{_cell(r.get('ticker'))}"
-            for r in k["wait_open"]
-        )
-        lines.append(tickers + ".")
-        lines.append("")
-    else:
-        lines.append("_لا صفوف._")
-        lines.append("")
-    lines += [
-        f"مفتوح الكل: {len(k['open_rows'])}.",
         "",
         "[[القاعدة]] · [[الشركاء]]",
         "",
