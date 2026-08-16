@@ -1,5 +1,5 @@
 """
-ملفات أوبسيديان من outcomes.csv فقط: جلسة لكل يوم + السجل الكامل.
+ملفات أوبسيديان من outcomes.csv فقط: السجل يتفرع إلى محققة / فشلت / انتظار.
 
 لا يلمس المحرك، لا يرقّي WAIT→BUY، لا يخمن أسعاراً.
 يُشغَّل بعد EOD حين يكون السجل قد حُدِّث.
@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import argparse
 import os
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -22,6 +22,17 @@ SESSIONS_DIR = ROOT / "sessions"
 DEFAULT_VAULT = Path.home() / "Documents" / "Second-Brain" / "جلسات"
 STUDY_N = 30
 LEDGER_NOTE = "السجل.md"
+BRANCH_NOTES = {
+    "محققة": "محققة.md",
+    "فشلت": "فشلت.md",
+    "انتظار": "انتظار.md",
+}
+
+GROUP_BLURB = {
+    "محققة": "أُغلق على هدف، والتدقيق اعتمد الصف (جودة موثوق). القياس فقط من BUY هنا.",
+    "فشلت": "وقف، أو انتهاء، أو هدف لكن التدقيق لم يعتمدها (جزئي/ضعيف).",
+    "انتظار": "ما زال مفتوحاً في السجل. ليس قائمة تنفيذ اليوم.",
+}
 
 STATUS_AR = {
     "tp1_hit": "هدف 1",
@@ -268,30 +279,22 @@ def _fail_blocks(rows: list[dict]) -> list[str]:
     return lines
 
 
-def _audit_sections(rows: list[dict]) -> list[str]:
-    groups = {
-        "محققة": [r for r in rows if r["_group"] == "محققة"],
-        "فشلت": [r for r in rows if r["_group"] == "فشلت"],
-        "انتظار": [r for r in rows if r["_group"] == "انتظار"],
-    }
-    blurbs = {
-        "محققة": "أُغلق على هدف، والتدقيق اعتمد الصف (جودة موثوق). القياس فقط من BUY هنا.",
-        "فشلت": "وقف، أو انتهاء، أو هدف لكن التدقيق لم يعتمدها (جزئي/ضعيف).",
-        "انتظار": "ما زال مفتوحاً في السجل. ليس قائمة تنفيذ اليوم.",
-    }
-    lines: list[str] = []
-    for name in ("محققة", "فشلت", "انتظار"):
-        chunk = groups[name]
-        lines += [
-            f"## {name} ({len(chunk)})",
-            "",
-            blurbs[name],
-            "",
-        ]
-        if name == "فشلت":
-            lines += _fail_blocks(chunk)
-        else:
-            lines += _kind_blocks(chunk)
+def _group_rows(rows: list[dict], name: str) -> list[dict]:
+    return [r for r in rows if r.get("_group") == name]
+
+
+def _group_body(name: str, rows: list[dict]) -> list[str]:
+    chunk = _group_rows(rows, name)
+    lines = [
+        GROUP_BLURB[name],
+        "",
+        f"**{len(chunk)}** صف. المصدر: السجل بعد الإغلاق. ليست توصية.",
+        "",
+    ]
+    if name == "فشلت":
+        lines += _fail_blocks(chunk)
+    else:
+        lines += _kind_blocks(chunk)
     return lines
 
 
@@ -339,7 +342,7 @@ def _kpi(rows: list[dict]) -> dict:
     }
 
 
-def _kpi_block(k: dict, heading: str = "## قياس النظام (BUY مغلق موثوق)") -> list[str]:
+def _kpi_block(k: dict, heading: str = "## قياس النظام") -> list[str]:
     n_rel = k["n_rel"]
     lines = [
         heading,
@@ -362,62 +365,36 @@ def _kpi_block(k: dict, heading: str = "## قياس النظام (BUY مغلق �
     return lines
 
 
-def _nav(session_date: str, all_dates: list[str] | None) -> str:
-    dates = all_dates or []
-    prev_d = next_d = ""
-    if session_date in dates:
-        i = dates.index(session_date)
-        if i > 0:
-            prev_d = dates[i - 1]
-        if i + 1 < len(dates):
-            next_d = dates[i + 1]
-    parts = []
-    if prev_d:
-        parts.append(f"← [[{prev_d}]]")
-    parts.append("[[السجل]]")
-    if next_d:
-        parts.append(f"[[{next_d}]] →")
-    return " · ".join(parts)
-
-
-def build_markdown(
+def build_branch_markdown(
     df: pd.DataFrame,
-    session_date: str,
-    all_dates: list[str] | None = None,
+    name: str,
+    last_close: str,
 ) -> str:
-    """يوم واحد بعد التدقيق: محققة / فشلت / انتظار. القياس الكامل في [[السجل]]."""
     rows = annotate(df)
-    dates = all_dates if all_dates is not None else session_dates(df)
-    day = [
-        r for r in rows
-        if r["_date"] == session_date or r["_exit"] == session_date
-    ]
-    n_new = len([r for r in day if r["_date"] == session_date])
-    n_closed = len([r for r in day if r["_exit"] == session_date])
-
+    dates = [d for d in session_dates(df) if d <= last_close]
+    first = dates[0] if dates else last_close
+    n = len(_group_rows(rows, name))
     lines = [
         "---",
-        f"date: {session_date}",
+        f"branch: {name}",
+        f"from: {first}",
+        f"to: {last_close}",
         "source: outcomes.csv",
         "engine: none",
         "---",
         "",
-        f"# جلسة {session_date}",
+        f"# {name}",
         "",
-        _nav(session_date, dates),
+        f"متفرع من [[السجل]]. من **{first}** إلى **{last_close}** — {n} صف.",
         "",
-        "مصدر: السجل بعد الإغلاق فقط. ليست توصية وليست شاشة تنفيذ. لا ترقية WAIT→BUY.",
+        "[[محققة]] · [[فشلت]] · [[انتظار]]",
         "",
-        "هذا اليوم فقط. السجل الكامل: [[السجل]].",
-        "",
-        f"سُجّل اليوم **{n_new}** · أُغلق اليوم **{n_closed}**.",
-        "",
-        "يتحدّث تلقائياً بعد إغلاق السوق من السجل. لا يتحدّث أثناء التداول.",
+        "يتحدّث تلقائياً بعد إغلاق السوق. لا يتحدّث أثناء التداول.",
         "",
     ]
-    lines += _audit_sections(day)
+    lines += _group_body(name, rows)
     lines += [
-        "[[القاعدة]] · [[الشركاء]] · [[السجل]]",
+        "[[السجل]] · [[القاعدة]] · [[الشركاء]]",
         "",
     ]
     return "\n".join(lines)
@@ -428,7 +405,7 @@ def build_ledger_markdown(df: pd.DataFrame, last_close: str) -> str:
     k = _kpi(rows)
     dates = [d for d in session_dates(df) if d <= last_close]
     first = dates[0] if dates else last_close
-    day_links = " · ".join(f"[[{d}]]" for d in dates)
+    counts = {name: len(_group_rows(rows, name)) for name in BRANCH_NOTES}
 
     lines = [
         "---",
@@ -444,16 +421,17 @@ def build_ledger_markdown(df: pd.DataFrame, last_close: str) -> str:
         "",
         "ليست توصية. ليست شاشة تنفيذ. لا ترقية WAIT→BUY.",
         "",
-        "**التحديث:** تلقائي بعد إغلاق السوق (4:30 و 5:30 ET) من السجل. يُضاف ما أُغلق ويُنقل من انتظار. لا يتحدّث أثناء التداول. على الجهاز يظهر بعد سحب GitHub.",
+        "بعد التدقيق يتفرع إلى:",
+        "",
+        f"- [[محققة]] — {counts['محققة']} (هدف + جودة معتمدة)",
+        f"- [[فشلت]] — {counts['فشلت']} (وقف / انتهاء / هدف بلا اعتماد)",
+        f"- [[انتظار]] — {counts['انتظار']} (ما زال مفتوحاً)",
+        "",
+        "**التحديث:** تلقائي بعد إغلاق السوق (4:30 و 5:30 ET). يُضاف ما أُغلق ويُنقل من [[انتظار]]. لا يتحدّث أثناء التداول. على الجهاز يظهر بعد سحب GitHub.",
         "",
     ]
-    lines += _kpi_block(k, heading="## قياس النظام")
-    lines += _audit_sections(rows)
+    lines += _kpi_block(k)
     lines += [
-        "## الأيام",
-        "",
-        day_links if day_links else "_لا أيام._",
-        "",
         "[[القاعدة]] · [[الشركاء]]",
         "",
     ]
@@ -493,19 +471,6 @@ def _write_text(dests: list[Path], name: str, body: str) -> list[Path]:
     return written
 
 
-def write_session_note(
-    df: pd.DataFrame,
-    session_date: str,
-    out_dir: Path | None = None,
-    copy_vault: bool = True,
-    all_dates: list[str] | None = None,
-) -> list[Path]:
-    out_dir = Path(out_dir) if out_dir else SESSIONS_DIR
-    out_dir.mkdir(parents=True, exist_ok=True)
-    body = build_markdown(df, session_date, all_dates=all_dates)
-    return _write_text(_dest_dirs(out_dir, copy_vault), f"{session_date}.md", body)
-
-
 def write_ledger_note(
     df: pd.DataFrame,
     last_close: str,
@@ -518,49 +483,68 @@ def write_ledger_note(
     return _write_text(_dest_dirs(out_dir, copy_vault), LEDGER_NOTE, body)
 
 
+def write_branch_note(
+    df: pd.DataFrame,
+    name: str,
+    last_close: str,
+    out_dir: Path | None = None,
+    copy_vault: bool = True,
+) -> list[Path]:
+    out_dir = Path(out_dir) if out_dir else SESSIONS_DIR
+    out_dir.mkdir(parents=True, exist_ok=True)
+    body = build_branch_markdown(df, name, last_close)
+    return _write_text(_dest_dirs(out_dir, copy_vault), BRANCH_NOTES[name], body)
+
+
+def prune_daily_notes(out_dir: Path) -> list[Path]:
+    """أزل ملفات الأيام القديمة — السجل يتفرع إلى 3 أقسام فقط."""
+    removed = []
+    if not out_dir.exists():
+        return removed
+    for path in out_dir.glob("*.md"):
+        stem = path.stem
+        if len(stem) == 10 and stem[4] == "-" and stem[7] == "-" and stem[:4].isdigit():
+            path.unlink()
+            removed.append(path)
+    return removed
+
+
 def write_all_notes(
     df: pd.DataFrame,
     out_dir: Path | None = None,
     copy_vault: bool = True,
     now: datetime | None = None,
 ) -> list[Path]:
+    out_dir = Path(out_dir) if out_dir else SESSIONS_DIR
+    out_dir.mkdir(parents=True, exist_ok=True)
     last = last_close_date(df, now=now)
-    dates = [d for d in session_dates(df) if d <= last]
     written: list[Path] = []
     written.extend(write_ledger_note(df, last, out_dir=out_dir, copy_vault=copy_vault))
-    for d in dates:
+    for name in BRANCH_NOTES:
         written.extend(
-            write_session_note(
-                df, d, out_dir=out_dir, copy_vault=copy_vault, all_dates=dates
+            write_branch_note(
+                df, name, last, out_dir=out_dir, copy_vault=copy_vault
             )
         )
+    prune_daily_notes(out_dir)
+    if copy_vault:
+        vault = vault_dir()
+        if vault is not None and vault.resolve() != out_dir.resolve():
+            prune_daily_notes(vault)
     return written
 
 
 def main(argv: list[str] | None = None) -> int:
-    p = argparse.ArgumentParser(description="ملفات جلسة وسجل من outcomes.csv فقط")
-    p.add_argument("--date", help="YYYY-MM-DD ليوم واحد. بدونها: كل الأيام حتى آخر إغلاق")
+    p = argparse.ArgumentParser(description="السجل يتفرع إلى محققة / فشلت / انتظار من outcomes.csv")
     p.add_argument("--csv", default=str(OUTCOMES_FILE))
     p.add_argument("--out", default=str(SESSIONS_DIR))
     p.add_argument("--no-vault", action="store_true")
-    p.add_argument("--all", action="store_true", help="كل الأيام + السجل الكامل (افتراضي إذا لم يُمرَّر --date)")
     args = p.parse_args(argv)
 
     df = load_outcomes(Path(args.csv))
-    copy_vault = not args.no_vault
-    out = Path(args.out)
-
-    if args.date:
-        date.fromisoformat(args.date)
-        last = last_close_date(df)
-        dates = [d for d in session_dates(df) if d <= last]
-        paths = write_session_note(
-            df, args.date, out_dir=out, copy_vault=copy_vault, all_dates=dates
-        )
-        paths.extend(write_ledger_note(df, last, out_dir=out, copy_vault=copy_vault))
-    else:
-        paths = write_all_notes(df, out_dir=out, copy_vault=copy_vault)
-
+    paths = write_all_notes(
+        df, out_dir=Path(args.out), copy_vault=not args.no_vault
+    )
     seen = set()
     for path in paths:
         key = str(path)
