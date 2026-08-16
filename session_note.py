@@ -1,8 +1,8 @@
 """
-ملفات أوبسيديان من outcomes.csv فقط: السجل يتفرع إلى محققة / فشلت / انتظار.
+ملفات أوبسيديان من outcomes.csv فقط.
 
+الأيام → [[السجل]] → تتفرع [[تحققت]] [[فشلت]] [[انتظار]] وغيرها.
 لا يلمس المحرك، لا يرقّي WAIT→BUY، لا يخمن أسعاراً.
-يُشغَّل بعد EOD حين يكون السجل قد حُدِّث.
 """
 
 from __future__ import annotations
@@ -23,13 +23,19 @@ DEFAULT_VAULT = Path.home() / "Documents" / "Second-Brain" / "جلسات"
 STUDY_N = 30
 LEDGER_NOTE = "السجل.md"
 BRANCH_NOTES = {
-    "محققة": "محققة.md",
+    "تحققت": "تحققت.md",
     "فشلت": "فشلت.md",
     "انتظار": "انتظار.md",
 }
+FAIL_NOTES = {
+    "وقف": "وقف.md",
+    "انتهاء": "انتهاء.md",
+    "هدف بلا اعتماد": "بلا اعتماد.md",
+}
+STALE_NOTES = ("محققة.md",)
 
 GROUP_BLURB = {
-    "محققة": "أُغلق على هدف، والتدقيق اعتمد الصف (جودة موثوق). القياس فقط من BUY هنا.",
+    "تحققت": "أُغلق على هدف، والتدقيق اعتمد الصف (جودة موثوق). القياس فقط من BUY هنا.",
     "فشلت": "وقف، أو انتهاء، أو هدف لكن التدقيق لم يعتمدها (جزئي/ضعيف).",
     "انتظار": "ما زال مفتوحاً في السجل. ليس قائمة تنفيذ اليوم.",
 }
@@ -144,12 +150,12 @@ def _status(row) -> str:
 
 
 def audit_group(row) -> str:
-    """بعد التدقيق: محققة = هدف + جودة معتمدة. انتظار = لم يُغلق. الباقي فشلت."""
+    """بعد التدقيق: تحققت = هدف + جودة معتمدة. انتظار = لم يُغلق. الباقي فشلت."""
     closed = row["_closed"] if "_closed" in row else is_closed(row)
     if not closed:
         return "انتظار"
     if _quality(row) == "reliable" and _status(row).startswith("tp"):
-        return "محققة"
+        return "تحققت"
     return "فشلت"
 
 
@@ -365,6 +371,89 @@ def _kpi_block(k: dict, heading: str = "## قياس النظام") -> list[str]:
     return lines
 
 
+def _day_nav(session_date: str, all_dates: list[str]) -> str:
+    prev_d = next_d = ""
+    if session_date in all_dates:
+        i = all_dates.index(session_date)
+        if i > 0:
+            prev_d = all_dates[i - 1]
+        if i + 1 < len(all_dates):
+            next_d = all_dates[i + 1]
+    parts = []
+    if prev_d:
+        parts.append(f"← [[{prev_d}]]")
+    parts.append("[[السجل]]")
+    if next_d:
+        parts.append(f"[[{next_d}]] →")
+    return " · ".join(parts)
+
+
+def build_day_markdown(
+    df: pd.DataFrame,
+    session_date: str,
+    all_dates: list[str] | None = None,
+) -> str:
+    """يوم واحد يذهب إلى السجل. لا يربط فروع التدقيق حتى يبقى الرسم نجمة حول السجل."""
+    rows = annotate(df)
+    dates = all_dates if all_dates is not None else session_dates(df)
+    day = [
+        r for r in rows
+        if r["_date"] == session_date or r["_exit"] == session_date
+    ]
+    n_new = len([r for r in day if r["_date"] == session_date])
+    n_closed = len([r for r in day if r["_exit"] == session_date])
+    lines = [
+        "---",
+        f"date: {session_date}",
+        "source: outcomes.csv",
+        "engine: none",
+        "---",
+        "",
+        f"# {session_date}",
+        "",
+        _day_nav(session_date, dates),
+        "",
+        f"يذهب إلى [[السجل]]. سُجّل **{n_new}** · أُغلق **{n_closed}**.",
+        "",
+        _table(day),
+        "[[السجل]]",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def build_fail_markdown(
+    df: pd.DataFrame,
+    reason: str,
+    last_close: str,
+) -> str:
+    rows = annotate(df)
+    dates = [d for d in session_dates(df) if d <= last_close]
+    first = dates[0] if dates else last_close
+    chunk = [r for r in rows if r.get("_fail") == reason]
+    title = "بلا اعتماد" if reason == "هدف بلا اعتماد" else reason
+    lines = [
+        "---",
+        f"branch: {title}",
+        f"from: {first}",
+        f"to: {last_close}",
+        "source: outcomes.csv",
+        "engine: none",
+        "---",
+        "",
+        f"# {title}",
+        "",
+        f"متفرع من [[السجل]] عبر [[فشلت]]. من **{first}** إلى **{last_close}** — {len(chunk)} صف.",
+        "",
+        "[[تحققت]] · [[فشلت]] · [[انتظار]]",
+        "",
+        _table(chunk),
+        "[[السجل]]",
+        "",
+    ]
+    return "\n".join(lines)
+
+
 def build_branch_markdown(
     df: pd.DataFrame,
     name: str,
@@ -374,6 +463,9 @@ def build_branch_markdown(
     dates = [d for d in session_dates(df) if d <= last_close]
     first = dates[0] if dates else last_close
     n = len(_group_rows(rows, name))
+    extra = ""
+    if name == "فشلت":
+        extra = "يتفرع أيضاً إلى [[وقف]] · [[انتهاء]] · [[بلا اعتماد]]."
     lines = [
         "---",
         f"branch: {name}",
@@ -387,14 +479,18 @@ def build_branch_markdown(
         "",
         f"متفرع من [[السجل]]. من **{first}** إلى **{last_close}** — {n} صف.",
         "",
-        "[[محققة]] · [[فشلت]] · [[انتظار]]",
+        "[[تحققت]] · [[فشلت]] · [[انتظار]]",
         "",
+    ]
+    if extra:
+        lines += [extra, ""]
+    lines += [
         "يتحدّث تلقائياً بعد إغلاق السوق. لا يتحدّث أثناء التداول.",
         "",
     ]
     lines += _group_body(name, rows)
     lines += [
-        "[[السجل]] · [[القاعدة]] · [[الشركاء]]",
+        "[[السجل]]",
         "",
     ]
     return "\n".join(lines)
@@ -406,6 +502,11 @@ def build_ledger_markdown(df: pd.DataFrame, last_close: str) -> str:
     dates = [d for d in session_dates(df) if d <= last_close]
     first = dates[0] if dates else last_close
     counts = {name: len(_group_rows(rows, name)) for name in BRANCH_NOTES}
+    fail_counts = {
+        reason: len([r for r in rows if r.get("_fail") == reason])
+        for reason in FAIL_NOTES
+    }
+    day_links = " · ".join(f"[[{d}]]" for d in dates)
 
     lines = [
         "---",
@@ -421,13 +522,17 @@ def build_ledger_markdown(df: pd.DataFrame, last_close: str) -> str:
         "",
         "ليست توصية. ليست شاشة تنفيذ. لا ترقية WAIT→BUY.",
         "",
-        "بعد التدقيق يتفرع إلى:",
+        "## الأيام",
         "",
-        f"- [[محققة]] — {counts['محققة']} (هدف + جودة معتمدة)",
-        f"- [[فشلت]] — {counts['فشلت']} (وقف / انتهاء / هدف بلا اعتماد)",
-        f"- [[انتظار]] — {counts['انتظار']} (ما زال مفتوحاً)",
+        day_links if day_links else "_لا أيام._",
         "",
-        "**التحديث:** تلقائي بعد إغلاق السوق (4:30 و 5:30 ET). يُضاف ما أُغلق ويُنقل من [[انتظار]]. لا يتحدّث أثناء التداول. على الجهاز يظهر بعد سحب GitHub.",
+        "## يتفرع بعد التدقيق",
+        "",
+        f"- [[تحققت]] — {counts['تحققت']}",
+        f"- [[فشلت]] — {counts['فشلت']} → [[وقف]] ({fail_counts['وقف']}) · [[انتهاء]] ({fail_counts['انتهاء']}) · [[بلا اعتماد]] ({fail_counts['هدف بلا اعتماد']})",
+        f"- [[انتظار]] — {counts['انتظار']}",
+        "",
+        "**التحديث:** تلقائي بعد إغلاق السوق. الأيام تُضاف هنا، وما أُغلق ينتقل من [[انتظار]] إلى [[تحققت]] أو [[فشلت]]. لا يتحدّث أثناء التداول.",
         "",
     ]
     lines += _kpi_block(k)
@@ -496,17 +601,45 @@ def write_branch_note(
     return _write_text(_dest_dirs(out_dir, copy_vault), BRANCH_NOTES[name], body)
 
 
-def prune_daily_notes(out_dir: Path) -> list[Path]:
-    """أزل ملفات الأيام القديمة — السجل يتفرع إلى 3 أقسام فقط."""
-    removed = []
+def write_day_note(
+    df: pd.DataFrame,
+    session_date: str,
+    out_dir: Path | None = None,
+    copy_vault: bool = True,
+    all_dates: list[str] | None = None,
+) -> list[Path]:
+    out_dir = Path(out_dir) if out_dir else SESSIONS_DIR
+    out_dir.mkdir(parents=True, exist_ok=True)
+    body = build_day_markdown(df, session_date, all_dates=all_dates)
+    return _write_text(_dest_dirs(out_dir, copy_vault), f"{session_date}.md", body)
+
+
+def write_fail_note(
+    df: pd.DataFrame,
+    reason: str,
+    last_close: str,
+    out_dir: Path | None = None,
+    copy_vault: bool = True,
+) -> list[Path]:
+    out_dir = Path(out_dir) if out_dir else SESSIONS_DIR
+    out_dir.mkdir(parents=True, exist_ok=True)
+    body = build_fail_markdown(df, reason, last_close)
+    return _write_text(_dest_dirs(out_dir, copy_vault), FAIL_NOTES[reason], body)
+
+
+def prune_stale_notes(out_dir: Path, keep_dates: list[str]) -> None:
     if not out_dir.exists():
-        return removed
+        return
+    keep = set(keep_dates)
+    for name in STALE_NOTES:
+        path = out_dir / name
+        if path.exists():
+            path.unlink()
     for path in out_dir.glob("*.md"):
         stem = path.stem
         if len(stem) == 10 and stem[4] == "-" and stem[7] == "-" and stem[:4].isdigit():
-            path.unlink()
-            removed.append(path)
-    return removed
+            if stem not in keep:
+                path.unlink()
 
 
 def write_all_notes(
@@ -518,24 +651,33 @@ def write_all_notes(
     out_dir = Path(out_dir) if out_dir else SESSIONS_DIR
     out_dir.mkdir(parents=True, exist_ok=True)
     last = last_close_date(df, now=now)
+    dates = [d for d in session_dates(df) if d <= last]
     written: list[Path] = []
     written.extend(write_ledger_note(df, last, out_dir=out_dir, copy_vault=copy_vault))
     for name in BRANCH_NOTES:
         written.extend(
-            write_branch_note(
-                df, name, last, out_dir=out_dir, copy_vault=copy_vault
+            write_branch_note(df, name, last, out_dir=out_dir, copy_vault=copy_vault)
+        )
+    for reason in FAIL_NOTES:
+        written.extend(
+            write_fail_note(df, reason, last, out_dir=out_dir, copy_vault=copy_vault)
+        )
+    for d in dates:
+        written.extend(
+            write_day_note(
+                df, d, out_dir=out_dir, copy_vault=copy_vault, all_dates=dates
             )
         )
-    prune_daily_notes(out_dir)
+    prune_stale_notes(out_dir, dates)
     if copy_vault:
         vault = vault_dir()
         if vault is not None and vault.resolve() != out_dir.resolve():
-            prune_daily_notes(vault)
+            prune_stale_notes(vault, dates)
     return written
 
 
 def main(argv: list[str] | None = None) -> int:
-    p = argparse.ArgumentParser(description="السجل يتفرع إلى محققة / فشلت / انتظار من outcomes.csv")
+    p = argparse.ArgumentParser(description="أيام → السجل → تحققت / فشلت / انتظار")
     p.add_argument("--csv", default=str(OUTCOMES_FILE))
     p.add_argument("--out", default=str(SESSIONS_DIR))
     p.add_argument("--no-vault", action="store_true")

@@ -36,7 +36,7 @@ jobs:
           EOD_RUN: 'true'
         run: python outcome_tracker.py
 
-      - name: Ledger branches from outcomes (verified / failed / waiting)
+      - name: Days → ledger → verified / failed / waiting notes
         run: python session_note.py --no-vault
 
       - name: Commit outcomes.csv
