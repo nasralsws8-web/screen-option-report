@@ -36,8 +36,11 @@ jobs:
           EOD_RUN: 'true'
         run: python outcome_tracker.py
 
+      - name: Session notes from ledger (start → last close)
+        run: python session_note.py --no-vault
+
       - name: Commit outcomes.csv
         run: |
           bash .github/scripts/push_csv_changes.sh \
             "EOD outcomes: $(date -u '+%Y-%m-%d %H:%M UTC')" \
-            outcomes.csv
+            outcomes.csv sessions/
