@@ -106,6 +106,24 @@ def parse_date(val):
         return None
 
 
+def is_eod_run():
+    return os.environ.get("EOD_RUN", "").lower() in ("1", "true", "yes")
+
+
+def expiry_reached(today, expiry_date, eod=None):
+    """
+    عقد ينتهي اليوم يُغلق بعد إغلاق السوق (EOD: today >= expiry).
+    أثناء الجلسة يبقى مفتوحاً حتى يمر يوم الانتهاء (today > expiry).
+    """
+    if today is None or expiry_date is None:
+        return False
+    if eod is None:
+        eod = is_eod_run()
+    if eod:
+        return today >= expiry_date
+    return today > expiry_date
+
+
 def valid_target(price):
     try:
         return float(price) > 0
@@ -628,7 +646,7 @@ def compute_path_metrics(row, hist, today=None):
 
     if status == "open":
         hold_end = today
-        if expiry_date and today > expiry_date:
+        if expiry_date and expiry_reached(today, expiry_date):
             hold_end = expiry_date
     else:
         hold_end = exit_date or today
@@ -1477,8 +1495,8 @@ def update_open_outcomes(outcomes_df, hist_cache=None):
                     status, exit_price, exit_d = touch
                     apply_close(outcomes_df, idx, row, status, entry, exit_price, is_call, exit_d)
 
-        if today > expiry_date and outcomes_df.at[idx, "status"] == "open":
-            # إغلاق بانتهاء العقد — استخدم إغلاق يوم الانتهاء إن وُجد
+        if expiry_reached(today, expiry_date) and outcomes_df.at[idx, "status"] == "open":
+            # إغلاق بانتهاء العقد — في EOD اليوم >= الانتهاء؛ أثناء الجلسة اليوم > الانتهاء
             exp_close = hist_close_on_or_before(hist, expiry_date)
             last_close = exp_close if exp_close is not None else float(hist["Close"].iloc[-1])
             apply_close(
