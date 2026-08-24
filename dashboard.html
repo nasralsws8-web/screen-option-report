@@ -670,12 +670,6 @@ function isUsMarketHours() {
   return mins >= (9 * 60 + 45) && mins < (16 * 60);
 }
 
-function isRegularSessionOver() {
-  const { weekend, mins } = etClockParts();
-  if (weekend) return true;
-  return mins >= (16 * 60);
-}
-
 /** نافذة التنفيذ المتفق عليها: بعد 9:45 ET (4:45 السعودية) — نفس بوابة Python */
 function isExecWindow() {
   return isUsMarketHours();
@@ -687,9 +681,6 @@ function updateExecWindowBadge() {
   if (isExecWindow()) {
     el.textContent = 'نافذة التنفيذ: مفتوحة (بعد ٤:٤٥)';
     el.className = 'exec-badge ok';
-  } else if (isRegularSessionOver()) {
-    el.textContent = 'نافذة التنفيذ: مغلقة — السوق مغلق';
-    el.className = 'exec-badge';
   } else {
     el.textContent = 'نافذة التنفيذ: مغلقة — راقب فقط حتى ٤:٤٥';
     el.className = 'exec-badge';
@@ -975,12 +966,7 @@ function passesOpsRules(plan) {
   }
   if (regime === 'BULL' && isPut) return { ok: false, why: 'PUT ضد SPY صاعد' };
   if (regime === 'BEAR' && isCall) return { ok: false, why: 'CALL ضد SPY هابط' };
-  if (!isExecWindow()) {
-    return {
-      ok: false,
-      why: isRegularSessionOver() ? 'السوق مغلق — لا تنفيذ بعد الإغلاق' : 'قبل نافذة ٤:٤٥',
-    };
-  }
+  if (!isExecWindow()) return { ok: false, why: 'قبل نافذة ٤:٤٥' };
   return { ok: true, why: '' };
 }
 
@@ -2811,11 +2797,9 @@ async function loadHistory(force) {
     const closed  = rows.filter(r => r.status !== 'open');
     const inverseRows = rows.filter(isInverseOutcome);
     const coreRows = rows.filter(r => !isInverseOutcome(r));
-    const buyRows = coreRows.filter(r => outcomeRecKind(r) === 'BUY');
-    const buyClosed = buyRows.filter(r => r.status !== 'open');
-    // رأس النسب: شراء مغلق موثوق فقط — لا انتظار HOT ولا يوليو بلا نوع
-    const reliable = buyClosed.filter(r =>
-      String(r.data_quality || '').toLowerCase() === 'reliable'
+    // النسب فوق تعتمد فقط على reliable — لا نخلط تقدير/تناقض/بدون دخول/عكسي
+    const reliable = closed.filter(r =>
+      String(r.data_quality || '').toLowerCase() === 'reliable' && !isInverseOutcome(r)
     );
     const kpiBase = reliable;
     const withOpt = kpiBase.filter(r => r.option_pnl_pct !== '' && r.option_pnl_pct != null && !isNaN(parseFloat(r.option_pnl_pct)));
@@ -2830,9 +2814,9 @@ async function loadHistory(force) {
     const avgLoss = stops.length ? (stops.reduce((s,r)=>s+pnlField(r),0)/stops.length).toFixed(1) : '—';
     const pnlLabel = withOpt.length ? 'P&L معتمد' : 'سهم معتمد';
     const qCounts = {
-      reliable: buyClosed.filter(r => String(r.data_quality||'').toLowerCase()==='reliable').length,
-      partial: buyClosed.filter(r => String(r.data_quality||'').toLowerCase()==='partial').length,
-      unreliable: buyClosed.filter(r => String(r.data_quality||'').toLowerCase()==='unreliable').length,
+      reliable: closed.filter(r => String(r.data_quality||'').toLowerCase()==='reliable' && !isInverseOutcome(r)).length,
+      partial: closed.filter(r => String(r.data_quality||'').toLowerCase()==='partial' && !isInverseOutcome(r)).length,
+      unreliable: closed.filter(r => String(r.data_quality||'').toLowerCase()==='unreliable' && !isInverseOutcome(r)).length,
       inverse: inverseRows.filter(r => r.status !== 'open').length,
     };
     const srcLabel = String(source || '').startsWith('http') ? 'GitHub' : 'محلي';
@@ -2843,7 +2827,7 @@ async function loadHistory(force) {
     const kClean = subsetOutcomeKpis(buyClean);
     const kChase = subsetOutcomeKpis(buyChase);
     const kHot = subsetOutcomeKpis(waitHot);
-    const week = last7DaysRows(buyRows);
+    const week = last7DaysRows(coreRows);
     const kWeek = subsetOutcomeKpis(week.rows);
     const weekByDay = {};
     week.rows.forEach(r => {
@@ -2890,19 +2874,19 @@ async function loadHistory(force) {
       <summary>${marketOpen ? 'محاسبة السجل — مطوية وقت السوق (بعد الإغلاق)' : 'محاسبة السجل'}</summary>
       <p style="font-size:12px;color:#8b949e;margin-bottom:12px">${finnhubHint} · مصدر السجل: ${srcLabel} · يتحدث عند فتح التبويب أو 🔄 تحديث</p>
       <div style="background:#1a2a40;border:1px solid #388bfd66;border-radius:8px;padding:10px 12px;margin-bottom:14px;font-size:12px;color:#c9d1d9;line-height:1.55">
-        رأس Win Rate من <strong style="color:#3fb950">شراء مغلق موثوق فقط</strong>
+        النسب الإجمالية من صفوف <strong style="color:#3fb950">reliable فقط</strong>
         (${qCounts.reliable} معتمد / ${qCounts.partial} جزئي / ${qCounts.unreliable} ضعيف
-        · WAIT و يوليو بلا نوع خارج هذا الرقم · استُبعد ${qCounts.inverse} عكسي · من ${buyClosed.length} شراء مغلق).
-        التقسيم أدناه: BUY نظيف / مطاردة / WAIT HOT — WAIT للمراقبة فقط، ليست قياس تنفيذ.
+        · استُبعد ${qCounts.inverse} عكسي من النسب · من ${closed.length} مغلق).
+        التقسيم أدناه: BUY نظيف / مطاردة / WAIT HOT — <strong>بدون صناديق عكسية</strong> + reliable فقط.
         المطاردة = تجاوز Entry بـ &gt;0.8% وقت التوصية. صفوف العكسي تبقى في الجدول بوسم «عكسي» فقط.
       </div>
       <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:16px">
         <div class="stat total"><div class="stat-num">${rows.length}</div><div class="stat-label">إجمالي التوصيات</div><div style="font-size:11px;color:#8b949e;margin-top:4px">${closed.length} مغلق</div></div>
-        <div class="stat buy"><div class="stat-num">${kpiBase.length ? winRate+'%' : '—'}</div><div class="stat-label">Win Rate شراء (${pnlLabel})</div><div style="font-size:11px;color:#8b949e;margin-top:4px">n=${denom} شراء موثوق${denom < 30 ? ' · عينة صغيرة' : ''}</div></div>
+        <div class="stat buy"><div class="stat-num">${kpiBase.length ? winRate+'%' : '—'}</div><div class="stat-label">Win Rate (${pnlLabel})</div><div style="font-size:11px;color:#8b949e;margin-top:4px">n=${denom} معتمد${denom < 30 ? ' · عينة صغيرة' : ''}</div></div>
         <div class="stat buy"><div class="stat-num">${avgWin === '—' ? '—' : (parseFloat(avgWin)>=0?'+':'')+avgWin+'%'}</div><div class="stat-label">Avg Win (${pnlLabel})</div><div style="font-size:11px;color:#8b949e;margin-top:4px">n=${wins.length} رابح</div></div>
         <div class="stat avoid"><div class="stat-num">${avgLoss === '—' ? '—' : avgLoss+'%'}</div><div class="stat-label">Avg Loss (${pnlLabel})</div><div style="font-size:11px;color:#8b949e;margin-top:4px">n=${stops.length} خاسر</div></div>
         <div class="stat wait"><div class="stat-num">${rows.filter(r=>r.status==='open').length}</div><div class="stat-label">🟡 مفتوحة</div></div>
-        <div class="stat total"><div class="stat-num">${qCounts.reliable}</div><div class="stat-label">شراء موثوق للنسب</div><div style="font-size:11px;color:#8b949e;margin-top:4px">من ${buyClosed.length} شراء مغلق</div></div>
+        <div class="stat total"><div class="stat-num">${qCounts.reliable}</div><div class="stat-label">✅ معتمد للنسب</div><div style="font-size:11px;color:#8b949e;margin-top:4px">من ${closed.length} مغلق</div></div>
       </div>
 
       <div style="font-size:13px;font-weight:800;color:#58a6ff;margin:4px 0 10px">تفصيل المسارات</div>
@@ -2914,11 +2898,11 @@ async function loadHistory(force) {
 
       <div style="background:#161b22;border:1px solid #30363d;border-radius:10px;padding:14px;margin-bottom:18px">
         <div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:baseline;margin-bottom:10px">
-          <div style="font-size:13px;font-weight:800;color:#e6edf3">ملخص شراء آخر 7 أيام</div>
+          <div style="font-size:13px;font-weight:800;color:#e6edf3">ملخص آخر 7 أيام</div>
           <div style="font-size:11px;color:#8b949e" dir="ltr">${week.start && week.end ? (week.start + ' → ' + week.end) : '—'}</div>
         </div>
         <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:12px">
-          <div class="stat total"><div class="stat-num">${week.rows.length}</div><div class="stat-label">شراء الأسبوع</div></div>
+          <div class="stat total"><div class="stat-num">${week.rows.length}</div><div class="stat-label">صفقات الأسبوع</div></div>
           <div class="stat buy"><div class="stat-num">${fmtKpiPct(kWeek.tpRate, 0)}</div><div class="stat-label">وصول هدف</div></div>
           <div class="stat buy"><div class="stat-num">${fmtKpiSigned(kWeek.avgOpt)}</div><div class="stat-label">Avg عقد</div></div>
           <div class="stat wait"><div class="stat-num">${fmtKpiSigned(kWeek.avgMfe)}</div><div class="stat-label">Avg MFE</div></div>

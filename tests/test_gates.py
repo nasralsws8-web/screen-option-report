@@ -16,19 +16,16 @@ if ROOT not in sys.path:
 from cheap_options_screener_v3 import (  # noqa: E402
     assess_option_price_quality,
     entry_is_chased,
-    exec_block_rec_note,
     find_nearest_expiry,
     grade_wait_setup,
     inverse_recommendation_ceiling,
     is_exec_window,
-    is_regular_session_over,
     next_friday_date,
 )
 from data_quality import classify_data_quality  # noqa: E402
 from outcome_tracker import (  # noqa: E402
     _row_is_hot_wait,
     add_new_recommendations,
-    expiry_reached,
     parse_telegram_alert_key,
     resolve_first_touch,
     sync_telegram_sent_flags,
@@ -249,42 +246,6 @@ class TestExecWindow(unittest.TestCase):
             self.assertTrue(is_exec_window(datetime(2026, 8, 1, 12, 0, tzinfo=ET)))
         finally:
             os.environ.pop("IGNORE_EXEC_WINDOW", None)
-
-    def test_after_close_is_session_over(self):
-        self.assertTrue(is_regular_session_over(datetime(2026, 8, 3, 16, 0, tzinfo=ET)))
-        self.assertFalse(is_regular_session_over(datetime(2026, 8, 3, 15, 59, tzinfo=ET)))
-        self.assertTrue(is_regular_session_over(datetime(2026, 8, 1, 12, 0, tzinfo=ET)))
-
-    def test_after_close_note_not_945(self):
-        note = exec_block_rec_note(datetime(2026, 8, 3, 16, 5, tzinfo=ET))
-        self.assertIn("السوق مغلق", note)
-        self.assertNotIn("9:45", note)
-
-    def test_before_945_note_keeps_window(self):
-        note = exec_block_rec_note(datetime(2026, 8, 3, 9, 40, tzinfo=ET))
-        self.assertIn("9:45", note)
-        self.assertNotIn("السوق مغلق", note)
-
-
-class TestExpiryReached(unittest.TestCase):
-    def setUp(self):
-        os.environ.pop("EOD_RUN", None)
-
-    def tearDown(self):
-        os.environ.pop("EOD_RUN", None)
-
-    def test_intraday_friday_stays_open(self):
-        d = datetime(2026, 8, 21).date()
-        self.assertFalse(expiry_reached(d, d, eod=False))
-
-    def test_eod_friday_closes(self):
-        d = datetime(2026, 8, 21).date()
-        self.assertTrue(expiry_reached(d, d, eod=True))
-
-    def test_monday_after_friday_expires_without_eod(self):
-        friday = datetime(2026, 8, 21).date()
-        monday = datetime(2026, 8, 24).date()
-        self.assertTrue(expiry_reached(monday, friday, eod=False))
 
 
 class TestDataQuality(unittest.TestCase):
