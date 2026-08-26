@@ -836,6 +836,16 @@ def grade_wait_setup(
     }
 
 
+def _et_now(now=None):
+    if now is None:
+        now = datetime.now(MARKET_TZ)
+    elif now.tzinfo is None:
+        now = now.replace(tzinfo=MARKET_TZ)
+    else:
+        now = now.astimezone(MARKET_TZ)
+    return now
+
+
 def is_exec_window(now=None):
     """
     نافذة اعتماد BUY/تيليجرام: أيام التداول بعد 9:30 ET + EXEC_AFTER_OPEN_MIN
@@ -844,18 +854,32 @@ def is_exec_window(now=None):
     """
     if os.environ.get("IGNORE_EXEC_WINDOW", "").lower() in ("1", "true", "yes"):
         return True
-    if now is None:
-        now = datetime.now(MARKET_TZ)
-    elif now.tzinfo is None:
-        now = now.replace(tzinfo=MARKET_TZ)
-    else:
-        now = now.astimezone(MARKET_TZ)
+    now = _et_now(now)
     if now.weekday() >= 5:
         return False
     open_mins = 9 * 60 + 30 + int(EXEC_AFTER_OPEN_MIN)
     close_mins = 16 * 60
     mins = now.hour * 60 + now.minute
     return open_mins <= mins < close_mins
+
+
+def is_regular_session_over(now=None):
+    """بعد 16:00 ET في يوم تداول، أو عطلة نهاية الأسبوع — ليست «قبل 9:45»."""
+    now = _et_now(now)
+    if now.weekday() >= 5:
+        return True
+    return (now.hour * 60 + now.minute) >= 16 * 60
+
+
+def exec_block_rec_note(now=None):
+    """سبب WAIT عندما تكتمل الشروط الفنية خارج نافذة التنفيذ."""
+    if is_regular_session_over(now):
+        return "السوق مغلق — لا تنفيذ بعد الإغلاق"
+    open_h, open_m = divmod(9 * 60 + 30 + int(EXEC_AFTER_OPEN_MIN), 60)
+    return (
+        f"خارج نافذة التنفيذ — لا BUY قبل "
+        f"{open_h}:{open_m:02d} ET (+{EXEC_AFTER_OPEN_MIN}د بعد الافتتاح)"
+    )
 
 
 def parse_price_num(val):
@@ -1927,11 +1951,7 @@ def compute_trade_plan(r, tech):
         plan["next_friday_expiry"] = nf.isoformat()
     elif almost_buy and not exec_ok:
         plan["recommendation"] = "WAIT"
-        open_h, open_m = divmod(9 * 60 + 30 + int(EXEC_AFTER_OPEN_MIN), 60)
-        plan["rec_note"] = (
-            f"خارج نافذة التنفيذ — لا BUY قبل "
-            f"{open_h}:{open_m:02d} ET (+{EXEC_AFTER_OPEN_MIN}د بعد الافتتاح)"
-        )
+        plan["rec_note"] = exec_block_rec_note()
     elif buy_ready and (trend_ok or mixed_ok):
         plan["recommendation"] = "BUY"
         if entry_hit_now:

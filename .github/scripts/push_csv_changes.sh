@@ -14,7 +14,28 @@ fi
 git config user.name "github-actions[bot]"
 git config user.email "github-actions[bot]@users.noreply.github.com"
 
-git add "${FILES[@]}"
+# Retry used `reset --soft`, which re-staged engine files from an old checkout
+# and reverted BUY-KPI / EOD-expiry fixes onto main. Only commit FILES.
+stage_allowed_only() {
+  git add "${FILES[@]}"
+  local f allowed a
+  while IFS= read -r f; do
+    [[ -z "$f" ]] && continue
+    allowed=0
+    for a in "${FILES[@]}"; do
+      if [[ "$f" == "$a" ]]; then
+        allowed=1
+        break
+      fi
+    done
+    if [[ $allowed -eq 0 ]]; then
+      echo "Unstaging unexpected file: $f"
+      git restore --staged -- "$f"
+    fi
+  done < <(git diff --cached --name-only)
+}
+
+stage_allowed_only
 if git diff --cached --quiet; then
   echo "No CSV changes to commit"
   exit 0
@@ -32,8 +53,13 @@ for attempt in 1 2 3 4 5; do
   echo "Rebase conflict on attempt $attempt — retry with latest main"
   git rebase --abort 2>/dev/null || true
   git fetch origin main
-  git reset --soft origin/main
-  git add "${FILES[@]}"
+  # mixed: keep working-tree CSV edits, do not keep an old index (that reverts code)
+  git reset --mixed origin/main
+  stage_allowed_only
+  if git diff --cached --quiet; then
+    echo "No CSV changes left after reset to origin/main"
+    exit 0
+  fi
   git commit -m "$MSG (retry $attempt)"
   sleep $((attempt * 2))
 done
