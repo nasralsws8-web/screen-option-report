@@ -16,6 +16,7 @@ if ROOT not in sys.path:
 
 from session_note import (  # noqa: E402
     STUDY_N,
+    build_fail_markdown,
     build_branch_markdown,
     build_day_markdown,
     build_ledger_markdown,
@@ -92,18 +93,28 @@ class TestSessionNote(unittest.TestCase):
         self.assertIn("[[السجل]]", md)
         self.assertNotIn("[[تحققت]]", md)
         self.assertNotIn("[[القاعدة]]", md)
+        self.assertNotIn("[[2026-08-13]]", md)
+        self.assertIn("2026-08-13 →", md)
 
     def test_hub_links_days_and_branches(self):
         md = build_ledger_markdown(_df(), "2026-08-14")
         self.assertIn("[[تحققت]]", md)
         self.assertIn("[[فشلت]]", md)
         self.assertIn("[[انتظار]]", md)
-        self.assertIn("[[وقف]]", md)
+        self.assertNotIn("[[وقف]]", md)
+        self.assertIn("وقف (", md)
         self.assertIn("[[2026-07-24]]", md)
         self.assertIn("[[2026-08-14]]", md)
         self.assertNotIn("| BUY1 |", md)
         self.assertIn("2 / 30", md)
         self.assertIn("[[القاعدة]]", md)
+        self.assertIn("tags: [سجل]", md)
+
+    def test_days_tagged_for_graph(self):
+        md = build_day_markdown(
+            _df(), "2026-07-24", all_dates=["2026-07-24", "2026-08-13"]
+        )
+        self.assertIn("tags: [يوم]", md)
 
     def test_branches_hold_the_rows(self):
         df = _df()
@@ -116,6 +127,15 @@ class TestSessionNote(unittest.TestCase):
         self.assertIn("| JUL |", failed)
         self.assertIn("| OPEN |", waiting)
         self.assertNotIn("| OPEN |", verified)
+        self.assertIn("[[وقف]]", failed)
+        self.assertIn("tags: [تحقق]", verified)
+        self.assertIn("tags: [فشل]", failed)
+        self.assertIn("tags: [انتظار]", waiting)
+        stop = build_fail_markdown(_df(), "وقف", "2026-08-14")
+        self.assertIn("tags: [فشل-فرع, وقف]", stop)
+        self.assertIn("[[فشلت]]", stop)
+        self.assertNotIn("[[السجل]]", stop)
+        self.assertNotIn("[[تحققت]]", stop)
 
     def test_write_all_restores_days_and_graph_hub(self):
         df = pd.DataFrame([

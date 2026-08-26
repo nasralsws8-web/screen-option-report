@@ -371,6 +371,19 @@ def _kpi_block(k: dict, heading: str = "## قياس النظام") -> list[str]:
     return lines
 
 
+def _front_matter(**fields) -> list[str]:
+    """YAML أمام الملاحظة — الوسوم تثبّت ألوان رسم أوبسيديان حسب الاختصاص."""
+    lines = ["---"]
+    for key, val in fields.items():
+        if isinstance(val, (list, tuple)):
+            inner = ", ".join(str(x) for x in val)
+            lines.append(f"{key}: [{inner}]")
+        else:
+            lines.append(f"{key}: {val}")
+    lines += ["---", ""]
+    return lines
+
+
 def _day_nav(session_date: str, all_dates: list[str]) -> str:
     prev_d = next_d = ""
     if session_date in all_dates:
@@ -379,12 +392,13 @@ def _day_nav(session_date: str, all_dates: list[str]) -> str:
             prev_d = all_dates[i - 1]
         if i + 1 < len(all_dates):
             next_d = all_dates[i + 1]
+    # تواريخ المجاورة نصاً بلا ويكي — حتى لا تتشابك خطوط الأيام في رسم أوبسيديان
     parts = []
     if prev_d:
-        parts.append(f"← [[{prev_d}]]")
+        parts.append(f"← {prev_d}")
     parts.append("[[السجل]]")
     if next_d:
-        parts.append(f"[[{next_d}]] →")
+        parts.append(f"{next_d} →")
     return " · ".join(parts)
 
 
@@ -402,13 +416,13 @@ def build_day_markdown(
     ]
     n_new = len([r for r in day if r["_date"] == session_date])
     n_closed = len([r for r in day if r["_exit"] == session_date])
-    lines = [
-        "---",
-        f"date: {session_date}",
-        "source: outcomes.csv",
-        "engine: none",
-        "---",
-        "",
+    lines = _front_matter(
+        date=session_date,
+        source="outcomes.csv",
+        engine="none",
+        tags=["يوم"],
+    )
+    lines += [
         f"# {session_date}",
         "",
         _day_nav(session_date, dates),
@@ -432,23 +446,23 @@ def build_fail_markdown(
     first = dates[0] if dates else last_close
     chunk = [r for r in rows if r.get("_fail") == reason]
     title = "بلا اعتماد" if reason == "هدف بلا اعتماد" else reason
-    lines = [
-        "---",
-        f"branch: {title}",
-        f"from: {first}",
-        f"to: {last_close}",
-        "source: outcomes.csv",
-        "engine: none",
-        "---",
-        "",
+    fail_tag = {"وقف": "وقف", "انتهاء": "انتهاء", "هدف بلا اعتماد": "بلا-اعتماد"}[reason]
+    lines = _front_matter(
+        **{
+            "branch": title,
+            "from": first,
+            "to": last_close,
+            "source": "outcomes.csv",
+            "engine": "none",
+            "tags": ["فشل-فرع", fail_tag],
+        }
+    )
+    lines += [
         f"# {title}",
         "",
-        f"متفرع من [[السجل]] عبر [[فشلت]]. من **{first}** إلى **{last_close}** — {len(chunk)} صف.",
-        "",
-        "[[تحققت]] · [[فشلت]] · [[انتظار]]",
+        f"متفرع من [[فشلت]]. من **{first}** إلى **{last_close}** — {len(chunk)} صف.",
         "",
         _table(chunk),
-        "[[السجل]]",
         "",
     ]
     return "\n".join(lines)
@@ -466,20 +480,21 @@ def build_branch_markdown(
     extra = ""
     if name == "فشلت":
         extra = "يتفرع أيضاً إلى [[وقف]] · [[انتهاء]] · [[بلا اعتماد]]."
-    lines = [
-        "---",
-        f"branch: {name}",
-        f"from: {first}",
-        f"to: {last_close}",
-        "source: outcomes.csv",
-        "engine: none",
-        "---",
-        "",
+    branch_tag = {"تحققت": "تحقق", "فشلت": "فشل", "انتظار": "انتظار"}[name]
+    lines = _front_matter(
+        **{
+            "branch": name,
+            "from": first,
+            "to": last_close,
+            "source": "outcomes.csv",
+            "engine": "none",
+            "tags": [branch_tag],
+        }
+    )
+    lines += [
         f"# {name}",
         "",
         f"متفرع من [[السجل]]. من **{first}** إلى **{last_close}** — {n} صف.",
-        "",
-        "[[تحققت]] · [[فشلت]] · [[انتظار]]",
         "",
     ]
     if extra:
@@ -508,14 +523,16 @@ def build_ledger_markdown(df: pd.DataFrame, last_close: str) -> str:
     }
     day_links = " · ".join(f"[[{d}]]" for d in dates)
 
-    lines = [
-        "---",
-        f"from: {first}",
-        f"to: {last_close}",
-        "source: outcomes.csv",
-        "engine: none",
-        "---",
-        "",
+    lines = _front_matter(
+        **{
+            "from": first,
+            "to": last_close,
+            "source": "outcomes.csv",
+            "engine": "none",
+            "tags": ["سجل"],
+        }
+    )
+    lines += [
         "# السجل",
         "",
         f"من **{first}** إلى آخر إغلاق **{last_close}**. المصدر: `outcomes.csv` فقط.",
@@ -529,7 +546,7 @@ def build_ledger_markdown(df: pd.DataFrame, last_close: str) -> str:
         "## يتفرع بعد التدقيق",
         "",
         f"- [[تحققت]] — {counts['تحققت']}",
-        f"- [[فشلت]] — {counts['فشلت']} → [[وقف]] ({fail_counts['وقف']}) · [[انتهاء]] ({fail_counts['انتهاء']}) · [[بلا اعتماد]] ({fail_counts['هدف بلا اعتماد']})",
+        f"- [[فشلت]] — {counts['فشلت']} → وقف ({fail_counts['وقف']}) · انتهاء ({fail_counts['انتهاء']}) · بلا اعتماد ({fail_counts['هدف بلا اعتماد']})",
         f"- [[انتظار]] — {counts['انتظار']}",
         "",
         "**التحديث:** تلقائي بعد إغلاق السوق. الأيام تُضاف هنا، وما أُغلق ينتقل من [[انتظار]] إلى [[تحققت]] أو [[فشلت]]. لا يتحدّث أثناء التداول.",
