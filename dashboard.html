@@ -843,6 +843,7 @@ function planIsCall(plan) {
 }
 
 const MAX_ENTRY_CHASE_PCT = 0.008; // 0.8% — مطابق للمحرك (دخول يدوي)
+const STUDY_N = 30; // عتبة الدراسة — مطابق session_note.py
 const INVERSE_ETFS = new Set([
   'SQQQ', 'SOXS', 'SPXU', 'SDOW', 'FAZ', 'TECS', 'UVIX', 'VXX', 'UVXY', 'SVIX', 'VIXY',
 ]);
@@ -2591,6 +2592,84 @@ function fmtKpiSigned(n, digits = 1) {
   return (n >= 0 ? '+' : '') + n.toFixed(digits) + '%';
 }
 
+function pct0(ratio) {
+  // مطابق format(x*100, '.0f') في session_note (نصف إلى الزوج)
+  const x = ratio * 100;
+  const n = Math.floor(x + 1e-12);
+  const frac = x - n;
+  if (frac > 0.5 + 1e-12) return n + 1;
+  if (frac < 0.5 - 1e-12) return n;
+  return n % 2 === 0 ? n : n + 1;
+}
+
+function optionPnlWrSuffix(rows) {
+  const scored = rows.filter(r => Number.isFinite(outcomeNum(r.option_pnl_pct)));
+  if (!scored.length) return '';
+  const wins = scored.filter(r => outcomeNum(r.option_pnl_pct) > 0);
+  return ` (ربح عقد ${pct0(wins.length / scored.length)}%)`;
+}
+
+function dteNum(row) {
+  const n = outcomeNum(row.dte_num);
+  return Number.isFinite(n) ? n : null;
+}
+
+/** مطابق session_note._kpi_block — BUY موثوق مغلق فقط، بلا WAIT_HOT */
+function buyStudyDiag(rel, buyOpen, buyClosed, waitHotN, legacyN) {
+  const dteShort = rel.filter(r => {
+    const d = dteNum(r);
+    return d != null && d <= 1;
+  });
+  const tickerOf = (r) => String(r.ticker || r.Ticker || '').toUpperCase().trim();
+  const spy = rel.filter(r => tickerOf(r) === 'SPY');
+  const names = rel.filter(r => tickerOf(r) !== 'SPY');
+  const tp = rel.filter(r => String(r.status || '').startsWith('tp'));
+  const stop = rel.filter(r => String(r.status || '') === 'stop_hit');
+  const exp = rel.filter(r => String(r.status || '') === 'expired');
+  const scored = rel.filter(r => Number.isFinite(outcomeNum(r.option_pnl_pct)));
+  const wr = scored.length
+    ? pct0(scored.filter(r => outcomeNum(r.option_pnl_pct) > 0).length / scored.length)
+    : null;
+  return {
+    nRel: rel.length,
+    ready: rel.length >= STUDY_N,
+    tp: tp.length,
+    stop: stop.length,
+    exp: exp.length,
+    buyOpen: buyOpen.length,
+    buyClosed: buyClosed.length,
+    wr,
+    waitHotN,
+    legacyN,
+    dteLine: `DTE ≤ 1 يوم: ${dteShort.length} صف${optionPnlWrSuffix(dteShort)}`,
+    spyLine: `SPY: ${spy.length} صف${optionPnlWrSuffix(spy)} · باقي الأسماء: ${names.length} صف${optionPnlWrSuffix(names)}`,
+  };
+}
+
+function renderBuyStudyDiag(d) {
+  const sampleNote = d.ready ? 'جاهزة للدراسة.' : 'تحت العتبة، لا حكم على النظام.';
+  const wrLine = (d.wr != null && d.nRel)
+    ? `ربح عقد (موثوق فقط): ${d.wr}% — لا يُخلط مع يوليو بلا نوع ولا WAIT_HOT.`
+    : 'ربح عقد: — حتى تتوفر صفقات BUY موثوقة.';
+  return `<div id="buy-study-diag" style="background:#161b22;border:1px solid #388bfd66;border-radius:10px;padding:14px;margin-bottom:18px">
+    <div style="font-size:13px;font-weight:800;color:#58a6ff;margin-bottom:4px">تشخيص العينة</div>
+    <div style="font-size:11px;color:#8b949e;margin-bottom:10px">BUY موثوق مغلق فقط · ليست توصية وليست بطاقة</div>
+    <div style="font-size:13px;color:#c9d1d9;line-height:1.7">
+      العينة: <strong style="color:#e6edf3">${d.nRel} / ${STUDY_N}</strong> — ${sampleNote}<br>
+      هدف: ${d.tp} · وقف: ${d.stop} · BUY مفتوح: ${d.buyOpen} · BUY مغلق الكل: ${d.buyClosed}<br>
+      ${wrLine}<br>
+      WAIT_HOT في السجل: ${d.waitHotN} (دفتر مراقبة، خارج KPI).<br>
+      يوليو/بلا نوع: ${d.legacyN} — خارج نسب BUY.
+    </div>
+    <div style="margin-top:10px;padding-top:10px;border-top:1px solid #30363d;font-size:13px;color:#c9d1d9;line-height:1.7">
+      ${d.dteLine}.<br>
+      ${d.spyLine}.<br>
+      وقف: ${d.stop}.<br>
+      انتهاء: ${d.exp}.
+    </div>
+  </div>`;
+}
+
 function last7DaysRows(rows) {
   const dates = rows.map(r => String(r.date || '')).filter(Boolean).sort();
   if (!dates.length) return { start: '', end: '', rows: [] };
@@ -2843,6 +2922,10 @@ async function loadHistory(force) {
     const kClean = subsetOutcomeKpis(buyClean);
     const kChase = subsetOutcomeKpis(buyChase);
     const kHot = subsetOutcomeKpis(waitHot);
+    const buyOpen = buyRows.filter(r => r.status === 'open');
+    const waitHotN = rows.filter(r => outcomeRecKind(r) === 'WAIT_HOT').length;
+    const legacyN = rows.filter(r => outcomeRecKind(r) === 'LEGACY').length;
+    const studyDiag = buyStudyDiag(reliable, buyOpen, buyClosed, waitHotN, legacyN);
     const week = last7DaysRows(buyRows);
     const kWeek = subsetOutcomeKpis(week.rows);
     const weekByDay = {};
@@ -2904,6 +2987,8 @@ async function loadHistory(force) {
         <div class="stat wait"><div class="stat-num">${rows.filter(r=>r.status==='open').length}</div><div class="stat-label">🟡 مفتوحة</div></div>
         <div class="stat total"><div class="stat-num">${qCounts.reliable}</div><div class="stat-label">شراء موثوق للنسب</div><div style="font-size:11px;color:#8b949e;margin-top:4px">من ${buyClosed.length} شراء مغلق</div></div>
       </div>
+
+      ${renderBuyStudyDiag(studyDiag)}
 
       <div style="font-size:13px;font-weight:800;color:#58a6ff;margin:4px 0 10px">تفصيل المسارات</div>
       <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:18px">
