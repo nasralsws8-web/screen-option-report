@@ -28,12 +28,25 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Set up Java (Theta Terminal for EOD option closes)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
       - name: Install dependencies
         run: pip install -r requirements.txt
+
+      - name: Start Theta Terminal
+        env:
+          THETA_EMAIL: ${{ secrets.THETA_EMAIL }}
+          THETA_PASSWORD: ${{ secrets.THETA_PASSWORD }}
+        run: bash .github/scripts/start_theta_terminal.sh
 
       - name: Update outcomes after market close
         env:
           EOD_RUN: 'true'
+          THETA_EMAIL: ${{ secrets.THETA_EMAIL }}
         run: python outcome_tracker.py
 
       - name: Days → ledger → verified / failed / waiting notes

@@ -39,6 +39,7 @@ import yfinance as yf
 from scipy.stats import norm
 
 from data_quality import classify_data_quality
+from theta_eod import theta_option_close
 
 OUTCOMES_FILE = "outcomes.csv"
 RESULTS_FILE  = "options_v3_results.csv"
@@ -234,9 +235,12 @@ def fetch_option_daily_hist(symbol, start_date, end_date, cache):
 
 
 def market_option_close(ticker, expiry, strike, is_call, on_date, cache):
-    """إغلاق العقد اليومي في/قبل تاريخ الخروج — سعر سوق حقيقي إن وُجد."""
+    """إغلاق العقد اليومي في/قبل تاريخ الخروج — Theta EOD ثم Yahoo."""
     if on_date is None:
         return None
+    theta_px = theta_option_close(ticker, expiry, strike, is_call, on_date, cache=cache)
+    if theta_px is not None:
+        return theta_px
     sym = occ_symbol(ticker, expiry, strike, is_call)
     if not sym:
         return None
@@ -1608,7 +1612,7 @@ def enrich_path_metrics(outcomes_df, hist_cache=None):
 
 def enrich_market_exit_premiums(outcomes_df, cache=None):
     """
-    يستبدل تقدير BS بسعر إغلاق العقد اليومي الحقيقي من Yahoo (OCC).
+    يستبدل تقدير BS بسعر إغلاق العقد اليومي الحقيقي (Theta EOD ثم Yahoo OCC).
     يعيد حساب option_pnl_pct من السعر الحقيقي.
     """
     if outcomes_df is None or outcomes_df.empty:

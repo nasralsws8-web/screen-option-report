@@ -34,7 +34,7 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Run gate tests
-        run: python -m unittest tests.test_gates -v
+        run: python -m unittest tests.test_gates tests.test_theta_eod -v
 
       - name: Run screener
         env:
