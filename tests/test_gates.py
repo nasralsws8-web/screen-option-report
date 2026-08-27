@@ -5,6 +5,7 @@ import sys
 import tempfile
 import unittest
 from datetime import datetime
+from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -28,6 +29,10 @@ from data_quality import classify_data_quality  # noqa: E402
 from outcome_tracker import (  # noqa: E402
     _row_is_hot_wait,
     add_new_recommendations,
+    apply_data_quality,
+    apply_path_metrics,
+    compute_path_metrics,
+    enrich_market_exit_premiums,
     expiry_reached,
     parse_telegram_alert_key,
     resolve_first_touch,
@@ -679,6 +684,80 @@ class TestOutcomeRecKindUpgrade(unittest.TestCase):
                 self.assertEqual(float(row.get("opt_bid")), 1.5)
             finally:
                 os.chdir(prev)
+
+
+class TestKeptClosedQuality(unittest.TestCase):
+    """صف مغلق موثوق لا يسقط عند 404 Yahoo."""
+
+    def _closed(self, **kw):
+        row = {
+            "ticker": "SPY",
+            "direction": "CALL",
+            "status": "expired",
+            "entry_hit": True,
+            "date": "2026-08-13",
+            "expiry": "2026-08-14",
+            "exit_date": "2026-08-14",
+            "premium": 2.45,
+            "strike": 769.0,
+            "exit_premium": 0.12,
+            "exit_premium_source": "market",
+            "option_pnl_pct": -95.1,
+            "data_quality": "reliable",
+            "data_quality_note": "دخول + سعر سوق/ذاتي + بدون تناقض",
+            "entry_stock": 768.14,
+            "exit_stock": 770.0,
+            "stop_stock": 766.1,
+            "tp1_stock": 771.82,
+            "tp2_stock": 773.0,
+            "tp3_stock": 0,
+        }
+        row.update(kw)
+        return row
+
+    def test_path_metrics_keep_market_when_hist_empty(self):
+        row = self._closed()
+        metrics = compute_path_metrics(row, pd.DataFrame(), today=datetime(2026, 8, 27).date())
+        self.assertEqual(metrics["exit_premium_source"], "market")
+        self.assertEqual(float(metrics["exit_premium"]), 0.12)
+
+    def test_enrich_keeps_market_on_yahoo_miss(self):
+        df = pd.DataFrame([self._closed()])
+        with patch("outcome_tracker.market_option_close", return_value=None):
+            out = enrich_market_exit_premiums(df, cache={})
+        self.assertEqual(str(out.at[0, "exit_premium_source"]), "market")
+        self.assertEqual(float(out.at[0, "exit_premium"]), 0.12)
+        self.assertEqual(float(out.at[0, "option_pnl_pct"]), -95.1)
+
+    def test_yahoo_miss_then_quality_stays_reliable(self):
+        df = pd.DataFrame([self._closed()])
+        with patch("outcome_tracker.market_option_close", return_value=None):
+            df = enrich_market_exit_premiums(df, cache={})
+        df = apply_data_quality(df)
+        self.assertEqual(str(df.at[0, "data_quality"]), "reliable")
+
+    def test_apply_path_metrics_does_not_blank_market(self):
+        df = pd.DataFrame([self._closed()])
+        apply_path_metrics(df, 0, {
+            "exit_date": "2026-08-14",
+            "exit_stock": 770.0,
+            "exit_premium": None,
+            "exit_premium_source": None,
+            "days_to_entry": 0,
+            "days_held": 1,
+            "mfe_pct": 1.0,
+            "mae_pct": -1.0,
+            "hold_expiry_pct": None,
+        })
+        self.assertEqual(str(df.at[0, "exit_premium_source"]), "market")
+        self.assertEqual(float(df.at[0, "exit_premium"]), 0.12)
+
+    def test_stop_option_profit_still_unreliable(self):
+        df = pd.DataFrame([self._closed(
+            status="stop_hit", option_pnl_pct=40.0, data_quality="reliable",
+        )])
+        df = apply_data_quality(df)
+        self.assertEqual(str(df.at[0, "data_quality"]), "unreliable")
 
 
 if __name__ == "__main__":

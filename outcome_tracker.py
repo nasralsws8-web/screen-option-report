@@ -110,6 +110,27 @@ def is_eod_run():
     return os.environ.get("EOD_RUN", "").lower() in ("1", "true", "yes")
 
 
+TRUSTED_EXIT_SOURCES = ("market", "intrinsic")
+
+
+def trusted_exit_source(row) -> str:
+    """مصدر خروج يُحفظ عند فشل Yahoo — لا يُستبدل بتقدير ولا يُفرَّغ."""
+    if row is None:
+        return ""
+    src = str(row.get("exit_premium_source") or "").strip().lower()
+    return src if src in TRUSTED_EXIT_SOURCES else ""
+
+
+def keep_trusted_exit(row) -> bool:
+    if not trusted_exit_source(row):
+        return False
+    try:
+        prem = float(row.get("exit_premium"))
+    except (TypeError, ValueError):
+        return False
+    return prem == prem and prem >= 0
+
+
 def expiry_reached(today, expiry_date, eod=None):
     """
     عقد ينتهي اليوم يُغلق بعد إغلاق السوق (EOD: today >= expiry).
@@ -559,6 +580,9 @@ def compute_path_metrics(row, hist, today=None):
     """
     today = today or datetime.now().date()
     out = {c: None for c in PATH_METRIC_COLS}
+    if keep_trusted_exit(row):
+        out["exit_premium"] = row.get("exit_premium")
+        out["exit_premium_source"] = trusted_exit_source(row)
 
     rec_date = parse_date(row.get("date"))
     entry = float(row.get("entry_stock") or 0)
@@ -675,9 +699,8 @@ def compute_path_metrics(row, hist, today=None):
     if status != "open" and out.get("exit_stock") is None:
         out["exit_stock"] = resolve_exit_stock(row, hist)
     if status != "open" and out.get("exit_stock") is not None:
-        # لا تستبدل سعر سوق سبق حفظه — يُحدَّث لاحقاً في enrich_market_exit_premiums
-        prev_src = str(row.get("exit_premium_source") or "")
-        if prev_src != "market":
+        # لا تستبدل سوق/ذاتي محفوظاً بتقدير — يُحدَّث لاحقاً في enrich إن نجح Yahoo
+        if not (keep_trusted_exit(row) or keep_trusted_exit(out)):
             exit_d = parse_date(out.get("exit_date")) or parse_date(row.get("exit_date"))
             if status == "expired" and expiry_date:
                 exit_d = expiry_date
@@ -690,7 +713,14 @@ def compute_path_metrics(row, hist, today=None):
 
 
 def apply_path_metrics(outcomes_df, idx, metrics):
+    kept = keep_trusted_exit(outcomes_df.loc[idx])
     for col, val in metrics.items():
+        if (
+            kept
+            and col in ("exit_premium", "exit_premium_source")
+            and (val is None or val == "")
+        ):
+            continue
         outcomes_df.at[idx, col] = val
 
 
@@ -1622,6 +1652,11 @@ def enrich_market_exit_premiums(outcomes_df, cache=None):
             market_n += 1
             continue
 
+        # Yahoo 404 / عقد منتهٍ: لا تفرّغ سوق/ذاتي محفوظ ولا تخفّض الجودة
+        if keep_trusted_exit(row):
+            fail_n += 1
+            continue
+
         # احتياطي
         exit_stock = row.get("exit_stock")
         try:
@@ -1752,7 +1787,7 @@ def enrich_expiry_option_premiums(outcomes_df, hist_cache=None, cache=None):
 
 
 def apply_data_quality(outcomes_df):
-    """يملأ data_quality / data_quality_note لكل الصفوف."""
+    """يملأ data_quality / data_quality_note. لا يخفض صفاً مغلقاً موثوقاً ما دام مصدر الخروج سوق/ذاتي."""
     if outcomes_df is None or outcomes_df.empty:
         return outcomes_df
     if "data_quality" not in outcomes_df.columns:
@@ -1762,7 +1797,21 @@ def apply_data_quality(outcomes_df):
 
     counts = {"reliable": 0, "partial": 0, "unreliable": 0, "open": 0}
     for idx, row in outcomes_df.iterrows():
+        prev_q = str(row.get("data_quality") or "").strip().lower()
         q, note = classify_data_quality(row)
+        status = str(row.get("status") or "").strip()
+        # صف مغلق موثوق بسعر سوق/ذاتي: لا تُخفَّض الجودة لأن Yahoo اختفى
+        if (
+            prev_q == "reliable"
+            and q != "reliable"
+            and status not in ("", "open")
+            and keep_trusted_exit(row)
+            and "تناقض" not in str(note)
+        ):
+            q = "reliable"
+            note = str(row.get("data_quality_note") or "").strip() or (
+                "محفوظ: صف مغلق موثوق — مصدر الخروج سوق/ذاتي"
+            )
         outcomes_df.at[idx, "data_quality"] = q
         outcomes_df.at[idx, "data_quality_note"] = note
         counts[q] = counts.get(q, 0) + 1

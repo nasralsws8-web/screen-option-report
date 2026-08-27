@@ -109,6 +109,25 @@ class TestSessionNote(unittest.TestCase):
         self.assertIn("2 / 30", md)
         self.assertIn("[[القاعدة]]", md)
         self.assertIn("tags: [سجل]", md)
+        self.assertIn("تشخيص العينة", md)
+        self.assertIn("DTE ≤ 1 يوم:", md)
+        self.assertIn("انتهاء:", md)
+
+    def test_study_diag_is_buy_only(self):
+        df = pd.DataFrame([
+            _row(ticker="SPY", dte_num=1, status="expired", option_pnl_pct=-100,
+                 rec_kind="BUY", data_quality="reliable"),
+            _row(ticker="HOT", rec_kind="WAIT_HOT", dte_num=1, status="tp1_hit",
+                 option_pnl_pct=80, data_quality="reliable"),
+            _row(ticker="AAA", dte_num=7, status="stop_hit", option_pnl_pct=-50,
+                 rec_kind="BUY", data_quality="reliable"),
+        ])
+        md = build_ledger_markdown(df, "2026-08-14")
+        self.assertIn("DTE ≤ 1 يوم: 1 صف (ربح عقد 0%).", md)
+        self.assertIn("SPY: 1 صف (ربح عقد 0%) · باقي الأسماء: 1 صف (ربح عقد 0%).", md)
+        self.assertIn("- وقف: 1.", md)
+        self.assertIn("- انتهاء: 1.", md)
+        self.assertIn("WAIT_HOT في السجل: 1", md)
 
     def test_days_tagged_for_graph(self):
         md = build_day_markdown(

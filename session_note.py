@@ -325,6 +325,7 @@ def _kpi(rows: list[dict]) -> dict:
     ]
     buy_rel_tp = [r for r in buy_rel if str(r.get("status") or "").startswith("tp")]
     buy_rel_stop = [r for r in buy_rel if str(r.get("status") or "") == "stop_hit"]
+    buy_rel_exp = [r for r in buy_rel if str(r.get("status") or "") == "expired"]
     wr = None
     scored = [r for r in buy_rel if _num(r.get("option_pnl_pct")) is not None]
     if scored:
@@ -339,6 +340,7 @@ def _kpi(rows: list[dict]) -> dict:
         "buy_rel": buy_rel,
         "buy_rel_tp": buy_rel_tp,
         "buy_rel_stop": buy_rel_stop,
+        "buy_rel_exp": buy_rel_exp,
         "wr": wr,
         "n_rel": len(buy_rel),
         "ready": len(buy_rel) >= STUDY_N,
@@ -348,8 +350,24 @@ def _kpi(rows: list[dict]) -> dict:
     }
 
 
+def _pnl_wr_suffix(rows: list[dict]) -> str:
+    scored = [r for r in rows if _num(r.get("option_pnl_pct")) is not None]
+    if not scored:
+        return ""
+    wins = [r for r in scored if _num(r.get("option_pnl_pct")) > 0]
+    return f" (ربح عقد {100.0 * len(wins) / len(scored):.0f}%)"
+
+
+def _dte_val(row: dict):
+    return _num(row.get("dte_num"), digits=1)
+
+
 def _kpi_block(k: dict, heading: str = "## قياس النظام") -> list[str]:
     n_rel = k["n_rel"]
+    rel = k["buy_rel"]
+    dte_short = [r for r in rel if (_dte_val(r) is not None and _dte_val(r) <= 1)]
+    spy = [r for r in rel if str(r.get("ticker") or "").strip().upper() == "SPY"]
+    names = [r for r in rel if str(r.get("ticker") or "").strip().upper() != "SPY"]
     lines = [
         heading,
         "",
@@ -366,6 +384,13 @@ def _kpi_block(k: dict, heading: str = "## قياس النظام") -> list[str]:
     lines += [
         f"- WAIT_HOT في السجل: {len(k['waits'])} (دفتر مراقبة، خارج KPI).",
         f"- يوليو/بلا نوع: {len(k['legacy'])} — خارج نسب BUY.",
+        "",
+        "تشخيص العينة — BUY موثوق مغلق فقط، ليست توصية وليست بطاقة:",
+        "",
+        f"- DTE ≤ 1 يوم: {len(dte_short)} صف{_pnl_wr_suffix(dte_short)}.",
+        f"- SPY: {len(spy)} صف{_pnl_wr_suffix(spy)} · باقي الأسماء: {len(names)} صف{_pnl_wr_suffix(names)}.",
+        f"- وقف: {len(k['buy_rel_stop'])}.",
+        f"- انتهاء: {len(k.get('buy_rel_exp') or [])}.",
         "",
     ]
     return lines
