@@ -32,14 +32,17 @@ path_is_allowed() {
 stage_allowed_only() {
   git add -- "${FILES[@]}"
   local f
+  # core.quotepath=true يلفّ الأسماء العربية بعلامات اقتباس فيكسر المسار
   while IFS= read -r f; do
     [[ -z "$f" ]] && continue
+    f="${f#\"}"
+    f="${f%\"}"
     if path_is_allowed "$f"; then
       continue
     fi
     echo "Unstaging unexpected file: $f"
     git restore --staged -- "$f"
-  done < <(git diff --cached --name-only)
+  done < <(git -c core.quotepath=false diff --cached --name-only)
 }
 
 stage_allowed_only
