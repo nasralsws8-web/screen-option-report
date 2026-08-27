@@ -486,11 +486,15 @@ class TestTelegramDedupe(unittest.TestCase):
         self.assertEqual(len(skipped_w), 1)
 
     def test_sent_file_roundtrip(self):
+        # save_sent() prunes keys older than SENT_KEEP_DAYS vs today ET.
+        # A fixed August date would start failing ~3 weeks later.
+        day = datetime.now(ET).strftime("%Y-%m-%d")
+        key = f"{day}|SPY|CALL|1.00|{day}"
         with tempfile.TemporaryDirectory() as td:
             path = os.path.join(td, "telegram_sent.json")
-            save_sent({"sent": {"2026-08-05|SPY|CALL|1.00|2026-08-07": "t"}}, path)
+            save_sent({"sent": {key: "t"}}, path)
             loaded = load_sent(path)
-            self.assertIn("2026-08-05|SPY|CALL|1.00|2026-08-07", loaded["sent"])
+            self.assertIn(key, loaded["sent"])
 
     def test_prune_old_keys(self):
         sent = {
