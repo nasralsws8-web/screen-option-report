@@ -11,6 +11,7 @@ if ! command -v java >/dev/null 2>&1; then
   echo "Theta Terminal skipped — java not installed."
   exit 0
 fi
+java -version 2>&1 | head -3 || true
 
 JAR_URL="${THETA_JAR_URL:-https://download-unstable.thetadata.us/ThetaTerminalv3.jar}"
 WORKDIR="${RUNNER_TEMP:-/tmp}/theta-terminal"

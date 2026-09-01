@@ -116,5 +116,15 @@ class TestThetaThenYahoo(unittest.TestCase):
         self.assertEqual(fetch.call_count, 1)
 
 
+class TestEodJavaMatchesThetaJar(unittest.TestCase):
+    def test_workflow_uses_java_21(self):
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        path = os.path.join(root, ".github", "workflows", "eod_outcome.yml")
+        with open(path, encoding="utf-8") as f:
+            yml = f.read()
+        self.assertIn("java-version: '21'", yml)
+        self.assertNotIn("java-version: '17'", yml)
+
+
 if __name__ == "__main__":
     unittest.main()
