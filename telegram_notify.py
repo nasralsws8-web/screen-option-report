@@ -194,10 +194,10 @@ def prune_sent(sent: dict, keep_days=SENT_KEEP_DAYS, today=None) -> dict:
     return {k: v for k, v in sent.items() if _key_day(k) >= cutoff}
 
 
-def save_sent(data: dict, path=SENT_FILE):
+def save_sent(data: dict, path=SENT_FILE, today=None):
     payload = {
         "version": 1,
-        "sent": prune_sent(data.get("sent") or {}),
+        "sent": prune_sent(data.get("sent") or {}, today=today),
     }
     with open(path, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2, sort_keys=True)

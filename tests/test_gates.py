@@ -527,12 +527,13 @@ class TestTelegramOutcomeSync(unittest.TestCase):
     def test_sync_marks_and_adds_missing(self):
         with tempfile.TemporaryDirectory() as td:
             sent_path = os.path.join(td, "telegram_sent.json")
+            # freeze prune clock — save_sent vs today ET would drop Aug-10 keys after 21d
             save_sent({
                 "sent": {
                     "2026-08-10|AAA|CALL|100.00|2026-08-14": "2026-08-10T12:00:00Z",
                     "WAIT_HOT|2026-08-10|BBB|PUT|50.00|2026-08-14": "2026-08-10T13:00:00Z",
                 }
-            }, sent_path)
+            }, sent_path, today="2026-08-14")
             outcomes = pd.DataFrame([{
                 "date": "2026-08-10",
                 "ticker": "AAA",
@@ -571,7 +572,7 @@ class TestTelegramOutcomeSync(unittest.TestCase):
                     "2026-08-11|NVDA|CALL|217.50|2026-08-14": "2026-08-11T18:32:11Z",
                     "WAIT_HOT|2026-08-11|NVDA|CALL|217.50|2026-08-14": "2026-08-11T14:59:11Z",
                 }
-            }, sent_path)
+            }, sent_path, today="2026-08-14")
             outcomes = pd.DataFrame([{
                 "date": "2026-08-11",
                 "ticker": "NVDA",
