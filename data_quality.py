@@ -37,7 +37,7 @@ def classify_data_quality(row):
         return "unreliable", "ناقص premium أو strike"
 
     src = str(row.get("exit_premium_source") or "").strip().lower()
-    if src not in ("market", "intrinsic", "estimate"):
+    if src not in ("theta", "market", "intrinsic", "estimate"):
         return "unreliable", "لا مصدر موثوق لسعر خروج العقد"
 
     try:

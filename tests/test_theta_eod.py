@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pandas as pd
 
-from outcome_tracker import market_option_close
+from outcome_tracker import enrich_market_exit_premiums, market_option_close
 from theta_eod import (
     parse_eod_close,
     reset_theta_ready,
@@ -124,6 +124,60 @@ class TestEodJavaMatchesThetaJar(unittest.TestCase):
             yml = f.read()
         self.assertIn("java-version: '21'", yml)
         self.assertNotIn("java-version: '17'", yml)
+        self.assertIn("group: eod-csv-writes", yml)
+        self.assertNotIn("group: repo-csv-writes", yml)
+        self.assertIn("timeout-minutes: 60", yml)
+        self.assertNotIn("timeout-minutes: 15", yml)
+
+
+class TestEnrichTagsTheta(unittest.TestCase):
+    def tearDown(self):
+        os.environ.pop("EOD_RUN", None)
+
+    def test_eod_enrich_writes_theta_source(self):
+        os.environ["EOD_RUN"] = "true"
+        df = pd.DataFrame([{
+            "status": "stop_hit",
+            "ticker": "SPY",
+            "expiry": "2026-08-14",
+            "strike": 769,
+            "direction": "CALL",
+            "entry_stock": 770,
+            "tp1_stock": 772,
+            "stop_stock": 766,
+            "exit_date": "2026-08-14",
+            "premium": 2.45,
+            "exit_premium": 0.12,
+            "exit_premium_source": "market",
+            "option_pnl_pct": -95.1,
+        }])
+        with patch("outcome_tracker.market_option_quote", return_value=(0.42, "theta")):
+            out = enrich_market_exit_premiums(df, cache={})
+        self.assertEqual(str(out.at[0, "exit_premium_source"]), "theta")
+        self.assertEqual(float(out.at[0, "exit_premium"]), 0.42)
+
+    def test_eod_skips_completed_theta_rows(self):
+        os.environ["EOD_RUN"] = "true"
+        df = pd.DataFrame([{
+            "status": "stop_hit",
+            "ticker": "SPY",
+            "expiry": "2026-08-14",
+            "strike": 769,
+            "direction": "CALL",
+            "entry_stock": 770,
+            "tp1_stock": 772,
+            "stop_stock": 766,
+            "exit_date": "2026-08-14",
+            "premium": 2.45,
+            "exit_premium": 0.42,
+            "exit_premium_source": "theta",
+            "option_pnl_pct": -82.86,
+        }])
+        with patch("outcome_tracker.market_option_quote") as q:
+            out = enrich_market_exit_premiums(df, cache={})
+        q.assert_not_called()
+        self.assertEqual(str(out.at[0, "exit_premium_source"]), "theta")
+        self.assertEqual(float(out.at[0, "exit_premium"]), 0.42)
 
 
 if __name__ == "__main__":

@@ -14,8 +14,8 @@ outcome_tracker.py
 
 result_pct      = حركة السهم % (للمرجع)
 option_pnl_pct  = ربح/خسارة العقد % من premium الدخول → exit_premium
-exit_premium    = سعر العقد عند الخروج (يفضّل إغلاق Yahoo اليومي الحقيقي)
-exit_premium_source = market | intrinsic | estimate
+exit_premium    = سعر العقد عند الخروج (Theta EOD ثم Yahoo)
+exit_premium_source = theta | market | intrinsic | estimate
 
 مقاييس فترة المراقبة:
   days_to_entry   = أيام تقويمية من التوصية → لمس Entry
@@ -24,7 +24,7 @@ exit_premium_source = market | intrinsic | estimate
   mae_pct         = أقصى تراجع معاكس % من Entry أثناء المسك (Max Adverse)
   hold_expiry_pct = حركة السهم % لو انمسك من Entry حتى إغلاق يوم الانتهاء
   expiry_premium  = سعر العقد عند/قرب يوم الانتهاء (حتى لو أُغلقت الصفقة عند TP/Stop)
-  expiry_premium_source = market | intrinsic | estimate
+  expiry_premium_source = theta | market | intrinsic | estimate
   option_pnl_expiry_pct = P&L العقد % لو انمسك من premium الدخول حتى الانتهاء
   exit_date       = تاريخ إغلاق الصفقة المدارة (TP/Stop/Expiry)
 """
@@ -111,7 +111,7 @@ def is_eod_run():
     return os.environ.get("EOD_RUN", "").lower() in ("1", "true", "yes")
 
 
-TRUSTED_EXIT_SOURCES = ("market", "intrinsic")
+TRUSTED_EXIT_SOURCES = ("theta", "market", "intrinsic")
 
 
 def trusted_exit_source(row) -> str:
@@ -234,24 +234,39 @@ def fetch_option_daily_hist(symbol, start_date, end_date, cache):
     return hist
 
 
-def market_option_close(ticker, expiry, strike, is_call, on_date, cache):
-    """إغلاق العقد اليومي في/قبل تاريخ الخروج — Theta EOD ثم Yahoo."""
+def market_option_quote(ticker, expiry, strike, is_call, on_date, cache):
+    """إغلاق العقد: (سعر، theta|yahoo). لا سعر → (None, '')."""
     if on_date is None:
-        return None
+        return None, ""
     theta_px = theta_option_close(ticker, expiry, strike, is_call, on_date, cache=cache)
     if theta_px is not None:
-        return theta_px
+        return theta_px, "theta"
     sym = occ_symbol(ticker, expiry, strike, is_call)
     if not sym:
-        return None
+        return None, ""
     start = on_date - timedelta(days=14)
     hist = fetch_option_daily_hist(sym, start, on_date, cache)
     if hist is None or hist.empty or "Close" not in hist.columns:
-        return None
+        return None, ""
     close = hist_close_on_or_before(hist, on_date)
     if close is None or close < 0:
-        return None
-    return round(float(close), 4)
+        return None, ""
+    return round(float(close), 4), "yahoo"
+
+
+def market_source_label(kind):
+    """theta يبقى ظاهراً في السجل. ياهو يبقى market للتوافق مع الجودة."""
+    if kind == "theta":
+        return "theta"
+    if kind == "yahoo":
+        return "market"
+    return ""
+
+
+def market_option_close(ticker, expiry, strike, is_call, on_date, cache):
+    """إغلاق العقد اليومي في/قبل تاريخ الخروج — Theta EOD ثم Yahoo."""
+    px, _kind = market_option_quote(ticker, expiry, strike, is_call, on_date, cache)
+    return px
 
 
 def calc_option_exit_price(row, stock_at_exit, exit_date):
@@ -752,14 +767,14 @@ def apply_close(outcomes_df, idx, row, status, entry, stock_price, is_call, exit
     if isinstance(exit_d, datetime):
         exit_d = exit_d.date()
 
-    # 1) سعر سوق حقيقي من Yahoo (إغلاق يوم الخروج)
-    mkt = market_option_close(
+    # 1) سعر سوق حقيقي: Theta EOD ثم Yahoo
+    mkt, kind = market_option_quote(
         row.get("ticker"), row.get("expiry"), row.get("strike"),
         is_call, exit_d, _OPTION_PRICE_CACHE,
     )
     if mkt is not None:
         outcomes_df.at[idx, "exit_premium"] = mkt
-        outcomes_df.at[idx, "exit_premium_source"] = "market"
+        outcomes_df.at[idx, "exit_premium_source"] = market_source_label(kind) or "market"
         try:
             prem = float(row.get("premium") or 0)
             if prem > 0:
@@ -1621,12 +1636,20 @@ def enrich_market_exit_premiums(outcomes_df, cache=None):
     if cache is None:
         cache = _OPTION_PRICE_CACHE
 
-    market_n = intrinsic_n = estimate_n = fail_n = 0
-    print("📥 جلب أسعار العقود الحقيقية من Yahoo...")
+    theta_n = yahoo_n = intrinsic_n = estimate_n = skip_n = fail_n = 0
+    print("📥 جلب أسعار العقود الحقيقية (Theta ثم Yahoo)...")
 
     for idx, row in outcomes_df.iterrows():
         status = str(row.get("status") or "")
         if status == "open":
+            continue
+        # إغلاق EOD ثانٍ يكمل المتبقي — لا نعيد صفوف ثيتا المكتملة
+        if (
+            is_eod_run()
+            and str(row.get("exit_premium_source") or "").strip().lower() == "theta"
+            and keep_trusted_exit(row)
+        ):
+            skip_n += 1
             continue
 
         ticker = str(row.get("ticker") or "").strip()
@@ -1643,17 +1666,21 @@ def enrich_market_exit_premiums(outcomes_df, cache=None):
             fail_n += 1
             continue
 
-        mkt = market_option_close(ticker, expiry, strike, is_call, exit_d, cache)
+        mkt, kind = market_option_quote(ticker, expiry, strike, is_call, exit_d, cache)
         if mkt is not None:
             outcomes_df.at[idx, "exit_premium"] = mkt
-            outcomes_df.at[idx, "exit_premium_source"] = "market"
+            src_label = market_source_label(kind) or "market"
+            outcomes_df.at[idx, "exit_premium_source"] = src_label
             try:
                 prem = float(row.get("premium") or 0)
                 if prem > 0:
                     outcomes_df.at[idx, "option_pnl_pct"] = round((mkt - prem) / prem * 100, 2)
             except (TypeError, ValueError):
                 pass
-            market_n += 1
+            if src_label == "theta":
+                theta_n += 1
+            else:
+                yahoo_n += 1
             continue
 
         # Yahoo 404 / عقد منتهٍ: لا تفرّغ سوق/ذاتي محفوظ ولا تخفّض الجودة
@@ -1687,8 +1714,8 @@ def enrich_market_exit_premiums(outcomes_df, cache=None):
             estimate_n += 1
 
     print(
-        f"✅ أسعار العقود: سوق={market_n} | ذاتي={intrinsic_n} | "
-        f"تقدير={estimate_n} | فشل={fail_n}"
+        f"✅ أسعار العقود: ثيتا={theta_n} | ياهو={yahoo_n} | ذاتي={intrinsic_n} | "
+        f"تقدير={estimate_n} | تخطي={skip_n} | فشل={fail_n}"
     )
     return outcomes_df
 
@@ -1715,8 +1742,8 @@ def enrich_expiry_option_premiums(outcomes_df, hist_cache=None, cache=None):
         hist_cache = {}
 
     today = datetime.now().date()
-    market_n = intrinsic_n = estimate_n = skip_n = fail_n = 0
-    print("📥 متابعة أسعار العقود حتى الانتهاء (يومياً)...")
+    theta_n = yahoo_n = intrinsic_n = estimate_n = skip_n = fail_n = 0
+    print("📥 متابعة أسعار العقود حتى الانتهاء (Theta ثم Yahoo)...")
 
     for idx, row in outcomes_df.iterrows():
         expiry_d = parse_date(row.get("expiry"))
@@ -1755,13 +1782,17 @@ def enrich_expiry_option_premiums(outcomes_df, hist_cache=None, cache=None):
         if expired and stock_asof is not None and entry > 0:
             outcomes_df.at[idx, "hold_expiry_pct"] = move_pct(entry, stock_asof, is_call)
 
-        mkt = market_option_close(ticker, row.get("expiry"), strike, is_call, asof, cache)
+        mkt, kind = market_option_quote(ticker, row.get("expiry"), strike, is_call, asof, cache)
         if mkt is not None:
             outcomes_df.at[idx, "expiry_premium"] = mkt
-            outcomes_df.at[idx, "expiry_premium_source"] = "market"
+            src_label = market_source_label(kind) or "market"
+            outcomes_df.at[idx, "expiry_premium_source"] = src_label
             if prem > 0:
                 outcomes_df.at[idx, "option_pnl_expiry_pct"] = round((mkt - prem) / prem * 100, 2)
-            market_n += 1
+            if src_label == "theta":
+                theta_n += 1
+            else:
+                yahoo_n += 1
             continue
 
         if stock_asof is None or stock_asof <= 0:
@@ -1784,7 +1815,7 @@ def enrich_expiry_option_premiums(outcomes_df, hist_cache=None, cache=None):
             estimate_n += 1
 
     print(
-        f"✅ عقد→انتهاء: سوق={market_n} | ذاتي={intrinsic_n} | "
+        f"✅ عقد→انتهاء: ثيتا={theta_n} | ياهو={yahoo_n} | ذاتي={intrinsic_n} | "
         f"تقدير={estimate_n} | تخطي={skip_n} | فشل={fail_n}"
     )
     return outcomes_df

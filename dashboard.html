@@ -1290,7 +1290,7 @@ function classifyDataQuality(row) {
   const strike = parseFloat(row.strike);
   if (!(prem > 0) || !(strike > 0)) return { q: 'unreliable', note: 'ناقص premium أو strike' };
   const src = String(row.exit_premium_source || '').trim().toLowerCase();
-  if (!['market', 'intrinsic', 'estimate'].includes(src)) {
+  if (!['theta', 'market', 'intrinsic', 'estimate'].includes(src)) {
     return { q: 'unreliable', note: 'لا مصدر موثوق لسعر خروج العقد' };
   }
   let optPnl = parseFloat(row.option_pnl_pct);
@@ -2901,12 +2901,14 @@ async function loadHistory(force) {
     const optWins = withOpt.filter(r => parseFloat(r.option_pnl_pct) > 0);
     const optLoss = withOpt.filter(r => parseFloat(r.option_pnl_pct) <= 0);
     const wins    = withOpt.length ? optWins : kpiBase.filter(r => ['tp1_hit','tp2_hit','tp3_hit'].includes(r.status));
-    const stops   = withOpt.length ? optLoss : kpiBase.filter(r => r.status === 'stop_hit');
+    const lossRows = withOpt.length ? optLoss : kpiBase.filter(r => r.status === 'stop_hit');
+    const relStop = kpiBase.filter(r => r.status === 'stop_hit');
+    const relExpLoss = lossRows.filter(r => r.status === 'expired');
     const denom   = withOpt.length || kpiBase.length;
     const winRate = denom ? (wins.length / denom * 100).toFixed(1) : '—';
     const pnlField = (r) => withOpt.length && r.option_pnl_pct !== '' && r.option_pnl_pct != null ? parseFloat(r.option_pnl_pct) : parseFloat(r.result_pct||0);
     const avgWin  = wins.length  ? (wins.reduce((s,r)=>s+pnlField(r),0)/wins.length).toFixed(1)  : '—';
-    const avgLoss = stops.length ? (stops.reduce((s,r)=>s+pnlField(r),0)/stops.length).toFixed(1) : '—';
+    const avgLoss = lossRows.length ? (lossRows.reduce((s,r)=>s+pnlField(r),0)/lossRows.length).toFixed(1) : '—';
     const pnlLabel = withOpt.length ? 'P&L معتمد' : 'سهم معتمد';
     const qCounts = {
       reliable: buyClosed.filter(r => String(r.data_quality||'').toLowerCase()==='reliable').length,
@@ -2923,6 +2925,7 @@ async function loadHistory(force) {
     const kChase = subsetOutcomeKpis(buyChase);
     const kHot = subsetOutcomeKpis(waitHot);
     const buyOpen = buyRows.filter(r => r.status === 'open');
+    const waitOpen = coreRows.filter(r => outcomeRecKind(r) === 'WAIT_HOT' && r.status === 'open');
     const waitHotN = rows.filter(r => outcomeRecKind(r) === 'WAIT_HOT').length;
     const legacyN = rows.filter(r => outcomeRecKind(r) === 'LEGACY').length;
     const studyDiag = buyStudyDiag(reliable, buyOpen, buyClosed, waitHotN, legacyN);
@@ -2983,8 +2986,8 @@ async function loadHistory(force) {
         <div class="stat total"><div class="stat-num">${rows.length}</div><div class="stat-label">إجمالي التوصيات</div><div style="font-size:11px;color:#8b949e;margin-top:4px">${closed.length} مغلق</div></div>
         <div class="stat buy"><div class="stat-num">${kpiBase.length ? winRate+'%' : '—'}</div><div class="stat-label">Win Rate شراء (${pnlLabel})</div><div style="font-size:11px;color:#8b949e;margin-top:4px">n=${denom} شراء موثوق${denom < 30 ? ' · عينة صغيرة' : ''}</div></div>
         <div class="stat buy"><div class="stat-num">${avgWin === '—' ? '—' : (parseFloat(avgWin)>=0?'+':'')+avgWin+'%'}</div><div class="stat-label">Avg Win (${pnlLabel})</div><div style="font-size:11px;color:#8b949e;margin-top:4px">n=${wins.length} رابح</div></div>
-        <div class="stat avoid"><div class="stat-num">${avgLoss === '—' ? '—' : avgLoss+'%'}</div><div class="stat-label">Avg Loss (${pnlLabel})</div><div style="font-size:11px;color:#8b949e;margin-top:4px">n=${stops.length} خاسر</div></div>
-        <div class="stat wait"><div class="stat-num">${rows.filter(r=>r.status==='open').length}</div><div class="stat-label">🟡 مفتوحة</div></div>
+        <div class="stat avoid"><div class="stat-num">${avgLoss === '—' ? '—' : avgLoss+'%'}</div><div class="stat-label">Avg Loss (${pnlLabel})</div><div style="font-size:11px;color:#8b949e;margin-top:4px">n=${lossRows.length} خاسر عقد · وقف ${relStop.length} · انتهاء ${relExpLoss.length}</div></div>
+        <div class="stat wait"><div class="stat-num">${buyOpen.length}</div><div class="stat-label">BUY مفتوح</div><div style="font-size:11px;color:#8b949e;margin-top:4px">WAIT ${waitOpen.length} · الكل ${buyOpen.length + waitOpen.length}</div></div>
         <div class="stat total"><div class="stat-num">${qCounts.reliable}</div><div class="stat-label">شراء موثوق للنسب</div><div style="font-size:11px;color:#8b949e;margin-top:4px">من ${buyClosed.length} شراء مغلق</div></div>
       </div>
 
@@ -3109,7 +3112,8 @@ async function loadHistory(force) {
             const expOptN = parseFloat(r.option_pnl_expiry_pct);
             const expPremN = parseFloat(r.expiry_premium);
             const expSrc = String(r.expiry_premium_source || '').toLowerCase();
-            const expSrcLabel = expSrc === 'market' ? 'سوق'
+            const expSrcLabel = expSrc === 'theta' ? 'ثيتا'
+              : expSrc === 'market' ? 'سوق'
               : expSrc === 'intrinsic' ? 'ذاتي'
               : expSrc === 'estimate' ? 'تقدير'
               : '';
@@ -3130,11 +3134,12 @@ async function loadHistory(force) {
             const premSrc = isOpen
               ? expSrc
               : String(r.exit_premium_source || '').toLowerCase();
-            const premSrcLabel = premSrc === 'market' ? 'سوق'
+            const premSrcLabel = premSrc === 'theta' ? 'ثيتا'
+              : premSrc === 'market' ? 'سوق'
               : premSrc === 'intrinsic' ? 'ذاتي'
               : premSrc === 'estimate' ? 'تقدير'
               : '';
-            const premSrcColor = premSrc === 'market' ? '#3fb950'
+            const premSrcColor = (premSrc === 'market' || premSrc === 'theta') ? '#3fb950'
               : premSrc === 'intrinsic' ? '#58a6ff'
               : '#8b949e';
             const exitPremHtml = isNaN(exitPrem)

@@ -330,6 +330,14 @@ class TestDataQuality(unittest.TestCase):
         })
         self.assertEqual(q, "reliable")
 
+    def test_reliable_theta(self):
+        q, _ = classify_data_quality({
+            "status": "tp1_hit", "entry_hit": True,
+            "premium": 1.5, "strike": 100, "exit_premium_source": "theta",
+            "option_pnl_pct": 20,
+        })
+        self.assertEqual(q, "reliable")
+
     def test_tp_estimate_big_loss_partial(self):
         q, _ = classify_data_quality({
             "status": "tp1_hit", "entry_hit": True,

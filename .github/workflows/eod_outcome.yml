@@ -8,7 +8,8 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: repo-csv-writes
+  # قفل خاص بالإغلاق — لا يُلغى إذا انتظر خلف المسح/تحديث السعر على repo-csv-writes
+  group: eod-csv-writes
   cancel-in-progress: false
 
 permissions:
@@ -17,7 +18,7 @@ permissions:
 jobs:
   eod-outcomes:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 60
 
     steps:
       - name: Checkout repo
