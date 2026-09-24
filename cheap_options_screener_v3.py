@@ -117,6 +117,7 @@ TICKER_PROFILES = {
         "prem_max":        5.0,      # OTM — مو ATM ($6+)
         "target_prem":     2.50,     # الهدف: ~$2.50 للعقد
         "use_otm_strike":  True,     # strike OTM أرخص من ATM
+        "max_strike_dist": 0.01,    # أبعد سترايك: 1% عن سعر السهم
         "max_stock_price": 800.0,
         "max_spread_pct":  0.10,
         "min_oi":          500,
@@ -178,6 +179,53 @@ def parse_dte(row_or_val, default=7):
         return int(val)
     except (TypeError, ValueError):
         return int(default)
+
+
+def previous_trading_day(day):
+    """يوم التداول السابق (يتخطى السبت والأحد)."""
+    d = datetime.strptime(str(day)[:10], "%Y-%m-%d").date()
+    d -= timedelta(days=1)
+    while d.weekday() >= 5:
+        d -= timedelta(days=1)
+    return d.isoformat()
+
+
+def spy_flip_blocked(is_call, ticker, today=None, outcomes_path="outcomes.csv"):
+    """
+    بعد وقف SPY: لا توصية بالاتجاه المعاكس في يوم الوقف ولا يوم التداول التالي.
+    بوت وُقف → لا كول. كول وُقف → لا بوت.
+    """
+    if str(ticker or "").upper() != SPY_TICKER:
+        return False, ""
+    if not outcomes_path or not os.path.exists(outcomes_path):
+        return False, ""
+    today = (today or datetime.now(MARKET_TZ).strftime("%Y-%m-%d"))[:10]
+    try:
+        prev = previous_trading_day(today)
+    except (TypeError, ValueError):
+        return False, ""
+    opposite = "PUT" if is_call else "CALL"
+    try:
+        df = pd.read_csv(outcomes_path)
+    except Exception:
+        return False, ""
+    need = {"ticker", "direction", "status", "exit_date"}
+    if df.empty or not need.issubset(df.columns):
+        return False, ""
+    exit_day = df["exit_date"].astype(str).str[:10]
+    hit = df[
+        (df["ticker"].astype(str).str.upper() == SPY_TICKER)
+        & (df["direction"].astype(str).str.upper().str.contains(opposite))
+        & (df["status"].astype(str) == "stop_hit")
+        & (exit_day.isin([today, prev]))
+    ]
+    if hit.empty:
+        return False, ""
+    stopped = str(hit.iloc[-1]["exit_date"])[:10]
+    side = "كول" if is_call else "بوت"
+    return True, (
+        f"انقلاب ممنوع — وقف {opposite} يوم {stopped} — لا {side} اليوم أو اليوم التالي"
+    )
 
 
 def spy_alignment_ok(is_call, spy_regime, ticker=None):
@@ -913,6 +961,10 @@ def row_passes_save_filters(r):
         return False
     if strike > 0 and price > 0 and abs(strike - price) / price > 0.25:
         return False
+    max_dist = ticker_profile(ticker).get("max_strike_dist")
+    if max_dist is not None and strike > 0 and price > 0:
+        if abs(strike - price) / price > float(max_dist):
+            return False
     # رفض أهداف غير منطقية
     for k in ("tp1_stock", "tp2_stock", "tp3_stock", "stop_stock", "entry_stock"):
         try:
@@ -1356,6 +1408,12 @@ def _pick_best_strike(chain_df, stock_price, is_call, ticker):
     target   = prof.get("target_prem", (prem_min + prem_max) / 2)
     max_sp   = profile_limit(ticker, "max_spread_pct", MAX_SPREAD_PCT)
     min_oi   = profile_limit(ticker, "min_oi", MIN_OI)
+    max_dist = float(prof.get("max_strike_dist", 0.05))
+
+    def _within_dist(strike):
+        if stock_price <= 0:
+            return False
+        return abs(float(strike) - stock_price) / stock_price <= max_dist
 
     if not use_otm:
         return _leg_from_atm(_atm_row(chain_df, stock_price))
@@ -1381,8 +1439,8 @@ def _pick_best_strike(chain_df, stock_price, is_call, ticker):
             continue
         if not is_call and strike >= stock_price * 0.999:
             continue
-        if abs(strike - stock_price) / stock_price > 0.05:
-            continue  # لا نبعد أكثر من 5%
+        if not _within_dist(strike):
+            continue
 
         dist_prem = abs(prem - target)
         candidates.append((dist_prem, leg))
@@ -1399,13 +1457,18 @@ def _pick_best_strike(chain_df, stock_price, is_call, ticker):
             continue
         prem = leg["premium"]
         sp   = leg["spread_pct"] if leg["spread_pct"] is not None else 99
+        if not _within_dist(leg["strike"]):
+            continue
         if prem_min <= prem <= prem_max and sp <= max_sp:
             loose.append((abs(prem - target), leg))
     if loose:
         loose.sort(key=lambda x: x[0])
         return loose[0][1]
 
-    return _leg_from_atm(_atm_row(chain_df, stock_price))
+    atm = _leg_from_atm(_atm_row(chain_df, stock_price))
+    if atm and _within_dist(atm["strike"]):
+        return atm
+    return None
 
 
 def resolve_is_call(r, tech=None):
@@ -1907,6 +1970,8 @@ def compute_trade_plan(r, tech):
     )
     # BUY صارم: الشروط الفنية + داخل نافذة التنفيذ
     buy_ready = almost_buy and exec_ok
+    flip_blocked, flip_note = spy_flip_blocked(is_call, ticker)
+    plan["spy_flip_blocked"] = flip_blocked
 
     if earn_risk:
         plan["recommendation"] = "AVOID"
@@ -1953,17 +2018,21 @@ def compute_trade_plan(r, tech):
         plan["recommendation"] = "WAIT"
         plan["rec_note"] = exec_block_rec_note()
     elif buy_ready and (trend_ok or mixed_ok):
-        plan["recommendation"] = "BUY"
-        if entry_hit_now:
-            plan["rec_note"] = (
-                "Entry تحقق + الاتجاه والزخم مناسبان"
-                if trend_ok else "Entry تحقق + اختراق قوي رغم الاتجاه المختلط"
-            )
+        if flip_blocked:
+            plan["recommendation"] = "WAIT"
+            plan["rec_note"] = flip_note
         else:
-            plan["rec_note"] = (
-                "الاتجاه والزخم والسيولة مناسبة"
-                if trend_ok else "اختراق قوي رغم الاتجاه المختلط"
-            )
+            plan["recommendation"] = "BUY"
+            if entry_hit_now:
+                plan["rec_note"] = (
+                    "Entry تحقق + الاتجاه والزخم مناسبان"
+                    if trend_ok else "Entry تحقق + اختراق قوي رغم الاتجاه المختلط"
+                )
+            else:
+                plan["rec_note"] = (
+                    "الاتجاه والزخم والسيولة مناسبة"
+                    if trend_ok else "اختراق قوي رغم الاتجاه المختلط"
+                )
     elif buy_ready and not (trend_ok or mixed_ok):
         # لا BUY بمجرد لمس Entry بدون اتجاه — راقب تأكيد الزخم
         plan["recommendation"] = "WAIT"
@@ -2024,6 +2093,13 @@ def compute_trade_plan(r, tech):
         ).strip(" ·")
         if plan.get("setup_pct", 0) >= 75:
             plan["setup_pct"] = 74
+    if flip_blocked:
+        plan["wait_tier"] = "WARM"
+        if plan.get("setup_pct", 0) >= 75:
+            plan["setup_pct"] = 74
+        note = plan.get("rec_note") or ""
+        if "انقلاب ممنوع" not in note:
+            plan["rec_note"] = (note + " · " + flip_note).strip(" ·")
     if plan.get("recommendation") == "WAIT" and plan.get("wait_tier") in ("FIRE", "HOT"):
         base = plan.get("rec_note") or ""
         plan["rec_note"] = (base + " · " + plan.get("wait_edge_note", "")).strip(" ·")

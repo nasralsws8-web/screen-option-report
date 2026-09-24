@@ -24,6 +24,10 @@ from cheap_options_screener_v3 import (  # noqa: E402
     is_exec_window,
     is_regular_session_over,
     next_friday_date,
+    previous_trading_day,
+    row_passes_save_filters,
+    spy_flip_blocked,
+    _pick_best_strike,
 )
 from data_quality import classify_data_quality  # noqa: E402
 from outcome_tracker import (  # noqa: E402
@@ -47,6 +51,8 @@ from telegram_notify import (  # noqa: E402
     save_sent,
     select_buy_rows,
     select_hot_wait_rows,
+    spy_direction_already_sent,
+    telegram_skip_reason,
 )
 
 ET = ZoneInfo("America/New_York")
@@ -522,6 +528,81 @@ class TestTelegramDedupe(unittest.TestCase):
         self.assertIn("2026-08-05|B|CALL|1.00|2026-08-07", pruned)
         self.assertIn("WAIT_HOT|2026-08-04|D|CALL|3.00|2026-08-07", pruned)
 
+    def test_spy_one_card_per_direction(self):
+        day = "2026-09-10"
+        df = pd.DataFrame([
+            {
+                "Ticker": "SPY", "recommendation": "BUY", "direction": "PUT",
+                "strike": 757, "expiry": "2026-09-11", "exec_window_ok": True,
+                "tp1_rr_live": 1.6, "rec_note": "Entry تحقق",
+            },
+            {
+                "Ticker": "SPY", "recommendation": "BUY", "direction": "PUT",
+                "strike": 756, "expiry": "2026-09-11", "exec_window_ok": True,
+                "tp1_rr_live": 1.6, "rec_note": "Entry تحقق",
+            },
+            {
+                "Ticker": "SPY", "recommendation": "BUY", "direction": "CALL",
+                "strike": 770, "expiry": "2026-09-11", "exec_window_ok": True,
+                "tp1_rr_live": 1.6, "rec_note": "Entry تحقق",
+            },
+        ])
+        to_send, skipped, _ = select_buy_rows(df, sent_keys=set(), day=day)
+        strikes = [float(r.get("strike")) for _, r in to_send]
+        self.assertEqual(strikes, [757.0, 770.0])
+        self.assertEqual(len(skipped), 1)
+
+    def test_spy_direction_blocks_other_strike_and_kind(self):
+        day = "2026-09-10"
+        sent = {"2026-09-10|SPY|PUT|757.00|2026-09-11"}
+        self.assertTrue(spy_direction_already_sent(sent, day, "PUT"))
+        df = pd.DataFrame([{
+            "Ticker": "SPY", "recommendation": "WAIT", "direction": "PUT",
+            "strike": 748, "expiry": "2026-09-11", "exec_window_ok": True,
+            "wait_tier": "HOT", "setup_pct": 90, "tp1_rr_live": 1.6,
+            "rec_note": "جاهز",
+        }])
+        to_send, skipped, _ = select_hot_wait_rows(df, sent_keys=sent, day=day)
+        self.assertEqual(to_send, [])
+        self.assertEqual(len(skipped), 1)
+
+    def test_skip_weak_rr_rejected_and_closed(self):
+        day = "2026-09-18"
+        df = pd.DataFrame([
+            {
+                "Ticker": "SPY", "recommendation": "WAIT", "direction": "PUT",
+                "strike": 754, "expiry": "2026-09-18", "exec_window_ok": True,
+                "wait_tier": "FIRE", "setup_pct": 99, "tp1_rr_live": 0.7,
+                "rec_note": "R:R الحي 1:0.7 ضعيف",
+            },
+            {
+                "Ticker": "NVDA", "recommendation": "WAIT", "direction": "CALL",
+                "strike": 215, "expiry": "2026-09-18", "exec_window_ok": True,
+                "wait_tier": "HOT", "setup_pct": 79, "tp1_rr_live": 1.2,
+                "rec_note": "CALL مرفوض — SPY هابط (فلتر اتجاه) — مراقبة فقط",
+            },
+            {
+                "Ticker": "AMZN", "recommendation": "WAIT", "direction": "PUT",
+                "strike": 248, "expiry": "2026-09-18", "exec_window_ok": True,
+                "wait_tier": "HOT", "setup_pct": 82, "tp1_rr_live": 1.5,
+                "rec_note": "السوق مغلق — لا تنفيذ بعد الإغلاق",
+            },
+            {
+                "Ticker": "MSFT", "recommendation": "WAIT", "direction": "CALL",
+                "strike": 500, "expiry": "2026-09-18", "exec_window_ok": True,
+                "wait_tier": "HOT", "setup_pct": 80, "tp1_rr_live": 1.4,
+                "rec_note": "جاهز لدخول يدوي",
+            },
+        ])
+        self.assertEqual(telegram_skip_reason(df.iloc[0]), "weak_rr")
+        self.assertEqual(telegram_skip_reason(df.iloc[1]), "align")
+        self.assertEqual(telegram_skip_reason(df.iloc[2]), "closed")
+        self.assertEqual(telegram_skip_reason(df.iloc[3]), "")
+        to_send, _, skipped = select_hot_wait_rows(df, sent_keys=set(), day=day)
+        tickers = [r.get("Ticker") for _, r in to_send]
+        self.assertEqual(tickers, ["MSFT"])
+        self.assertEqual(len(skipped), 3)
+
 
 class TestTelegramOutcomeSync(unittest.TestCase):
     def test_parse_wait_hot_key(self):
@@ -767,6 +848,77 @@ class TestKeptClosedQuality(unittest.TestCase):
         )])
         df = apply_data_quality(df)
         self.assertEqual(str(df.at[0, "data_quality"]), "unreliable")
+
+
+def _opt_chain(pairs):
+    rows = []
+    for strike, prem in pairs:
+        rows.append({
+            "strike": strike,
+            "bid": round(prem - 0.02, 2),
+            "ask": round(prem + 0.02, 2),
+            "lastPrice": prem,
+            "impliedVolatility": 0.2,
+            "openInterest": 5000,
+            "volume": 2000,
+        })
+    return pd.DataFrame(rows)
+
+
+class TestSpyStrikeDistance(unittest.TestCase):
+    def test_rejects_strike_farther_than_one_percent(self):
+        chain = _opt_chain([(740, 2.4), (752, 2.5), (756, 2.6)])
+        leg = _pick_best_strike(chain, 758.0, False, "SPY")
+        self.assertIsNotNone(leg)
+        self.assertNotEqual(leg["strike"], 740.0)
+        self.assertLessEqual(abs(leg["strike"] - 758.0) / 758.0, 0.01)
+
+    def test_save_filter_drops_far_spy_strike(self):
+        row = {
+            "Ticker": "SPY",
+            "price_num": 757.83,
+            "premium": 2.47,
+            "spread_pct": 0.02,
+            "oi": 8000,
+            "opt_vol": 1000,
+            "strike": 740.0,
+            "dte_num": 1,
+            "tp1_stock": 752.0,
+            "tp2_stock": 748.0,
+            "tp3_stock": 744.0,
+            "stop_stock": 761.0,
+            "entry_stock": 759.0,
+        }
+        self.assertFalse(row_passes_save_filters(row))
+
+
+class TestSpyFlipBlock(unittest.TestCase):
+    def test_previous_trading_day_skips_weekend(self):
+        self.assertEqual(previous_trading_day("2026-09-14"), "2026-09-11")
+
+    def test_put_stop_blocks_call_same_day_and_next(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, "outcomes.csv")
+            pd.DataFrame([{
+                "ticker": "SPY",
+                "direction": "PUT",
+                "status": "stop_hit",
+                "exit_date": "2026-09-10",
+            }]).to_csv(path, index=False)
+            blocked, note = spy_flip_blocked(True, "SPY", today="2026-09-10", outcomes_path=path)
+            self.assertTrue(blocked)
+            self.assertIn("انقلاب ممنوع", note)
+            blocked_next, _ = spy_flip_blocked(True, "SPY", today="2026-09-11", outcomes_path=path)
+            self.assertTrue(blocked_next)
+            blocked_later, _ = spy_flip_blocked(True, "SPY", today="2026-09-14", outcomes_path=path)
+            self.assertFalse(blocked_later)
+            same_side, _ = spy_flip_blocked(False, "SPY", today="2026-09-10", outcomes_path=path)
+            self.assertFalse(same_side)
+
+    def test_other_ticker_not_blocked(self):
+        blocked, note = spy_flip_blocked(True, "NVDA", today="2026-09-11", outcomes_path="missing.csv")
+        self.assertFalse(blocked)
+        self.assertEqual(note, "")
 
 
 if __name__ == "__main__":

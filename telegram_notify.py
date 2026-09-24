@@ -218,6 +218,55 @@ def row_allows_telegram(row) -> bool:
     return s in ("1", "true", "yes", "y")
 
 
+# يطابق MIN_RR_TO_BUY — بطاقة R:R أضعف من هذا لا تُرسل
+MIN_RR_TO_SEND = 1.3
+
+
+def telegram_skip_reason(row) -> str:
+    """سبب منع الإرسال. فارغ = مسموح."""
+    if not row_allows_telegram(row):
+        return "window"
+    note = str(row.get("rec_note") or "")
+    if "السوق مغلق" in note:
+        return "closed"
+    if "مرفوض" in note:
+        return "align"
+    if "انقلاب ممنوع" in note:
+        return "flip"
+    raw = row.get("tp1_rr_live", None)
+    if raw is None or (isinstance(raw, float) and pd.isna(raw)):
+        return ""
+    text = str(raw).strip()
+    if text.lower() in ("", "nan", "none"):
+        return ""
+    try:
+        if float(text) < MIN_RR_TO_SEND:
+            return "weak_rr"
+    except (TypeError, ValueError):
+        return ""
+    return ""
+
+
+def _alert_parts(key: str):
+    parts = str(key).split("|")
+    if parts and parts[0].upper() == "WAIT_HOT":
+        parts = parts[1:]
+    return parts
+
+
+def spy_direction_already_sent(sent_keys, day, direction) -> bool:
+    """SPY: بطاقة واحدة لكل اتجاه في اليوم، بغض النظر عن السترايك أو BUY/WAIT."""
+    direction = normalize_direction(direction)
+    day = str(day or "")[:10]
+    for key in sent_keys or []:
+        parts = _alert_parts(key)
+        if len(parts) < 3:
+            continue
+        if parts[0][:10] == day and parts[1].upper() == "SPY" and parts[2].upper() == direction:
+            return True
+    return False
+
+
 def select_buy_rows(df: pd.DataFrame, sent_keys=None, force=False, day=None):
     """يرجع (للإرسال، المتخطى بسبب dedupe، المتخطى بسبب النافذة)."""
     sent_keys = set(sent_keys or [])
@@ -231,15 +280,27 @@ def select_buy_rows(df: pd.DataFrame, sent_keys=None, force=False, day=None):
     to_send = []
     skipped_dup = []
     skipped_window = []
+    batch_keys = set()
     for _, row in buys.iterrows():
-        if not row_allows_telegram(row):
-            skipped_window.append(alert_key(row, day=day, kind="BUY"))
-            continue
         key = alert_key(row, day=day, kind="BUY")
+        reason = telegram_skip_reason(row)
+        if reason:
+            skipped_window.append(key)
+            continue
+        ticker = str(row.get("Ticker") or row.get("ticker") or "").upper().strip()
+        direction = normalize_direction(row.get("direction"))
+        if (
+            not force
+            and ticker == "SPY"
+            and spy_direction_already_sent(set(sent_keys) | batch_keys, day, direction)
+        ):
+            skipped_dup.append(key)
+            continue
         if not force and key in sent_keys:
             skipped_dup.append(key)
             continue
         to_send.append((key, row))
+        batch_keys.add(key)
     return to_send, skipped_dup, skipped_window
 
 
@@ -255,17 +316,29 @@ def select_hot_wait_rows(df: pd.DataFrame, sent_keys=None, force=False, day=None
     to_send = []
     skipped_dup = []
     skipped_window = []
+    batch_keys = set()
     for _, row in df.iterrows():
         if not is_hot_wait_row(row):
             continue
-        if not row_allows_telegram(row):
-            skipped_window.append(alert_key(row, day=day, kind="WAIT_HOT"))
-            continue
         key = alert_key(row, day=day, kind="WAIT_HOT")
+        reason = telegram_skip_reason(row)
+        if reason:
+            skipped_window.append(key)
+            continue
+        ticker = str(row.get("Ticker") or row.get("ticker") or "").upper().strip()
+        direction = normalize_direction(row.get("direction"))
+        if (
+            not force
+            and ticker == "SPY"
+            and spy_direction_already_sent(set(sent_keys) | batch_keys, day, direction)
+        ):
+            skipped_dup.append(key)
+            continue
         if not force and key in sent_keys:
             skipped_dup.append(key)
             continue
         to_send.append((key, row))
+        batch_keys.add(key)
     return to_send, skipped_dup, skipped_window
 
 
@@ -553,7 +626,8 @@ def main():
     sent_map = store.get("sent") or {}
 
     buys, buy_dup, buy_win = select_buy_rows(df, sent_keys=sent_map.keys())
-    hots, hot_dup, hot_win = select_hot_wait_rows(df, sent_keys=sent_map.keys())
+    pending = set(sent_map.keys()) | {key for key, _ in buys}
+    hots, hot_dup, hot_win = select_hot_wait_rows(df, sent_keys=pending)
 
     if buy_dup or hot_dup:
         print(f"⏭️  تخطي مكرر: BUY={len(buy_dup)} WAIT_HOT={len(hot_dup)}")
