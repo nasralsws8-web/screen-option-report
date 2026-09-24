@@ -51,10 +51,10 @@ def _f(value):
 def _roc(closes, n):
     if closes is None or len(closes) <= n:
         return None
-    past = float(closes[-(n + 1)])
+    past = float(closes.iloc[-(n + 1)])
     if past == 0:
         return None
-    return (float(closes[-1]) - past) / past
+    return (float(closes.iloc[-1]) - past) / past
 
 
 def _features_from_hist(ticker, info, hist, pm):
@@ -272,7 +272,7 @@ def scan():
                 "scanned_at": scanned,
             })
         except Exception as exc:
-            print(f"{ticker}: {exc}")
+            print(f"{ticker}: {type(exc).__name__}: {exc}")
     rows.sort(key=lambda r: r["score"], reverse=True)
     return rows
 

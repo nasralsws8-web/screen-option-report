@@ -179,6 +179,16 @@ class TestStructure(unittest.TestCase):
         self.assertLessEqual(near["distance_to_resistance_pct"], 2)
 
 
+class TestRoc(unittest.TestCase):
+    def test_roc_reads_by_position_on_date_index(self):
+        import pandas as pd
+        from stock_prebreakout_scan import _roc
+
+        idx = pd.date_range("2024-01-01", periods=30, freq="B")
+        closes = pd.Series(range(100, 130), index=idx, dtype=float)
+        self.assertAlmostEqual(_roc(closes, 20), (129 - 109) / 109)
+
+
 class TestSources(unittest.TestCase):
     def test_scan_uses_options_clients(self):
         import cheap_options_screener_v3 as opt
