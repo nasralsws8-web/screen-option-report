@@ -4,10 +4,19 @@
 """
 
 import os
+import time
 from datetime import datetime, timezone
 
 import pandas as pd
 
+from cheap_options_screener_v3 import (
+    DELAY_BETWEEN,
+    _YF_SESSION,
+    fetch_premarket,
+    fix_ticker,
+    load_manual_tickers,
+)
+from finnhub_premarket import _get, enrich_ticker_premarket, get_api_key
 from stock_prebreakout import (
     SIGNAL_IGNORE,
     breakout_level,
@@ -117,20 +126,20 @@ def _features_from_hist(ticker, info, hist, pm):
     }
 
 
-def _premarket(ticker):
+def _yahoo(ticker):
     import yfinance as yf
-    yt = yf.Ticker(ticker)
-    out = {"high": None, "last": None, "volume": 0}
-    try:
-        intra = yt.history(period="1d", interval="1m", prepost=True)
-        if intra is not None and not intra.empty:
-            pm = intra.between_time("04:00", "09:29")
-            if not pm.empty:
-                out["high"] = float(pm["High"].max())
-                out["last"] = float(pm["Close"].iloc[-1])
-                out["volume"] = int(pm["Volume"].sum())
-    except Exception:
-        pass
+    return yf.Ticker(ticker, session=_YF_SESSION)
+
+
+def _premarket(ticker):
+    """نفس جلسة Yahoo ودالة البريماركت المستخدمة في مسح الخيارات."""
+    pm_raw = fetch_premarket(ticker)
+    pm = {
+        "high": pm_raw.get("pm_high"),
+        "last": pm_raw.get("pm_last"),
+        "volume": pm_raw.get("pm_volume") or 0,
+    }
+    yt = _yahoo(ticker)
     try:
         info = yt.info or {}
     except Exception:
@@ -139,13 +148,12 @@ def _premarket(ticker):
         hist = yt.history(period="1y", interval="1d", auto_adjust=False)
     except Exception:
         hist = None
-    return info, hist, out
+    return info, hist, pm
 
 
 def _spy_return():
     try:
-        import yfinance as yf
-        hist = yf.Ticker("SPY").history(period="3mo", interval="1d")
+        hist = _yahoo("SPY").history(period="3mo", interval="1d")
         if hist is None or len(hist) < 21:
             return None
         close = hist["Close"].astype(float)
@@ -155,22 +163,16 @@ def _spy_return():
 
 
 def _catalyst(ticker):
-    key = os.environ.get("FINNHUB_API_KEY") or ""
+    key = get_api_key()
     if not key:
         return "none", ""
-    try:
-        import requests
-        url = "https://finnhub.io/api/v1/company-news"
-        today = datetime.now(timezone.utc).date()
-        start = today.fromordinal(today.toordinal() - 5)
-        resp = requests.get(
-            url,
-            params={"symbol": ticker, "from": start.isoformat(), "to": today.isoformat(), "token": key},
-            timeout=8,
-        )
-        rows = resp.json() if resp.ok else []
-    except Exception:
-        return "none", ""
+    today = datetime.now(timezone.utc).date()
+    start = today.fromordinal(today.toordinal() - 5)
+    rows = _get(
+        "/company-news",
+        {"symbol": ticker, "from": start.isoformat(), "to": today.isoformat()},
+        key,
+    )
     if not isinstance(rows, list) or not rows:
         return "none", ""
     text = " ".join(str(r.get("headline") or "") for r in rows[:8]).lower()
@@ -197,15 +199,18 @@ def _candidates():
         })
         df = ft.screener_view(order="Relative Volume", ascend=False)
         if df is not None and not df.empty and "Ticker" in df.columns:
-            names.extend(str(t).upper() for t in df["Ticker"].head(MAX_NAMES).tolist())
+            names.extend(fix_ticker(str(t).upper()) for t in df["Ticker"].head(MAX_NAMES).tolist())
     except Exception as exc:
         print(f"Finviz: {exc}")
+    for t in load_manual_tickers():
+        if t not in names:
+            names.append(t)
     manual = os.environ.get("STOCK_TICKERS", "")
     for raw in manual.split(","):
-        t = raw.strip().upper()
+        t = fix_ticker(raw.strip().upper())
         if t and t not in names:
             names.append(t)
-    return names[:MAX_NAMES]
+    return list(dict.fromkeys(names))[:MAX_NAMES]
 
 
 def scan():
@@ -215,9 +220,14 @@ def scan():
     for ticker in _candidates():
         try:
             info, hist, pm = _premarket(ticker)
+            fh = enrich_ticker_premarket(ticker, delay=0.35) if get_api_key() else {}
+            if pm.get("last") is None and fh.get("fh_price"):
+                pm["last"] = fh["fh_price"]
             feat = _features_from_hist(ticker, info, hist, pm)
             if not feat:
                 continue
+            if feat.get("gap_pct") is None and fh.get("fh_gap_pct") is not None:
+                feat["gap_pct"] = fh["fh_gap_pct"]
             if spy_ret is not None and hist is not None and len(hist) >= 21:
                 close = hist["Close"].astype(float)
                 stock_ret = (float(close.iloc[-1]) - float(close.iloc[-21])) / float(close.iloc[-21])
@@ -225,6 +235,7 @@ def scan():
             kind, text = _catalyst(ticker)
             feat["catalyst"] = kind
             feat["catalyst_text"] = text
+            time.sleep(DELAY_BETWEEN)
             plan = evaluate(feat)
             if plan["signal"] == SIGNAL_IGNORE:
                 continue

@@ -179,5 +179,21 @@ class TestStructure(unittest.TestCase):
         self.assertLessEqual(near["distance_to_resistance_pct"], 2)
 
 
+class TestSources(unittest.TestCase):
+    def test_scan_uses_options_clients(self):
+        import cheap_options_screener_v3 as opt
+        import finnhub_premarket as fh
+        import stock_prebreakout_scan as scan
+
+        self.assertIs(scan.fetch_premarket, opt.fetch_premarket)
+        self.assertIs(scan._YF_SESSION, opt._YF_SESSION)
+        self.assertIs(scan.load_manual_tickers, opt.load_manual_tickers)
+        self.assertIs(scan.fix_ticker, opt.fix_ticker)
+        self.assertIs(scan.get_api_key, fh.get_api_key)
+        self.assertIs(scan._get, fh._get)
+        self.assertIs(scan.enrich_ticker_premarket, fh.enrich_ticker_premarket)
+        self.assertEqual(scan.DELAY_BETWEEN, opt.DELAY_BETWEEN)
+
+
 if __name__ == "__main__":
     unittest.main()
