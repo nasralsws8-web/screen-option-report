@@ -267,6 +267,7 @@
       R:R حي <strong>≥ 1.3</strong> —
       مطاردة BUY بعد Entry بـ <strong>&gt;0.8%</strong> —
       HOT/FIRE على WAIT = دخول يدوي عند Entry (ليست BUY) —
+      تبويب <strong>قبل الاختراق</strong> أسهم $1–$10: مراقبة حتى التفعيل، الهدف +7% من التفعيل، ليست BUY —
       FIRE على BUY = قوة الإعداد.
       <div class="rule-warn">السعر الحي ≠ توصية جديدة. المسح الكامل فقط يمنح BUY. لا ترقية WAIT→BUY من Finnhub.</div>
       <div style="margin-top:4px;color:#58a6ff">رابط مشترك:
@@ -316,11 +317,13 @@
     <div id="spySection"></div>
     <div class="tab-bar">
       <div class="tab active" onclick="showTab('cards')">تنفيذ</div>
+      <div class="tab" onclick="showTab('stocks')">قبل الاختراق</div>
       <div class="tab" onclick="showTab('table')">جدول</div>
       <div class="tab" onclick="showTab('study')">دراسة</div>
       <div class="tab" onclick="showTab('history')">سجل</div>
     </div>
     <div id="cardsView"></div>
+    <div id="stocksView" style="display:none"></div>
     <div id="tableView" style="display:none">
       <table id="mainTable"><thead></thead><tbody></tbody></table>
     </div>
@@ -354,6 +357,10 @@ const CSV_URL = CSV_URLS[0];
 const OUTCOMES_URLS = [
   REPO_RAW + '/outcomes.csv',
   './outcomes.csv',
+];
+const STOCK_PREBREAKOUT_URLS = [
+  REPO_RAW + '/stock_prebreakout.csv',
+  './stock_prebreakout.csv',
 ];
 const SHARED_DASH_URL = 'https://nasralsws8-web.github.io/screen-option-report/dashboard.html';
 /** أثناء الجلسة: أقدم من هذا = قديم (price_update كل ~5د + Full Scan كل ~15د) */
@@ -1871,6 +1878,7 @@ async function loadData() {
 
     renderCards(rest);
     renderTable(rest);
+    loadStockPrebreakout();
 
     document.getElementById('loadingDiv').style.display = 'none';
     document.getElementById('mainContent').style.display = 'block';
@@ -2284,11 +2292,74 @@ function renderStockStudy(ticker) {
   }
 }
 
+function fmtStockPx(v) {
+  const n = parseFloat(v);
+  return Number.isFinite(n) ? '$' + n.toFixed(2) : '—';
+}
+
+function fmtStockQty(v) {
+  const n = parseFloat(v);
+  if (!Number.isFinite(n)) return '—';
+  if (Math.abs(n) >= 1e9) return (n / 1e9).toFixed(2) + 'B';
+  if (Math.abs(n) >= 1e6) return (n / 1e6).toFixed(2) + 'M';
+  if (Math.abs(n) >= 1e3) return (n / 1e3).toFixed(0) + 'K';
+  return n.toFixed(2);
+}
+
+function renderStockPrebreakout(rows) {
+  if (!rows.length) {
+    return '<div class="empty-buy">لا توجد أسهم مؤهلة. الماسح يراقب ما قبل الاختراق ولا يكتب BUY.</div>';
+  }
+  return rows.map(r => {
+    const sig = r.signal || '';
+    const color = sig === 'A_PLUS' ? '#3fb950' : sig === 'STRONG' ? '#58a6ff' : '#e3b341';
+    return `<div class="card" style="margin-bottom:12px;border-right:4px solid ${color}">
+      <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap">
+        <strong>${r.ticker || ''}</strong>
+        <span style="color:#8b949e">${r.company || ''}</span>
+        <span style="color:${color}">${r.signal_label || sig}</span>
+        <span>${r.score || '—'}/100</span>
+      </div>
+      <div style="margin-top:8px;font-size:13px;line-height:1.7">
+        السعر ${fmtStockPx(r.price)} · الفجوة ${r.gap_pct || '—'}% · الفلوت ${fmtStockQty(r.float_shares)}<br>
+        حجم البريماركت ${fmtStockQty(r.pm_volume)} · الحجم بالدولار ${fmtStockQty(r.dollar_volume)} · RVOL ${r.rvol || '—'}<br>
+        ROCM20 ${r.rocm20 || '—'} · ROCM200 ${r.rocm200 || '—'} · VWAP ${fmtStockPx(r.vwap)} · ATR% ${r.atr_pct || '—'}<br>
+        قمة البريماركت ${fmtStockPx(r.pmh)} · المقاومة ${fmtStockPx(r.resistance)} · المسافة ${r.distance_to_resistance_pct || '—'}%<br>
+        التفعيل ${fmtStockPx(r.trigger)} · الهدف +7% ${fmtStockPx(r.target)} · الوقف ${fmtStockPx(r.stop)} · العائد/المخاطرة ${r.risk_reward || '—'}
+      </div>
+      <div style="margin-top:6px;font-size:13px">المحفز: ${r.catalyst || '—'}</div>
+      <div style="font-size:13px">النمط: ${r.pattern || '—'}</div>
+      <div style="margin-top:6px">${r.reason || ''}</div>
+      ${r.notes ? `<div style="color:#e3b341;font-size:12px;margin-top:4px">${r.notes}</div>` : ''}
+      <div style="color:#8b949e;font-size:12px;margin-top:6px">${r.disclaimer || ''}</div>
+    </div>`;
+  }).join('');
+}
+
+let stockPrebreakoutLoaded = false;
+async function loadStockPrebreakout() {
+  const box = document.getElementById('stocksView');
+  if (!box || stockPrebreakoutLoaded) return;
+  box.innerHTML = '<div class="empty-buy">جاري تحميل ماسح ما قبل الاختراق...</div>';
+  try {
+    const { text } = await fetchTextNoCache(STOCK_PREBREAKOUT_URLS, {
+      preferColumns: ['ticker', 'trigger', 'score', 'signal'],
+    });
+    const rows = parseCSV(text).filter(r => String(r.ticker || '').trim());
+    box.innerHTML = renderStockPrebreakout(rows);
+  } catch (e) {
+    box.innerHTML = '<div class="empty-buy">لا توجد أسهم مؤهلة بعد. الماسح يبحث قبل الاختراق، ولا يكتب صفّاً إلا إذا بلغ السكور 65. ليست BUY.</div>';
+  }
+  stockPrebreakoutLoaded = true;
+}
+
 function showTab(tab) {
-  const order = ['cards', 'table', 'study', 'history'];
+  const order = ['cards', 'stocks', 'table', 'study', 'history'];
   document.querySelectorAll('.tab').forEach((t, i) => t.classList.toggle('active', order[i] === tab));
   document.getElementById('cardsView').style.display = tab === 'cards' ? 'block' : 'none';
+  document.getElementById('stocksView').style.display = tab === 'stocks' ? 'block' : 'none';
   document.getElementById('tableView').style.display = tab === 'table' ? 'block' : 'none';
+  if (tab === 'stocks') loadStockPrebreakout();
   document.getElementById('studyView').style.display = tab === 'study' ? 'block' : 'none';
   document.getElementById('historyView').style.display = tab === 'history' ? 'block' : 'none';
   if (tab === 'history') loadHistory(true);

@@ -10,6 +10,7 @@ on:
       - 'dashboard.html'
       - 'options_v3_results.csv'
       - 'outcomes.csv'
+      - 'stock_prebreakout.csv'
       - '.github/workflows/deploy-pages.yml'
   workflow_dispatch:
 
@@ -41,6 +42,7 @@ jobs:
           cp dashboard.html _site/index.html
           cp options_v3_results.csv _site/options_v3_results.csv
           cp outcomes.csv _site/outcomes.csv
+          cp stock_prebreakout.csv _site/stock_prebreakout.csv
           ls -la _site
 
       - name: Upload Pages artifact
