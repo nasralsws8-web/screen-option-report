@@ -27,6 +27,7 @@ from stock_prebreakout import (
 )
 
 OUT_PATH = os.environ.get("STOCK_PREBREAKOUT_CSV", "stock_prebreakout.csv")
+LOG_PATH = os.environ.get("STOCK_PREBREAKOUT_LOG", "stock_prebreakout_log.csv")
 MAX_NAMES = int(os.environ.get("STOCK_PREBREAKOUT_MAX", "25"))
 
 COLUMNS = [
@@ -277,7 +278,64 @@ def scan():
     return rows
 
 
-def write_results(rows, path=OUT_PATH):
+def _log_key(row):
+    ticker = str(row.get("ticker") or "").strip().upper()
+    day = str(row.get("scanned_at") or "")[:10]
+    if not ticker or len(day) < 10:
+        return ""
+    return f"{day}|{ticker}"
+
+
+def _clean_log_value(value):
+    if value is None:
+        return ""
+    try:
+        if pd.isna(value):
+            return ""
+    except TypeError:
+        pass
+    return value
+
+
+def append_log(rows, path=LOG_PATH):
+    """سهم واحد لكل يوم. الظهور التالي في نفس اليوم يحدّث الصف ويبقي أول ظهور."""
+    log_cols = ["first_seen"] + COLUMNS
+    existing = []
+    if os.path.exists(path):
+        try:
+            old = pd.read_csv(path)
+            existing = old.to_dict("records")
+        except Exception:
+            existing = []
+    if not rows:
+        if not os.path.exists(path):
+            pd.DataFrame(columns=log_cols).to_csv(path, index=False)
+        return 0
+    by_key = {}
+    for rec in existing:
+        key = _log_key(rec)
+        if key:
+            by_key[key] = {col: _clean_log_value(rec.get(col)) for col in log_cols}
+    added = 0
+    for row in rows:
+        key = _log_key(row)
+        if not key:
+            continue
+        prev = by_key.get(key)
+        merged = {col: _clean_log_value(row.get(col)) for col in COLUMNS}
+        merged["first_seen"] = (prev or {}).get("first_seen") or row.get("scanned_at") or ""
+        if prev is None:
+            added += 1
+        by_key[key] = merged
+    out = list(by_key.values())
+    out.sort(key=lambda rec: (str(rec.get("scanned_at") or ""), float(rec.get("score") or 0)), reverse=True)
+    pd.DataFrame(out, columns=log_cols).to_csv(path, index=False)
+    print(f"السجل: {len(out)} صفاً ({added} جديداً) → {path}")
+    return added
+
+
+def write_results(rows, path=OUT_PATH, log_path=LOG_PATH):
+    append_log(rows, log_path)
     if not rows:
         print("لا صفوف مؤهلة — الإبقاء على الملف السابق إن وُجد")
         if not os.path.exists(path):

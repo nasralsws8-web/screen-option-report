@@ -362,6 +362,10 @@ const STOCK_PREBREAKOUT_URLS = [
   REPO_RAW + '/stock_prebreakout.csv',
   './stock_prebreakout.csv',
 ];
+const STOCK_LOG_URLS = [
+  REPO_RAW + '/stock_prebreakout_log.csv',
+  './stock_prebreakout_log.csv',
+];
 const SHARED_DASH_URL = 'https://nasralsws8-web.github.io/screen-option-report/dashboard.html';
 /** أثناء الجلسة: أقدم من هذا = قديم (price_update كل ~5د + Full Scan كل ~15د) */
 const STALE_SOFT_MS = 45 * 60 * 1000;
@@ -2386,6 +2390,33 @@ function renderStockPrebreakout(rows) {
   return `<div class="cards">${cards}</div>`;
 }
 
+function renderStockLog(rows) {
+  if (!rows.length) {
+    return '<div class="empty-buy">سجل الأسهم فارغ. يُضاف السهم عند أول ظهور، ويُحدَّث نفس اليوم دون تكرار.</div>';
+  }
+  const body = rows.map(r => `<tr>
+    <td>${escStock(String(r.scanned_at || '').slice(0, 16))}</td>
+    <td class="tbl-ticker">${escStock(r.ticker)}</td>
+    <td>${fmtStockPx(r.price)}</td>
+    <td>${fmtStockPx(r.trigger)}</td>
+    <td>${fmtStockPx(r.target)}</td>
+    <td>${fmtStockPx(r.stop)}</td>
+    <td>${escStock(r.score || '—')}</td>
+    <td class="tbl-wait">${escStock(r.signal === 'A_PLUS' ? 'A+' : r.signal === 'STRONG' ? 'STRONG' : 'WATCH')}</td>
+    <td>${escStock(String(r.first_seen || '').slice(0, 16))}</td>
+  </tr>`).join('');
+  return `<div class="section-title">سجل الأسهم</div>
+    <div style="font-size:12px;color:#8b949e;margin:-6px 0 10px">كل سهم مرة في اليوم. هذا السجل ليس BUY وليس سجل الخيارات.</div>
+    <div style="overflow-x:auto">
+      <table>
+        <thead><tr>
+          <th>آخر تحديث</th><th>السهم</th><th>السعر</th><th>التفعيل</th><th>الهدف</th><th>الوقف</th><th>السكور</th><th>الإشارة</th><th>أول ظهور</th>
+        </tr></thead>
+        <tbody>${body}</tbody>
+      </table>
+    </div>`;
+}
+
 let stockPrebreakoutLoaded = false;
 async function loadStockPrebreakout() {
   const box = document.getElementById('stocksView');
@@ -2396,9 +2427,30 @@ async function loadStockPrebreakout() {
       preferColumns: ['ticker', 'trigger', 'score', 'signal'],
     });
     const rows = parseCSV(text).filter(r => String(r.ticker || '').trim());
-    box.innerHTML = renderStockPrebreakout(rows);
+    let logHtml = '';
+    try {
+      const log = await fetchTextNoCache(STOCK_LOG_URLS, {
+        preferColumns: ['ticker', 'first_seen', 'scanned_at'],
+      });
+      const logRows = parseCSV(log.text).filter(r => String(r.ticker || '').trim());
+      logRows.sort((a, b) => String(b.scanned_at || '').localeCompare(String(a.scanned_at || '')));
+      logHtml = renderStockLog(logRows.slice(0, 80));
+    } catch (err) {
+      logHtml = renderStockLog([]);
+    }
+    box.innerHTML = renderStockPrebreakout(rows) + logHtml;
   } catch (e) {
-    box.innerHTML = '<div class="empty-buy">لا توجد أسهم مؤهلة بعد. الماسح يبحث قبل الاختراق، ولا يكتب صفّاً إلا إذا بلغ السكور 65. ليست BUY.</div>';
+    let logHtml = renderStockLog([]);
+    try {
+      const log = await fetchTextNoCache(STOCK_LOG_URLS, {
+        preferColumns: ['ticker', 'first_seen', 'scanned_at'],
+      });
+      const logRows = parseCSV(log.text).filter(r => String(r.ticker || '').trim());
+      logRows.sort((a, b) => String(b.scanned_at || '').localeCompare(String(a.scanned_at || '')));
+      logHtml = renderStockLog(logRows.slice(0, 80));
+    } catch (err) { /* السجل غير موجود بعد */ }
+    box.innerHTML = '<div class="empty-buy">لا توجد أسهم مؤهلة بعد. الماسح يبحث قبل الاختراق، ولا يكتب صفّاً إلا إذا بلغ السكور 65. ليست BUY.</div>'
+      + logHtml;
   }
   stockPrebreakoutLoaded = true;
 }

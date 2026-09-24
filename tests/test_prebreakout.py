@@ -189,6 +189,34 @@ class TestRoc(unittest.TestCase):
         self.assertAlmostEqual(_roc(closes, 20), (129 - 109) / 109)
 
 
+class TestStockLog(unittest.TestCase):
+    def test_same_day_updates_and_keeps_first_seen(self):
+        import os
+        import tempfile
+        import pandas as pd
+        from stock_prebreakout_scan import append_log
+
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, "log.csv")
+            first = {
+                "ticker": "GLND", "company": "Greenland", "price": 3.10,
+                "score": 70, "signal": "WATCH", "scanned_at": "2026-09-24 14:00 UTC",
+                "trigger": 3.20, "target": 3.42, "stop": 3.00,
+            }
+            later = dict(first, price=3.21, score=72, scanned_at="2026-09-24 15:00 UTC")
+            self.assertEqual(append_log([first], path), 1)
+            self.assertEqual(append_log([later], path), 0)
+            rows = pd.read_csv(path).to_dict("records")
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["first_seen"], "2026-09-24 14:00 UTC")
+            self.assertEqual(float(rows[0]["price"]), 3.21)
+            self.assertEqual(append_log([], path), 0)
+            self.assertEqual(len(pd.read_csv(path)), 1)
+            nxt = dict(first, scanned_at="2026-09-25 14:00 UTC", price=3.40)
+            append_log([nxt], path)
+            self.assertEqual(len(pd.read_csv(path)), 2)
+
+
 class TestSources(unittest.TestCase):
     def test_scan_uses_options_clients(self):
         import cheap_options_screener_v3 as opt

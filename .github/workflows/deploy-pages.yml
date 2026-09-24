@@ -11,6 +11,7 @@ on:
       - 'options_v3_results.csv'
       - 'outcomes.csv'
       - 'stock_prebreakout.csv'
+      - 'stock_prebreakout_log.csv'
       - '.github/workflows/deploy-pages.yml'
   workflow_dispatch:
 
@@ -43,6 +44,7 @@ jobs:
           cp options_v3_results.csv _site/options_v3_results.csv
           cp outcomes.csv _site/outcomes.csv
           cp stock_prebreakout.csv _site/stock_prebreakout.csv
+          cp stock_prebreakout_log.csv _site/stock_prebreakout_log.csv
           ls -la _site
 
       - name: Upload Pages artifact

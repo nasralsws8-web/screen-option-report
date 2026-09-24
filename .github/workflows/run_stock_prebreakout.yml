@@ -42,4 +42,4 @@ jobs:
         run: |
           bash .github/scripts/push_csv_changes.sh \
             "Stock pre-breakout: $(date -u '+%Y-%m-%d %H:%M UTC')" \
-            stock_prebreakout.csv
+            stock_prebreakout.csv stock_prebreakout_log.csv
