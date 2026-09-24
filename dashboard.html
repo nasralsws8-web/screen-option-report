@@ -2045,9 +2045,10 @@ function openStockStudy(ticker) {
   }
   if (inp) inp.value = t;
   // لا نستدعي showTab هنا إذا كنا داخلها — نعرض التبويب مباشرة لتجنّب إعادة الدخول
-  const order = ['cards', 'table', 'study', 'history'];
+  const order = ['cards', 'stocks', 'table', 'study', 'history'];
   document.querySelectorAll('.tab').forEach((el, i) => el.classList.toggle('active', order[i] === 'study'));
   document.getElementById('cardsView').style.display = 'none';
+  document.getElementById('stocksView').style.display = 'none';
   document.getElementById('tableView').style.display = 'none';
   document.getElementById('studyView').style.display = 'block';
   document.getElementById('historyView').style.display = 'none';
@@ -2306,34 +2307,83 @@ function fmtStockQty(v) {
   return n.toFixed(2);
 }
 
+function escStock(v) {
+  return String(v == null ? '' : v)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function fmtStockDec(v, digits) {
+  const n = parseFloat(v);
+  return Number.isFinite(n) ? n.toFixed(digits) : '—';
+}
+
+function stockCardItem(label, value) {
+  return `<div class="card-item"><div class="card-item-label">${label}</div><div class="card-item-value">${value}</div></div>`;
+}
+
 function renderStockPrebreakout(rows) {
   if (!rows.length) {
     return '<div class="empty-buy">لا توجد أسهم مؤهلة. الماسح يراقب ما قبل الاختراق ولا يكتب BUY.</div>';
   }
-  return rows.map(r => {
+  const cards = rows.map(r => {
     const sig = r.signal || '';
-    const color = sig === 'A_PLUS' ? '#3fb950' : sig === 'STRONG' ? '#58a6ff' : '#e3b341';
-    return `<div class="card" style="margin-bottom:12px;border-right:4px solid ${color}">
-      <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap">
-        <strong>${r.ticker || ''}</strong>
-        <span style="color:#8b949e">${r.company || ''}</span>
-        <span style="color:${color}">${r.signal_label || sig}</span>
-        <span>${r.score || '—'}/100</span>
+    const cardCls = sig === 'A_PLUS' ? 'buy-card' : 'wait-card';
+    const badgeCls = sig === 'A_PLUS' ? 'BUY' : 'WAIT';
+    const badgeText = sig === 'A_PLUS' ? 'A+' : sig === 'STRONG' ? 'STRONG' : 'WATCH';
+    return `<div class="card ${cardCls}">
+      <div class="card-header">
+        <div>
+          <div class="ticker">${escStock(r.ticker)}</div>
+          <div style="font-size:12px;color:#8b949e;margin-top:2px">${escStock(r.company || '')}</div>
+          <div class="card-price">${fmtStockPx(r.price)}</div>
+        </div>
+        <div style="text-align:left">
+          <span class="rec-badge ${badgeCls}">${badgeText}</span>
+          <div style="font-size:12px;color:#e3b341;margin-top:6px;font-weight:800">${escStock(r.score || '—')}/100</div>
+        </div>
       </div>
-      <div style="margin-top:8px;font-size:13px;line-height:1.7">
-        السعر ${fmtStockPx(r.price)} · الفجوة ${r.gap_pct || '—'}% · الفلوت ${fmtStockQty(r.float_shares)}<br>
-        حجم البريماركت ${fmtStockQty(r.pm_volume)} · الحجم بالدولار ${fmtStockQty(r.dollar_volume)} · RVOL ${r.rvol || '—'}<br>
-        ROCM20 ${r.rocm20 || '—'} · ROCM200 ${r.rocm200 || '—'} · VWAP ${fmtStockPx(r.vwap)} · ATR% ${r.atr_pct || '—'}<br>
-        قمة البريماركت ${fmtStockPx(r.pmh)} · المقاومة ${fmtStockPx(r.resistance)} · المسافة ${r.distance_to_resistance_pct || '—'}%<br>
-        التفعيل ${fmtStockPx(r.trigger)} · الهدف +7% ${fmtStockPx(r.target)} · الوقف ${fmtStockPx(r.stop)} · العائد/المخاطرة ${r.risk_reward || '—'}
+      <div style="display:flex;gap:8px;margin-bottom:8px">
+        <div style="flex:1;background:#1a2a1a;border:1px solid #238636;border-radius:6px;padding:8px 10px">
+          <div style="font-size:10px;color:#8b949e">التفعيل</div>
+          <div style="font-size:15px;font-weight:700;color:#3fb950">${fmtStockPx(r.trigger)}</div>
+        </div>
+        <div style="flex:1;background:#1a2520;border:1px solid #3fb950;border-radius:6px;padding:8px 10px">
+          <div style="font-size:10px;color:#8b949e">الهدف +7%</div>
+          <div style="font-size:15px;font-weight:700;color:#3fb950">${fmtStockPx(r.target)}</div>
+        </div>
+        <div style="flex:1;background:#2a1a1a;border:1px solid #f85149;border-radius:6px;padding:8px 10px">
+          <div style="font-size:10px;color:#8b949e">الوقف</div>
+          <div style="font-size:15px;font-weight:700;color:#f85149">${fmtStockPx(r.stop)}</div>
+        </div>
       </div>
-      <div style="margin-top:6px;font-size:13px">المحفز: ${r.catalyst || '—'}</div>
-      <div style="font-size:13px">النمط: ${r.pattern || '—'}</div>
-      <div style="margin-top:6px">${r.reason || ''}</div>
-      ${r.notes ? `<div style="color:#e3b341;font-size:12px;margin-top:4px">${r.notes}</div>` : ''}
-      <div style="color:#8b949e;font-size:12px;margin-top:6px">${r.disclaimer || ''}</div>
+      <div class="card-grid">
+        ${stockCardItem('الفجوة', fmtStockDec(r.gap_pct, 1) + '%')}
+        ${stockCardItem('الفلوت', fmtStockQty(r.float_shares))}
+        ${stockCardItem('حجم البريماركت', fmtStockQty(r.pm_volume))}
+        ${stockCardItem('الحجم بالدولار', fmtStockQty(r.dollar_volume))}
+        ${stockCardItem('RVOL', fmtStockDec(r.rvol, 2))}
+        ${stockCardItem('العائد/المخاطرة', '1:' + fmtStockDec(r.risk_reward, 2))}
+        ${stockCardItem('قمة البريماركت', fmtStockPx(r.pmh))}
+        ${stockCardItem('المقاومة', fmtStockPx(r.resistance))}
+        ${stockCardItem('المسافة', fmtStockDec(r.distance_to_resistance_pct, 1) + '%')}
+        ${stockCardItem('VWAP', fmtStockPx(r.vwap))}
+        ${stockCardItem('ATR%', fmtStockDec(r.atr_pct, 1))}
+        ${stockCardItem('ROCM20', fmtStockDec(r.rocm20, 2))}
+        ${stockCardItem('ROCM200', fmtStockDec(r.rocm200, 2))}
+      </div>
+      <div style="font-size:12px;color:#c9d1d9;background:#21262d;border-radius:6px;padding:8px 10px;margin-top:8px;line-height:1.55">
+        <div><span style="color:#8b949e">المحفز · </span>${escStock(r.catalyst || '—')}</div>
+        <div style="margin-top:4px"><span style="color:#8b949e">النمط · </span>${escStock(r.pattern || '—')}</div>
+      </div>
+      <div style="font-size:12px;color:#e6edf3;margin-top:8px;line-height:1.5">${escStock(r.reason || '')}</div>
+      ${r.notes ? `<div style="font-size:11px;color:#e3b341;margin-top:4px">${escStock(r.notes)}</div>` : ''}
+      <div style="font-size:11px;color:#8b949e;margin-top:6px">${escStock(r.disclaimer || '')}</div>
     </div>`;
   }).join('');
+  return `<div class="cards">${cards}</div>`;
 }
 
 let stockPrebreakoutLoaded = false;
