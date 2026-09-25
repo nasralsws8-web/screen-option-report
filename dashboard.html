@@ -1454,11 +1454,21 @@ function focusCardsGroup(g) {
   if (id) document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
+function miniRejectReason(r) {
+  const direct = String(r.reject_reason || '').trim();
+  if (direct) return direct;
+  const note = String(r.rec_note || '').split('·')[0]
+    .replace(/\(ليست BUY تلقائي\)/g, '').trim();
+  if (note) return note;
+  const prem = parseFloat(r.premium);
+  if (!Number.isFinite(prem) || prem <= 0) return 'لا عقد في النطاق';
+  return 'لم يجتز حفظ البطاقة';
+}
+
 function buildMiniCard(r) {
   const prem = parseFloat(r.premium);
   const strike = parseFloat(r.strike);
-  const reason = String(r.reject_reason || r.rec_note || 'لم يجتز حفظ البطاقة')
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;');
+  const reason = miniRejectReason(r).replace(/&/g, '&amp;').replace(/</g, '&lt;');
   const px = parsePrice(r.Price || r.price_num);
   return `<div class="card card-mini avoid-card">
     <div class="ticker">${r.Ticker || ''}</div>

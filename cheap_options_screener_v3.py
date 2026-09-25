@@ -1200,7 +1200,7 @@ def save_results_csv(filtered_df, path="options_v3_results.csv"):
     out.to_csv(path, index=False)
     if "recommendation" in out.columns:
         skipped = out[out["recommendation"].astype(str).str.upper() == "SKIP"]
-        append_options_reject_log(skipped)
+        append_options_reject_log(skipped, REJECT_LOG_PATH)
     return True
 
 
@@ -2794,7 +2794,7 @@ def save_screen_results(result_df, path="options_v3_results.csv"):
     if used_fallback:
         print(f"  ↪ dashboard: {len(strict)} strict + {len(combined) - len(strict)} WAIT/BUY watchlist")
 
-    cols = [c for c in save_cols if c in combined.columns] if not combined.empty else save_cols
+    cols = [c for c in SAVE_COLS if c in combined.columns] if not combined.empty else SAVE_COLS
     ok = save_results_csv(combined[cols] if not combined.empty else combined, path)
     return ok, combined, len(result_df), used_fallback
 

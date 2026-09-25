@@ -891,6 +891,30 @@ class TestSpyStrikeDistance(unittest.TestCase):
         }
         self.assertFalse(row_passes_save_filters(row))
 
+    def test_saved_csv_keeps_reject_reason(self):
+        import cheap_options_screener_v3 as screener
+        saved = {
+            "Ticker": "SMCI", "Price": "$41.50", "price_num": 41.5, "premium": 1.8,
+            "spread_pct": 0.04, "oi": 2000, "opt_vol": 500, "strike": 41.0,
+            "dte_num": 5, "recommendation": "WAIT", "direction": "CALL",
+            "tp1_stock": 44, "tp2_stock": 46, "tp3_stock": 48,
+            "stop_stock": 40, "entry_stock": 41.2, "Score": 70,
+        }
+        pricey = dict(saved, Ticker="NVDA", Price="$180", price_num=180, premium=8.5,
+                      strike=180, recommendation="BUY", Score=40)
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, "options_v3_results.csv")
+            log = os.path.join(folder, "options_rejected_log.csv")
+            with patch.object(screener, "REJECT_LOG_PATH", log):
+                screener.save_screen_results(pd.DataFrame([saved, pricey]), path)
+            rows = pd.read_csv(path)
+            nvda = rows[rows["Ticker"] == "NVDA"].iloc[0]
+            self.assertEqual(nvda["recommendation"], "SKIP")
+            self.assertIn("عقد", str(nvda["reject_reason"]))
+            self.assertEqual(nvda["card_lane"], "rejected")
+            logged = pd.read_csv(log)
+            self.assertIn("عقد", str(logged.iloc[0]["reject_reason"]))
+
     def test_unaccepted_row_is_skip_not_buy(self):
         import pandas as pd
         from cheap_options_screener_v3 import frame_unaccepted
