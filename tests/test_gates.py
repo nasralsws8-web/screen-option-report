@@ -891,6 +891,24 @@ class TestSpyStrikeDistance(unittest.TestCase):
         }
         self.assertFalse(row_passes_save_filters(row))
 
+    def test_first_seen_sticks_for_same_signal(self):
+        import cheap_options_screener_v3 as screener
+        prev = pd.DataFrame([{
+            "Ticker": "SMCI", "recommendation": "WAIT",
+            "scanned_at": "2026-09-25 13:01 UTC",
+            "first_seen": "2026-09-25 13:01 UTC",
+        }])
+        later = pd.DataFrame([{
+            "Ticker": "SMCI", "recommendation": "WAIT",
+            "scanned_at": "2026-09-25 14:00 UTC",
+        }])
+        kept = screener.stamp_first_seen(later, prev)
+        self.assertEqual(kept.iloc[0]["first_seen"], "2026-09-25 13:01 UTC")
+        flipped = later.copy()
+        flipped["recommendation"] = "BUY"
+        fresh = screener.stamp_first_seen(flipped, prev)
+        self.assertEqual(fresh.iloc[0]["first_seen"], "2026-09-25 14:00 UTC")
+
     def test_saved_csv_keeps_reject_reason(self):
         import cheap_options_screener_v3 as screener
         saved = {

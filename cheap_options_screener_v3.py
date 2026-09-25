@@ -1147,6 +1147,32 @@ def dashboard_fallback_df(df, max_rows=10):
     return work.sort_values("Score", ascending=False).head(max_rows)
 
 
+def _seen_key(ticker, recommendation, scanned_at):
+    return (
+        str(scanned_at or "")[:10],
+        str(ticker or "").upper().strip(),
+        str(recommendation or "").upper().strip(),
+    )
+
+
+def stamp_first_seen(out, prev):
+    """يبقي وقت نزول التوصية لنفس السهم ونفس الإشارة في اليوم."""
+    prev_map = {}
+    if prev is not None and "first_seen" in getattr(prev, "columns", []):
+        for _, row in prev.iterrows():
+            seen = str(row.get("first_seen") or "").strip()
+            if not seen or seen.lower() == "nan":
+                continue
+            prev_map[_seen_key(row.get("Ticker"), row.get("recommendation"), row.get("scanned_at"))] = seen
+    stamped = []
+    for _, row in out.iterrows():
+        key = _seen_key(row.get("Ticker"), row.get("recommendation"), row.get("scanned_at"))
+        stamped.append(prev_map.get(key) or row.get("scanned_at") or "")
+    out = out.copy()
+    out["first_seen"] = stamped
+    return out
+
+
 def save_results_csv(filtered_df, path="options_v3_results.csv"):
     """لا تستبدل CSV صالح بملف فاضي عند فشل Yahoo."""
     if filtered_df.empty:
@@ -1161,12 +1187,14 @@ def save_results_csv(filtered_df, path="options_v3_results.csv"):
         print("  ⚠️  0 matches — no valid previous CSV to keep")
         return False
     out = filtered_df.copy()
+    prev_rows = None
     # حافظ على ملاحظات Gemini السابقة عند إعادة المسح بدون المستشار (price_update)
     if "gemini_note" not in out.columns:
         out["gemini_note"] = ""
     if os.path.exists(path):
         try:
             prev = pd.read_csv(path)
+            prev_rows = prev
             if "gemini_note" in prev.columns and "Ticker" in prev.columns:
                 prev_map = {}
                 for _, r in prev.iterrows():
@@ -1197,6 +1225,7 @@ def save_results_csv(filtered_df, path="options_v3_results.csv"):
         except Exception:
             pass
     out["scanned_at"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+    out = stamp_first_seen(out, prev_rows)
     out.to_csv(path, index=False)
     if "recommendation" in out.columns:
         skipped = out[out["recommendation"].astype(str).str.upper() == "SKIP"]
@@ -2423,7 +2452,7 @@ SAVE_COLS = [
     "entry_note", "fh_gap_pct", "fh_pm_bullish", "fh_pm_strong", "fh_pm_note",
     "spy_regime", "rec_note", "gemini_note",
     "Score", "recommendation", "confidence", "Notes", "scanned_at",
-    "reject_reason", "card_lane",
+    "reject_reason", "card_lane", "first_seen",
 ]
 
 

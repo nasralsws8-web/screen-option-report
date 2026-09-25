@@ -71,6 +71,9 @@
   .card-mini { padding: 10px; }
   .card-mini .ticker { font-size: 15px; }
   .card-mini .card-price { font-size: 13px; margin-bottom: 4px; }
+  .posted-time { font-size: 10px; color: #8b949e; line-height: 1.35; margin-top: 4px; }
+  .posted-time .posted-label { color: #58a6ff; font-weight: 700; }
+  .dual-time { font-size: 10px; color: #c9d1d9; line-height: 1.4; white-space: normal; }
   .card { background: #161b22; border: 1px solid #30363d; border-radius: 10px; padding: 16px; transition: border-color 0.2s; }
   .card:hover { border-color: #58a6ff; }
   .card.buy-card { border-left: 4px solid #3fb950; }
@@ -506,6 +509,38 @@ function blockFileProtocol() {
 
 function warnIfFileProtocol() {
   blockFileProtocol();
+}
+
+function clockInZone(date, timeZone) {
+  const bag = {};
+  for (const part of new Intl.DateTimeFormat('en-GB', {
+    timeZone,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+  }).formatToParts(date)) {
+    bag[part.type] = part.value;
+  }
+  const hour = parseInt(bag.hour, 10);
+  const ap = hour >= 12 ? 'م' : 'ص';
+  const h12 = hour % 12 || 12;
+  return `${bag.day}/${bag.month} ${h12}:${bag.minute} ${ap}`;
+}
+
+function dualTimeHtml(raw) {
+  const date = parseScanDate(raw);
+  if (!date) return '—';
+  const saudi = clockInZone(date, 'Asia/Riyadh');
+  const us = clockInZone(date, 'America/New_York');
+  return `<div class="dual-time"><div>السعودية ${saudi}</div><div>أمريكا ${us}</div></div>`;
+}
+
+function postedStamp(firstSeen, scannedAt) {
+  const first = String(firstSeen || '').trim();
+  const hasFirst = first && first.toLowerCase() !== 'nan' && parseScanDate(first);
+  const when = hasFirst ? first : scannedAt;
+  if (!parseScanDate(when)) return '';
+  const label = hasFirst ? 'نزلت' : 'آخر مسح';
+  return `<div class="posted-time"><div class="posted-label">${label}</div>${dualTimeHtml(when)}</div>`;
 }
 
 function parseScanDate(scannedAt) {
@@ -1479,6 +1514,7 @@ function buildMiniCard(r) {
       ${Number.isFinite(prem) && prem > 0 ? ' · عقد $' + prem.toFixed(2) : ''}
     </div>
     <div style="font-size:11px;color:#f85149;margin-top:6px;line-height:1.45">${reason}</div>
+    ${postedStamp(rejectedFirstSeen(r), r.scanned_at)}
   </div>`;
 }
 
@@ -1638,6 +1674,7 @@ function buildCard(r) {
       <div>
         <div class="ticker">${r.Ticker}</div>
         <div class="card-price price-live" id="price-${r.Ticker}">$${parsePrice(r.Price || r.price_num).toFixed(2)}</div>
+        ${postedStamp(r.first_seen, r.scanned_at)}
   <div style="font-size:11px;margin-bottom:4px"><span class="change-badge" id="change-${r.Ticker}">جاري التحديث...</span></div>
         <button type="button" class="btn-study" onclick="event.stopPropagation();openStockStudy('${r.Ticker}')">🔬 دراسة السهم</button>
       </div>
@@ -2369,6 +2406,21 @@ function fmtStockDec(v, digits) {
   return Number.isFinite(n) ? n.toFixed(digits) : '—';
 }
 
+let stockSeen = {};
+let rejectedSeen = {};
+
+function dayTickerKey(raw, ticker) {
+  return String(raw || '').slice(0, 10) + '|' + String(ticker || '').toUpperCase();
+}
+
+function stockFirstSeen(r) {
+  return stockSeen[dayTickerKey(r.scanned_at, r.ticker)] || '';
+}
+
+function rejectedFirstSeen(r) {
+  return rejectedSeen[dayTickerKey(r.scanned_at || r.first_seen, r.Ticker)] || r.first_seen || '';
+}
+
 function stockCardItem(label, value) {
   return `<div class="card-item"><div class="card-item-label">${label}</div><div class="card-item-value">${value}</div></div>`;
 }
@@ -2388,6 +2440,7 @@ function renderStockPrebreakout(rows) {
           <div class="ticker">${escStock(r.ticker)}</div>
           <div style="font-size:12px;color:#8b949e;margin-top:2px">${escStock(r.company || '')}</div>
           <div class="card-price">${fmtStockPx(r.price)}</div>
+          ${postedStamp(stockFirstSeen(r), r.scanned_at)}
         </div>
         <div style="text-align:left">
           <span class="rec-badge ${badgeCls}">${badgeText}</span>
@@ -2440,7 +2493,7 @@ function renderStockLog(rows) {
     return '<div class="empty-buy">سجل الأسهم فارغ. يُضاف السهم عند أول ظهور، ويُحدَّث نفس اليوم دون تكرار.</div>';
   }
   const body = rows.map(r => `<tr>
-    <td>${escStock(String(r.scanned_at || '').slice(0, 16))}</td>
+    <td>${dualTimeHtml(r.scanned_at)}</td>
     <td class="tbl-ticker">${escStock(r.ticker)}</td>
     <td>${fmtStockPx(r.price)}</td>
     <td>${fmtStockPx(r.trigger)}</td>
@@ -2448,7 +2501,7 @@ function renderStockLog(rows) {
     <td>${fmtStockPx(r.stop)}</td>
     <td>${escStock(r.score || '—')}</td>
     <td class="tbl-wait">${escStock(r.signal === 'A_PLUS' ? 'A+' : r.signal === 'STRONG' ? 'STRONG' : 'WATCH')}</td>
-    <td>${escStock(String(r.first_seen || '').slice(0, 16))}</td>
+    <td>${dualTimeHtml(r.first_seen)}</td>
   </tr>`).join('');
   return `<div class="section-title">سجل الأسهم</div>
     <div style="font-size:12px;color:#8b949e;margin:-6px 0 10px">كل سهم مرة في اليوم. هذا السجل ليس BUY وليس سجل الخيارات.</div>
@@ -2479,6 +2532,11 @@ async function loadStockPrebreakout() {
       });
       const logRows = parseCSV(log.text).filter(r => String(r.ticker || '').trim());
       logRows.sort((a, b) => String(b.scanned_at || '').localeCompare(String(a.scanned_at || '')));
+      stockSeen = {};
+      logRows.forEach(r => {
+        const key = dayTickerKey(r.scanned_at || r.first_seen, r.ticker);
+        if (!(key in stockSeen)) stockSeen[key] = r.first_seen || '';
+      });
       logHtml = renderStockLog(logRows.slice(0, 80));
     } catch (err) {
       logHtml = renderStockLog([]);
@@ -2492,6 +2550,11 @@ async function loadStockPrebreakout() {
       });
       const logRows = parseCSV(log.text).filter(r => String(r.ticker || '').trim());
       logRows.sort((a, b) => String(b.scanned_at || '').localeCompare(String(a.scanned_at || '')));
+      stockSeen = {};
+      logRows.forEach(r => {
+        const key = dayTickerKey(r.scanned_at || r.first_seen, r.ticker);
+        if (!(key in stockSeen)) stockSeen[key] = r.first_seen || '';
+      });
       logHtml = renderStockLog(logRows.slice(0, 80));
     } catch (err) { /* السجل غير موجود بعد */ }
     box.innerHTML = '<div class="empty-buy">لا توجد أسهم مؤهلة بعد. الماسح يبحث قبل الاختراق، ولا يكتب صفّاً إلا إذا بلغ السكور 65. ليست BUY.</div>'
@@ -2510,14 +2573,14 @@ function renderRejectedLog(rows) {
     return '<div class="empty-buy">سجل لم تُقبل فارغ. يُضاف الاسم عند أول رفض، ويُحدَّث نفس اليوم دون تكرار.</div>';
   }
   const body = rows.map(r => `<tr>
-    <td>${escStock(String(r.scanned_at || '').slice(0, 16))}</td>
+    <td>${dualTimeHtml(r.scanned_at)}</td>
     <td class="tbl-ticker">${escStock(r.Ticker)}</td>
     <td>${escStock(r.Price || '—')}</td>
     <td>${escStock(r.direction || '—')}</td>
     <td>${fmtStockPx(r.premium)}</td>
     <td>${fmtStockPx(r.strike)}</td>
     <td>${escStock(r.reject_reason || '—')}</td>
-    <td>${escStock(String(r.first_seen || '').slice(0, 16))}</td>
+    <td>${dualTimeHtml(r.first_seen)}</td>
   </tr>`).join('');
   return `<div class="section-title">سجل لم تُقبل</div>
     <div style="font-size:12px;color:#8b949e;margin:-6px 0 10px">كل سهم مرة في اليوم. هذا السجل ليس BUY وليس سجل الصفقات.</div>
@@ -2527,30 +2590,44 @@ function renderRejectedLog(rows) {
 }
 
 let rejectedLogHtml = '';
-async function loadRejectedLog() {
-  const box = document.getElementById('rejectedLog');
+let rejectedPaneRows = [];
+
+function rejectedCardsHtml(rows) {
+  if (!rows.length) {
+    return '<div class="empty-buy">لا توجد أسماء مرفوضة في هذا المسح. تظهر بعد مسح الخيارات التالي.</div>';
+  }
+  return `<div class="section-title">لم تُقبل في هذا المسح — ${rows.length}</div><div class="cards cards-mini">${rows.map(buildMiniCard).join('')}</div>`;
+}
+
+function paintRejectedPane() {
+  const box = document.getElementById('rejectedView');
   if (!box) return;
+  box.innerHTML = rejectedCardsHtml(rejectedPaneRows)
+    + '<div id="rejectedLog">' + (rejectedLogHtml || '<div class="empty-buy">جاري تحميل السجل...</div>') + '</div>';
+}
+
+async function loadRejectedLog() {
   try {
     const log = await fetchTextNoCache(OPTIONS_REJECTED_LOG_URLS, {
       preferColumns: ['Ticker', 'first_seen', 'reject_reason'],
     });
     const logRows = parseCSV(log.text).filter(r => String(r.Ticker || '').trim());
     logRows.sort((a, b) => String(b.scanned_at || '').localeCompare(String(a.scanned_at || '')));
+    rejectedSeen = {};
+    logRows.forEach(r => {
+      const key = dayTickerKey(r.scanned_at || r.first_seen, r.Ticker);
+      if (!(key in rejectedSeen)) rejectedSeen[key] = r.first_seen || '';
+    });
     rejectedLogHtml = renderRejectedLog(logRows.slice(0, 80));
   } catch (e) {
     rejectedLogHtml = renderRejectedLog([]);
   }
-  box.innerHTML = rejectedLogHtml;
+  paintRejectedPane();
 }
 
 function renderRejectedPane(rows) {
-  const box = document.getElementById('rejectedView');
-  if (!box) return;
-  const skipped = rejectedRowsOf(rows);
-  const cards = skipped.length
-    ? `<div class="section-title">لم تُقبل في هذا المسح — ${skipped.length}</div><div class="cards cards-mini">${skipped.map(buildMiniCard).join('')}</div>`
-    : '<div class="empty-buy">لا توجد أسماء مرفوضة في هذا المسح. تظهر بعد مسح الخيارات التالي.</div>';
-  box.innerHTML = cards + '<div id="rejectedLog">' + (rejectedLogHtml || '<div class="empty-buy">جاري تحميل السجل...</div>') + '</div>';
+  rejectedPaneRows = rejectedRowsOf(rows);
+  paintRejectedPane();
   loadRejectedLog();
 }
 
