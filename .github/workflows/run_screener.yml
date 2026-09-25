@@ -67,4 +67,4 @@ jobs:
         run: |
           bash .github/scripts/push_csv_changes.sh \
             "Auto update: $(date -u '+%Y-%m-%d %H:%M UTC')" \
-            options_v3_results.csv outcomes.csv telegram_sent.json
+            options_v3_results.csv outcomes.csv telegram_sent.json options_rejected_log.csv

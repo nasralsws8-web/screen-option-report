@@ -67,6 +67,10 @@
   .section-title { font-size: 16px; font-weight: 600; color: #e6edf3; margin: 20px 0 12px; display: flex; align-items: center; gap: 8px; }
 
   .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; margin-bottom: 24px; }
+  .cards-mini { grid-template-columns: repeat(auto-fill, minmax(168px, 1fr)); gap: 8px; }
+  .card-mini { padding: 10px; }
+  .card-mini .ticker { font-size: 15px; }
+  .card-mini .card-price { font-size: 13px; margin-bottom: 4px; }
   .card { background: #161b22; border: 1px solid #30363d; border-radius: 10px; padding: 16px; transition: border-color 0.2s; }
   .card:hover { border-color: #58a6ff; }
   .card.buy-card { border-left: 4px solid #3fb950; }
@@ -268,6 +272,7 @@
       مطاردة BUY بعد Entry بـ <strong>&gt;0.8%</strong> —
       HOT/FIRE على WAIT = دخول يدوي عند Entry (ليست BUY) —
       تبويب <strong>قبل الاختراق</strong> أسهم $1–$10: مراقبة حتى التفعيل، الهدف +7% من التفعيل، ليست BUY —
+      تبويب <strong>لم تُقبل</strong> خيارات رُفضت من الحفظ، مع سجل يومي خاص، وليست BUY —
       FIRE على BUY = قوة الإعداد.
       <div class="rule-warn">السعر الحي ≠ توصية جديدة. المسح الكامل فقط يمنح BUY. لا ترقية WAIT→BUY من Finnhub.</div>
       <div style="margin-top:4px;color:#58a6ff">رابط مشترك:
@@ -318,12 +323,14 @@
     <div class="tab-bar">
       <div class="tab active" onclick="showTab('cards')">تنفيذ</div>
       <div class="tab" onclick="showTab('stocks')">قبل الاختراق</div>
+      <div class="tab" onclick="showTab('rejected')">لم تُقبل</div>
       <div class="tab" onclick="showTab('table')">جدول</div>
       <div class="tab" onclick="showTab('study')">دراسة</div>
       <div class="tab" onclick="showTab('history')">سجل</div>
     </div>
     <div id="cardsView"></div>
     <div id="stocksView" style="display:none"></div>
+    <div id="rejectedView" style="display:none"></div>
     <div id="tableView" style="display:none">
       <table id="mainTable"><thead></thead><tbody></tbody></table>
     </div>
@@ -361,6 +368,10 @@ const OUTCOMES_URLS = [
 const STOCK_PREBREAKOUT_URLS = [
   REPO_RAW + '/stock_prebreakout.csv',
   './stock_prebreakout.csv',
+];
+const OPTIONS_REJECTED_LOG_URLS = [
+  REPO_RAW + '/options_rejected_log.csv',
+  './options_rejected_log.csv',
 ];
 const STOCK_LOG_URLS = [
   REPO_RAW + '/stock_prebreakout_log.csv',
@@ -1154,6 +1165,7 @@ function updateLiveTradeStatus(ticker, price) {
 function registerTradePlans(rows) {
   tradePlans = {};
   rows.forEach(r => {
+    if (String(r.recommendation || '').toUpperCase() === 'SKIP') return;
     const entry = parseFloat(r.entry_stock) || 0;
     const dteRaw = r.dte_num;
     const dte = (dteRaw === 0 || dteRaw === '0') ? 0
@@ -1442,13 +1454,33 @@ function focusCardsGroup(g) {
   if (id) document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
+function buildMiniCard(r) {
+  const prem = parseFloat(r.premium);
+  const strike = parseFloat(r.strike);
+  const reason = String(r.reject_reason || r.rec_note || 'لم يجتز حفظ البطاقة')
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;');
+  const px = parsePrice(r.Price || r.price_num);
+  return `<div class="card card-mini avoid-card">
+    <div class="ticker">${r.Ticker || ''}</div>
+    <div class="card-price">${px ? '$' + px.toFixed(2) : '—'}</div>
+    <div style="font-size:11px;color:#8b949e;line-height:1.4">
+      ${r.direction || '—'}
+      ${Number.isFinite(strike) && strike > 0 ? ' · $' + strike.toFixed(2) : ''}
+      ${Number.isFinite(prem) && prem > 0 ? ' · عقد $' + prem.toFixed(2) : ''}
+    </div>
+    <div style="font-size:11px;color:#f85149;margin-top:6px;line-height:1.45">${reason}</div>
+  </div>`;
+}
+
 function renderCards(rows) {
   const list = rows.filter(r => !isSpyRow(r));
-  const buy = list.filter(r => rowLiveRec(r) === 'BUY');
-  const wait = list.filter(r => rowLiveRec(r) === 'WAIT');
+  const skipped = list.filter(r => String(r.recommendation || '').toUpperCase() === 'SKIP' || String(r.card_lane || '') === 'rejected');
+  const live = list.filter(r => !skipped.includes(r));
+  const buy = live.filter(r => rowLiveRec(r) === 'BUY');
+  const wait = live.filter(r => rowLiveRec(r) === 'WAIT');
   const wait0 = wait.filter(isZeroDteRow);
   const waitLive = wait.filter(r => !isZeroDteRow(r));
-  const avoid = list.filter(r => rowLiveRec(r) === 'AVOID');
+  const avoid = live.filter(r => rowLiveRec(r) === 'AVOID');
   const suggestedFri = nextFridayISO();
 
   let html = '';
@@ -1766,6 +1798,7 @@ function buildCard(r) {
 }
 
 function renderTable(rows) {
+  rows = (rows || []).filter(r => String(r.recommendation || '').toUpperCase() !== 'SKIP');
   const thead = document.querySelector('#mainTable thead');
   const tbody = document.querySelector('#mainTable tbody');
   const labels = ['Ticker','Price','Strike','Entry','Stop','TP1','TP2','TP3','BreakEven','Premium','IV','OI','OptVol','Spread%','Gap%','ATR%','RVOL','Earnings','Direction','Score','Rec','Conf%','Notes'];
@@ -1855,7 +1888,7 @@ async function loadData() {
 
     const buy = rows.filter(r => r.recommendation === 'BUY').length;
     const wait = rows.filter(r => r.recommendation === 'WAIT').length;
-    const avoid = rows.filter(r => !['BUY','WAIT'].includes(r.recommendation)).length;
+    const avoid = rows.filter(r => !['BUY','WAIT','SKIP'].includes(String(r.recommendation || '').toUpperCase())).length;
 
     document.getElementById('statTotal').textContent = rows.length;
     document.getElementById('statBuy').textContent = buy;
@@ -1882,6 +1915,7 @@ async function loadData() {
 
     renderCards(rest);
     renderTable(rest);
+    renderRejectedPane(rest);
     loadStockPrebreakout();
 
     document.getElementById('loadingDiv').style.display = 'none';
@@ -2049,10 +2083,11 @@ function openStockStudy(ticker) {
   }
   if (inp) inp.value = t;
   // لا نستدعي showTab هنا إذا كنا داخلها — نعرض التبويب مباشرة لتجنّب إعادة الدخول
-  const order = ['cards', 'stocks', 'table', 'study', 'history'];
+  const order = ['cards', 'stocks', 'rejected', 'table', 'study', 'history'];
   document.querySelectorAll('.tab').forEach((el, i) => el.classList.toggle('active', order[i] === 'study'));
   document.getElementById('cardsView').style.display = 'none';
   document.getElementById('stocksView').style.display = 'none';
+  document.getElementById('rejectedView').style.display = 'none';
   document.getElementById('tableView').style.display = 'none';
   document.getElementById('studyView').style.display = 'block';
   document.getElementById('historyView').style.display = 'none';
@@ -2455,13 +2490,69 @@ async function loadStockPrebreakout() {
   stockPrebreakoutLoaded = true;
 }
 
+function rejectedRowsOf(rows) {
+  return (rows || []).filter(r => String(r.recommendation || '').toUpperCase() === 'SKIP'
+    || String(r.card_lane || '') === 'rejected');
+}
+
+function renderRejectedLog(rows) {
+  if (!rows.length) {
+    return '<div class="empty-buy">سجل لم تُقبل فارغ. يُضاف الاسم عند أول رفض، ويُحدَّث نفس اليوم دون تكرار.</div>';
+  }
+  const body = rows.map(r => `<tr>
+    <td>${escStock(String(r.scanned_at || '').slice(0, 16))}</td>
+    <td class="tbl-ticker">${escStock(r.Ticker)}</td>
+    <td>${escStock(r.Price || '—')}</td>
+    <td>${escStock(r.direction || '—')}</td>
+    <td>${fmtStockPx(r.premium)}</td>
+    <td>${fmtStockPx(r.strike)}</td>
+    <td>${escStock(r.reject_reason || '—')}</td>
+    <td>${escStock(String(r.first_seen || '').slice(0, 16))}</td>
+  </tr>`).join('');
+  return `<div class="section-title">سجل لم تُقبل</div>
+    <div style="font-size:12px;color:#8b949e;margin:-6px 0 10px">كل سهم مرة في اليوم. هذا السجل ليس BUY وليس سجل الصفقات.</div>
+    <div style="overflow-x:auto"><table><thead><tr>
+      <th>آخر تحديث</th><th>السهم</th><th>السعر</th><th>الاتجاه</th><th>العقد</th><th>السترايك</th><th>سبب الرفض</th><th>أول ظهور</th>
+    </tr></thead><tbody>${body}</tbody></table></div>`;
+}
+
+let rejectedLogHtml = '';
+async function loadRejectedLog() {
+  const box = document.getElementById('rejectedLog');
+  if (!box) return;
+  try {
+    const log = await fetchTextNoCache(OPTIONS_REJECTED_LOG_URLS, {
+      preferColumns: ['Ticker', 'first_seen', 'reject_reason'],
+    });
+    const logRows = parseCSV(log.text).filter(r => String(r.Ticker || '').trim());
+    logRows.sort((a, b) => String(b.scanned_at || '').localeCompare(String(a.scanned_at || '')));
+    rejectedLogHtml = renderRejectedLog(logRows.slice(0, 80));
+  } catch (e) {
+    rejectedLogHtml = renderRejectedLog([]);
+  }
+  box.innerHTML = rejectedLogHtml;
+}
+
+function renderRejectedPane(rows) {
+  const box = document.getElementById('rejectedView');
+  if (!box) return;
+  const skipped = rejectedRowsOf(rows);
+  const cards = skipped.length
+    ? `<div class="section-title">لم تُقبل في هذا المسح — ${skipped.length}</div><div class="cards cards-mini">${skipped.map(buildMiniCard).join('')}</div>`
+    : '<div class="empty-buy">لا توجد أسماء مرفوضة في هذا المسح. تظهر بعد مسح الخيارات التالي.</div>';
+  box.innerHTML = cards + '<div id="rejectedLog">' + (rejectedLogHtml || '<div class="empty-buy">جاري تحميل السجل...</div>') + '</div>';
+  loadRejectedLog();
+}
+
 function showTab(tab) {
-  const order = ['cards', 'stocks', 'table', 'study', 'history'];
+  const order = ['cards', 'stocks', 'rejected', 'table', 'study', 'history'];
   document.querySelectorAll('.tab').forEach((t, i) => t.classList.toggle('active', order[i] === tab));
   document.getElementById('cardsView').style.display = tab === 'cards' ? 'block' : 'none';
   document.getElementById('stocksView').style.display = tab === 'stocks' ? 'block' : 'none';
+  document.getElementById('rejectedView').style.display = tab === 'rejected' ? 'block' : 'none';
   document.getElementById('tableView').style.display = tab === 'table' ? 'block' : 'none';
   if (tab === 'stocks') loadStockPrebreakout();
+  if (tab === 'rejected' && scanRows.length) renderRejectedPane(scanRows.filter(r => !isSpyRow(r)));
   document.getElementById('studyView').style.display = tab === 'study' ? 'block' : 'none';
   document.getElementById('historyView').style.display = tab === 'history' ? 'block' : 'none';
   if (tab === 'history') loadHistory(true);

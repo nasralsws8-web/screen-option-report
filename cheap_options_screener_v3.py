@@ -987,6 +987,123 @@ def filter_results_df(df):
     return df[mask].copy()
 
 
+def explain_save_reject(r):
+    """سبب عدم حفظ البطاقة الكاملة. لا يغيّر بوابة BUY."""
+    ticker = str(r.get("Ticker", "")).upper()
+    max_price = profile_limit(ticker, "max_stock_price", MAX_STOCK_PRICE)
+    prem_min = profile_limit(ticker, "prem_min", TARGET_PREM_MIN)
+    prem_max = profile_limit(ticker, "prem_max", TARGET_PREM_MAX)
+    max_spread = profile_limit(ticker, "max_spread_pct", MAX_SPREAD_PCT)
+    min_oi = profile_limit(ticker, "min_oi", MIN_OI)
+    price = float(r.get("price_num") or parse_price_num(r.get("Price")) or 0)
+    prem = float(r.get("premium") or 0)
+    sp = float(r.get("spread_pct") if r.get("spread_pct") is not None else 99)
+    oi = effective_oi(r.get("oi"), r.get("opt_vol"), min_oi)
+    strike = float(r.get("strike") or 0)
+    reasons = []
+    if price <= 0:
+        reasons.append("لا سعر")
+    elif price > max_price:
+        reasons.append("سعر السهم خارج الحد")
+    if prem <= 0:
+        reasons.append("لا عقد في النطاق")
+    elif prem < prem_min or prem > prem_max:
+        reasons.append(f"العقد ${prem:.2f} خارج ${prem_min:.0f}–${prem_max:.0f}")
+    if prem > 0 and oi < min_oi:
+        reasons.append(f"OI {int(oi)} أقل من {int(min_oi)}")
+    if prem > 0 and sp > max_spread:
+        reasons.append(f"السبريد {sp * 100:.0f}%")
+    if strike > 0 and price > 0 and abs(strike - price) / price > 0.25:
+        reasons.append("السترايك بعيد")
+    max_dist = ticker_profile(ticker).get("max_strike_dist")
+    if max_dist is not None and strike > 0 and price > 0:
+        if abs(strike - price) / price > float(max_dist):
+            reasons.append("سترايك SPY أبعد من 1%")
+    err = str(r.get("_error") or "").strip()
+    if err:
+        reasons.append(err[:90])
+    if not reasons:
+        reasons.append("لم يجتز حفظ البطاقة")
+    return " · ".join(reasons)
+
+
+REJECT_LOG_PATH = os.environ.get("OPTIONS_REJECTED_LOG", "options_rejected_log.csv")
+REJECT_LOG_COLS = [
+    "first_seen", "Ticker", "Price", "premium", "strike", "direction",
+    "Score", "gap_pct", "spy_regime", "reject_reason", "scanned_at",
+]
+
+
+def _reject_log_key(row):
+    ticker = str(row.get("Ticker") or "").strip().upper()
+    day = str(row.get("scanned_at") or "")[:10]
+    if not ticker or len(day) < 10:
+        return ""
+    return f"{day}|{ticker}"
+
+
+def _reject_log_clean(value):
+    if value is None:
+        return ""
+    try:
+        if pd.isna(value):
+            return ""
+    except TypeError:
+        pass
+    return value
+
+
+def append_options_reject_log(rows, path=REJECT_LOG_PATH):
+    """خيار لم يُقبل: صف واحد لكل سهم في اليوم. التحديث التالي يبقي أول ظهور."""
+    existing = []
+    if os.path.exists(path):
+        try:
+            existing = pd.read_csv(path).to_dict("records")
+        except Exception:
+            existing = []
+    if rows is None or (hasattr(rows, "empty") and rows.empty) or (isinstance(rows, list) and not rows):
+        if not os.path.exists(path):
+            pd.DataFrame(columns=REJECT_LOG_COLS).to_csv(path, index=False)
+        return 0
+    records = rows.to_dict("records") if hasattr(rows, "to_dict") else list(rows)
+    by_key = {}
+    for rec in existing:
+        key = _reject_log_key(rec)
+        if key:
+            by_key[key] = {col: _reject_log_clean(rec.get(col)) for col in REJECT_LOG_COLS}
+    added = 0
+    for row in records:
+        key = _reject_log_key(row)
+        if not key:
+            continue
+        prev = by_key.get(key)
+        merged = {col: _reject_log_clean(row.get(col)) for col in REJECT_LOG_COLS if col != "first_seen"}
+        merged["first_seen"] = (prev or {}).get("first_seen") or row.get("scanned_at") or ""
+        if prev is None:
+            added += 1
+        by_key[key] = merged
+    out = list(by_key.values())
+    out.sort(key=lambda rec: str(rec.get("scanned_at") or ""), reverse=True)
+    pd.DataFrame(out, columns=REJECT_LOG_COLS).to_csv(path, index=False)
+    print(f"  ↪ سجل لم تُقبل: {len(out)} صفاً ({added} جديداً)")
+    return added
+
+
+def frame_unaccepted(result_df, accepted_tickers):
+    """صفوف مُسحت ولم تُقبل. الإشارة SKIP حتى لا تُعامل كـ BUY."""
+    if result_df is None or result_df.empty or "Ticker" not in result_df.columns:
+        return pd.DataFrame()
+    accepted = {str(t).upper() for t in accepted_tickers}
+    mask = ~result_df["Ticker"].astype(str).str.upper().isin(accepted)
+    rejected = result_df.loc[mask].copy()
+    if rejected.empty:
+        return rejected
+    rejected["recommendation"] = "SKIP"
+    rejected["reject_reason"] = rejected.apply(explain_save_reject, axis=1)
+    rejected["card_lane"] = "rejected"
+    return rejected
+
+
 def row_passes_watchlist_filters(r):
     """فلتر مخفّف للـ watchlist — لا يُحفظ spread/OI ضعيف جداً."""
     ticker = str(r.get("Ticker", "")).upper()
@@ -1081,6 +1198,9 @@ def save_results_csv(filtered_df, path="options_v3_results.csv"):
             pass
     out["scanned_at"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
     out.to_csv(path, index=False)
+    if "recommendation" in out.columns:
+        skipped = out[out["recommendation"].astype(str).str.upper() == "SKIP"]
+        append_options_reject_log(skipped)
     return True
 
 
@@ -2303,6 +2423,7 @@ SAVE_COLS = [
     "entry_note", "fh_gap_pct", "fh_pm_bullish", "fh_pm_strong", "fh_pm_note",
     "spy_regime", "rec_note", "gemini_note",
     "Score", "recommendation", "confidence", "Notes", "scanned_at",
+    "reject_reason", "card_lane",
 ]
 
 
@@ -2653,14 +2774,28 @@ def save_screen_results(result_df, path="options_v3_results.csv"):
         combined = pd.DataFrame()
 
     combined = ensure_spy_saved(combined, result_df, save_cols)
+    if not combined.empty:
+        combined = combined.copy()
+        combined["card_lane"] = "saved"
+        combined["reject_reason"] = ""
+
+    accepted = combined["Ticker"].tolist() if not combined.empty else []
+    n_saved = len(accepted)
+    rejected = frame_unaccepted(result_df, accepted)
+    parts_out = [df for df in (combined, rejected) if df is not None and not df.empty]
+    if parts_out:
+        combined = pd.concat(parts_out, ignore_index=True)
+    if not rejected.empty:
+        print(f"  ↪ لم تُقبل: {len(rejected)} بطاقة صغيرة")
 
     used_fallback = not watchlist.empty and (
-        strict.empty or len(combined) > len(strict)
+        strict.empty or n_saved > len(strict)
     )
     if used_fallback:
         print(f"  ↪ dashboard: {len(strict)} strict + {len(combined) - len(strict)} WAIT/BUY watchlist")
 
-    ok = save_results_csv(combined[save_cols] if not combined.empty else combined, path)
+    cols = [c for c in save_cols if c in combined.columns] if not combined.empty else save_cols
+    ok = save_results_csv(combined[cols] if not combined.empty else combined, path)
     return ok, combined, len(result_df), used_fallback
 
 

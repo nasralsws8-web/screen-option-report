@@ -891,6 +891,46 @@ class TestSpyStrikeDistance(unittest.TestCase):
         }
         self.assertFalse(row_passes_save_filters(row))
 
+    def test_unaccepted_row_is_skip_not_buy(self):
+        import pandas as pd
+        from cheap_options_screener_v3 import frame_unaccepted
+        saved = {
+            "Ticker": "SMCI", "price_num": 41.5, "premium": 1.8,
+            "spread_pct": 0.04, "oi": 2000, "opt_vol": 500, "strike": 41.0,
+            "dte_num": 5, "recommendation": "WAIT",
+            "tp1_stock": 44, "tp2_stock": 46, "tp3_stock": 48,
+            "stop_stock": 40, "entry_stock": 41.2,
+        }
+        pricey = dict(saved, Ticker="NVDA", price_num=180, premium=8.5, strike=180,
+                      recommendation="BUY")
+        out = frame_unaccepted(pd.DataFrame([saved, pricey]), ["SMCI"])
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out.iloc[0]["Ticker"], "NVDA")
+        self.assertEqual(out.iloc[0]["recommendation"], "SKIP")
+        self.assertIn("عقد", out.iloc[0]["reject_reason"])
+
+    def test_reject_log_keeps_first_seen_same_day(self):
+        import os
+        import tempfile
+        import pandas as pd
+        from cheap_options_screener_v3 import append_options_reject_log
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, "log.csv")
+            first = pd.DataFrame([{
+                "Ticker": "NVDA", "Price": "$180", "premium": 8.5, "strike": 180,
+                "direction": "CALL", "Score": 40, "gap_pct": 2, "spy_regime": "BULL",
+                "reject_reason": "العقد خارج النطاق", "scanned_at": "2026-09-25 13:00 UTC",
+            }])
+            later = first.copy()
+            later["premium"] = 9.1
+            later["scanned_at"] = "2026-09-25 14:00 UTC"
+            self.assertEqual(append_options_reject_log(first, path), 1)
+            self.assertEqual(append_options_reject_log(later, path), 0)
+            rows = pd.read_csv(path)
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows.iloc[0]["first_seen"], "2026-09-25 13:00 UTC")
+            self.assertAlmostEqual(float(rows.iloc[0]["premium"]), 9.1)
+
 
 class TestSpyFlipBlock(unittest.TestCase):
     def test_previous_trading_day_skips_weekend(self):
