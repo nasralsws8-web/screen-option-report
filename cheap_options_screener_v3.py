@@ -87,6 +87,9 @@ RISK_FREE_RATE   = 0.053   # معدل الفائدة لـ Black-Scholes
 MIN_RR_TO_BUY    = 1.3     # أقل R:R لإعطاء BUY (من السعر الحي)
 MIN_CONF_TO_BUY  = 55      # أقل Confidence% لإعطاء BUY
 MAX_ENTRY_CHASE_PCT = 0.008  # إذا تجاوز السعر Entry بأكثر من 0.8% → مطاردة (لا BUY)
+MAX_PREMIUM_CHASE_PCT = 0.45  # إذا قفزت العلاوة >45% من إغلاق/قاع العقد → مطاردة (لا BUY)
+EXIT_PREMIUM_PCT = 0.20       # هدف تشغيلي: جني عند +20% على العلاوة أو لمس TP1
+GAP_ALIGN_PENALTY = 3.0       # فجوة معاكسة ≥3% تضعف الاتجاه / تمنع WAIT_HOT
 
 # قواعد التشغيل المتفق عليها (2026-07-31)
 REQUIRE_SPY_ALIGNMENT = True   # لا PUT والسوق صاعد / لا CALL والسوق هابط
@@ -114,10 +117,11 @@ TICKER_PROFILES = {
     SPY_TICKER: {
         "label":           "SPY — S&P 500 ETF",
         "prem_min":        1.0,
-        "prem_max":        5.0,      # OTM — مو ATM ($6+)
+        "prem_max":        5.0,      # نطاق علاوة معقول (قريب ATM)
         "target_prem":     2.50,     # الهدف: ~$2.50 للعقد
-        "use_otm_strike":  True,     # strike OTM أرخص من ATM
-        "max_strike_dist": 0.01,    # أبعد سترايك: 1% عن سعر السهم
+        "use_otm_strike":  True,     # اختيار قريب ATM ضمن الحد
+        "prefer_near_atm": True,     # أولوية المسافة عن السعر لا الأرخص OTM
+        "max_strike_dist": 0.005,    # أبعد سترايك: ~0.5% عن سعر السهم
         "max_stock_price": 800.0,
         "max_spread_pct":  0.10,
         "min_oi":          500,
@@ -550,73 +554,151 @@ def _fnum(val):
 
 def compute_entry_level(price, is_call, pm_high, pm_low, yest_h, yest_l, atr, tech=None):
     """
-    Entry على هيكل السعر:
-    CALL → أقرب دعم تحت السعر (سوينج / VWAP / EMA20)
-    PUT  → أقرب مقاومة فوق السعر
+    Entry على كسر الهيكل (نمط جالوي / صيد سريع):
+    CALL → كسر أقرب مقاومة / قمة جلسة فوق السعر + تثبيت فوقه
+    PUT  → كسر أقرب دعم / قاع جلسة تحت السعر + تثبيت تحته
+    رجوع للدعم/المقاومة ثانوي (WAIT) — ليس مسار BUY.
     """
     tech = tech or {}
     atr = float(atr or price * 0.025)
     price = float(price)
+    session_h = _fnum(tech.get("session_high"))
+    session_l = _fnum(tech.get("session_low"))
+
+    hold_buf = atr * 0.45  # سماحية تثبيت بعد الكسر مباشرة
 
     if is_call:
-        supports = []
-        for v in (
-            tech.get("support1"), tech.get("support2"),
-            tech.get("vwap"), tech.get("ema20"),
-            yest_l, pm_low,
-        ):
+        # مستويات هيكل للمقاومة (بدون EMA/VWAP في «كسر حديث» لتفادي ضوضاء قرب السعر)
+        struct = []
+        for v in (tech.get("resist1"), tech.get("resist2"), yest_h, pm_high, session_h):
             fv = _fnum(v)
-            if fv and fv < price:
-                supports.append(fv)
-        if supports:
-            # أقرب دعم من تحت (الأعلى تحت السعر)
-            base = max(supports)
-            dist = price - base
-            if dist <= atr * 0.35:
-                entry = round(price, 2)
-                note = f"عند السعر — قريب من دعم ${base:.2f}"
+            if fv:
+                struct.append(fv)
+        soft = []
+        for v in (tech.get("vwap"), tech.get("ema20")):
+            fv = _fnum(v)
+            if fv:
+                soft.append(fv)
+        levels = struct + soft
+        # كسر حديث: مقاومة هيكلية صارت تحت السعر ضمن سماحية التثبيت
+        just_broken = [lv for lv in struct if price - hold_buf <= lv <= price]
+        above = [lv for lv in levels if lv > price * 1.0005]
+        if just_broken:
+            base = max(just_broken)
+            entry = round(base, 2)
+            note = f"كسر مقاومة ${base:.2f} — تثبيت فوقه"
+        elif above:
+            base = min(above)
+            dist = base - price
+            if dist <= atr * 0.15:
+                entry = round(base, 2)
+                note = f"كسر مقاومة ${base:.2f} — تثبيت فوقه"
             elif dist <= atr * 2.5:
-                entry = round(base + atr * 0.05, 2)
-                note = f"عند دعم ${base:.2f}"
+                entry = round(base, 2)
+                note = f"كسر مقاومة ${base:.2f}"
             else:
-                entry = round(price, 2)
-                note = f"دخول حالي — أقرب دعم بعيد ${base:.2f}"
+                entry = round(min(base, price + atr * 1.2), 2)
+                note = f"انتظر كسر مقاومة ${base:.2f}"
         else:
             entry = round(price, 2)
-            note = "دخول عند السعر — لا دعم واضح قريب"
+            note = "كسر جارٍ — دخول عند السعر"
         max_e = round(price * (1 + ENTRY_MAX_DRIFT), 2)
         min_e = round(price * (1 - 0.02), 2)
         entry = min(max(entry, min_e), max_e)
     else:
-        resists = []
-        for v in (
-            tech.get("resist1"), tech.get("resist2"),
-            tech.get("vwap"), tech.get("ema20"),
-            yest_h, pm_high,
-        ):
+        struct = []
+        for v in (tech.get("support1"), tech.get("support2"), yest_l, pm_low, session_l):
             fv = _fnum(v)
-            if fv and fv > price:
-                resists.append(fv)
-        if resists:
-            base = min(resists)
-            dist = base - price
-            if dist <= atr * 0.35:
-                entry = round(price, 2)
-                note = f"عند السعر — قريب من مقاومة ${base:.2f}"
+            if fv:
+                struct.append(fv)
+        soft = []
+        for v in (tech.get("vwap"), tech.get("ema20")):
+            fv = _fnum(v)
+            if fv:
+                soft.append(fv)
+        levels = struct + soft
+        # كسر حديث: دعم هيكلي صار فوق السعر ضمن سماحية التثبيت
+        just_broken = [lv for lv in struct if price <= lv <= price + hold_buf]
+        below = [lv for lv in levels if lv < price * 0.9995]
+        if just_broken:
+            base = min(just_broken)
+            entry = round(base, 2)
+            note = f"كسر دعم ${base:.2f} — تثبيت تحته"
+        elif below:
+            base = max(below)
+            dist = price - base
+            if dist <= atr * 0.15:
+                entry = round(base, 2)
+                note = f"كسر دعم ${base:.2f} — تثبيت تحته"
             elif dist <= atr * 2.5:
-                entry = round(base - atr * 0.05, 2)
-                note = f"عند مقاومة ${base:.2f}"
+                entry = round(base, 2)
+                note = f"كسر دعم ${base:.2f}"
             else:
-                entry = round(price, 2)
-                note = f"دخول حالي — أقرب مقاومة بعيدة ${base:.2f}"
+                entry = round(max(base, price - atr * 1.2), 2)
+                note = f"انتظر كسر دعم ${base:.2f}"
         else:
             entry = round(price, 2)
-            note = "دخول عند السعر — لا مقاومة واضحة قريبة"
+            note = "كسر جارٍ — دخول عند السعر"
         min_e = round(price * (1 - ENTRY_MAX_DRIFT), 2)
         max_e = round(price * (1 + 0.02), 2)
         entry = min(max(entry, min_e), max_e)
 
     return round(entry, 2), note
+
+
+def tp1_already_reached(session_high, session_low, tp1, is_call):
+    """True إذا لمس أعلى/أدنى الجلسة TP1 قبل/عند التوصية."""
+    tp1 = _fnum(tp1)
+    if not tp1:
+        return False
+    if is_call:
+        sh = _fnum(session_high)
+        return bool(sh and sh >= tp1)
+    sl = _fnum(session_low)
+    return bool(sl and sl <= tp1)
+
+
+def premium_chase_pct(premium, prem_prev=None, prem_day_low=None):
+    """كم % ارتفعت العلاوة من إغلاق سابق أو قاع الجلسة (0 إذا لا بيانات)."""
+    try:
+        premium = float(premium)
+    except (TypeError, ValueError):
+        return 0.0
+    if premium <= 0:
+        return 0.0
+    base = None
+    for v in (prem_day_low, prem_prev):
+        fv = _fnum(v)
+        if fv and fv > 0:
+            base = fv if base is None else min(base, fv)
+    if not base or base <= 0:
+        return 0.0
+    if premium <= base:
+        return 0.0
+    return (premium - base) / base * 100.0
+
+
+def premium_is_chased(premium, prem_prev=None, prem_day_low=None, change_pct=None, max_pct=None):
+    """True إذا قفزت العلاوة فوق حد المطاردة بلا تراجع كافٍ."""
+    max_pct = MAX_PREMIUM_CHASE_PCT if max_pct is None else max_pct
+    try:
+        if change_pct is not None and float(change_pct) >= max_pct * 100.0:
+            return True
+    except (TypeError, ValueError):
+        pass
+    return premium_chase_pct(premium, prem_prev, prem_day_low) >= max_pct * 100.0
+
+
+def gap_direction_conflict(gap_pct, is_call, threshold=None):
+    """فجوة معاكسة لاتجاه العقد (CALL+فجوة هابطة / PUT+فجوة صاعدة)."""
+    threshold = GAP_ALIGN_PENALTY if threshold is None else threshold
+    try:
+        gap_f = float(str(gap_pct).replace("%", ""))
+    except (TypeError, ValueError):
+        return False
+    if is_call:
+        return gap_f <= -abs(threshold)
+    return gap_f >= abs(threshold)
 
 
 def compute_targets(entry, is_call, atr, tech):
@@ -1018,7 +1100,9 @@ def explain_save_reject(r):
     max_dist = ticker_profile(ticker).get("max_strike_dist")
     if max_dist is not None and strike > 0 and price > 0:
         if abs(strike - price) / price > float(max_dist):
-            reasons.append("سترايك SPY أبعد من 1%")
+            pct = float(max_dist) * 100
+            label = f"{pct:.1f}".rstrip("0").rstrip(".")
+            reasons.append(f"سترايك SPY أبعد من {label}%")
     err = str(r.get("_error") or "").strip()
     if err:
         reasons.append(err[:90])
@@ -1389,6 +1473,7 @@ def compute_technicals(hist, current_price):
         "support1": None, "support2": None, "support3": None,
         "trend": "UNKNOWN",
         "yesterday_high": None, "yesterday_low": None,
+        "session_high": None, "session_low": None, "session_open": None,
     }
     if hist is None or len(hist) < 5:
         return res
@@ -1397,6 +1482,7 @@ def compute_technicals(hist, current_price):
     highs  = hist["High"].astype(float).tolist()
     lows   = hist["Low"].astype(float).tolist()
     vols   = hist["Volume"].astype(float).tolist()
+    opens  = hist["Open"].astype(float).tolist() if "Open" in hist.columns else closes[:]
     n      = len(closes)
 
     # EMA
@@ -1435,7 +1521,11 @@ def compute_technicals(hist, current_price):
         if trs:
             res["atr14"] = round(sum(trs) / len(trs), 4)
 
-    # أعلى وأدنى أمس
+    # أعلى وأدنى أمس + جلسة اليوم (آخر شمعة يومية أثناء/بعد الجلسة)
+    if n >= 1:
+        res["session_high"] = round(highs[-1], 2)
+        res["session_low"]  = round(lows[-1], 2)
+        res["session_open"] = round(opens[-1], 2)
     if n >= 2:
         res["yesterday_high"] = round(highs[-2], 2)
         res["yesterday_low"]  = round(lows[-2],  2)
@@ -1512,8 +1602,23 @@ def _leg_from_atm(atm_row):
             synthetic = True
         else:
             return None
+    premium = round((bid + ask) / 2, 2)
+    try:
+        change = float(atm_row.get("change") or 0)
+    except (TypeError, ValueError):
+        change = 0.0
+    try:
+        pct_chg = float(atm_row.get("percentChange") or 0)
+    except (TypeError, ValueError):
+        pct_chg = 0.0
+    # تقدير إغلاق سابق من change؛ إن غاب نستخدم percentChange
+    prem_prev = None
+    if change and premium > 0:
+        prem_prev = round(max(premium - change, 0.01), 2)
+    elif pct_chg and premium > 0 and pct_chg != -100:
+        prem_prev = round(max(premium / (1.0 + pct_chg / 100.0), 0.01), 2)
     return {
-        "premium":    round((bid + ask) / 2, 2),
+        "premium":    premium,
         "bid":        round(bid, 2),
         "ask":        round(ask, 2),
         "last":       round(last, 2) if last else None,
@@ -1523,6 +1628,9 @@ def _leg_from_atm(atm_row):
         "opt_vol":    _safe_int(atm_row.get("volume")),
         "spread_pct": round((ask - bid) / ask, 4) if ask > 0 else None,
         "strike":     float(atm_row.get("strike") or 0),
+        "change":     change,
+        "percent_change": pct_chg,
+        "prem_prev":  prem_prev,
     }
 
 
@@ -1539,12 +1647,15 @@ def _apply_leg_fields(target, leg):
     target["opt_vol"]    = leg["opt_vol"]
     target["spread_pct"] = leg["spread_pct"]
     target["strike"]     = leg["strike"]
+    target["opt_change"] = leg.get("change")
+    target["opt_change_pct"] = leg.get("percent_change")
+    target["prem_prev"]  = leg.get("prem_prev")
     return True
 
 
 def _pick_best_strike(chain_df, stock_price, is_call, ticker):
     """
-    اختيار strike — SPY: OTM ضمن premium $1–$5 (مو ATM ~$6+).
+    اختيار strike — SPY: أقرب ATM ضمن ~0.5% وعلاوة $1–$5.
     الباقي: ATM كالسابق.
     """
     if chain_df is None or chain_df.empty:
@@ -1552,6 +1663,7 @@ def _pick_best_strike(chain_df, stock_price, is_call, ticker):
 
     prof = ticker_profile(ticker)
     use_otm = prof.get("use_otm_strike", False)
+    prefer_near = bool(prof.get("prefer_near_atm", False))
     prem_min = profile_limit(ticker, "prem_min", TARGET_PREM_MIN)
     prem_max = profile_limit(ticker, "prem_max", TARGET_PREM_MAX)
     target   = prof.get("target_prem", (prem_min + prem_max) / 2)
@@ -1563,6 +1675,11 @@ def _pick_best_strike(chain_df, stock_price, is_call, ticker):
         if stock_price <= 0:
             return False
         return abs(float(strike) - stock_price) / stock_price <= max_dist
+
+    def _dist_pct(strike):
+        if stock_price <= 0:
+            return 99.0
+        return abs(float(strike) - stock_price) / stock_price
 
     if not use_otm:
         return _leg_from_atm(_atm_row(chain_df, stock_price))
@@ -1583,22 +1700,26 @@ def _pick_best_strike(chain_df, stock_price, is_call, ticker):
             continue
         if oi < min_oi:
             continue
-        # OTM فقط
-        if is_call and strike <= stock_price * 1.001:
-            continue
-        if not is_call and strike >= stock_price * 0.999:
-            continue
         if not _within_dist(strike):
             continue
+        # قريب ATM: نسمح بـ ITM طفيف ضمن الحد؛ وإلا OTM فقط
+        if not prefer_near:
+            if is_call and strike <= stock_price * 1.001:
+                continue
+            if not is_call and strike >= stock_price * 0.999:
+                continue
 
         dist_prem = abs(prem - target)
-        candidates.append((dist_prem, leg))
+        dist_px = _dist_pct(strike)
+        # أولوية: أقرب للسعر ثم أقرب لهدف العلاوة
+        key = (dist_px, dist_prem) if prefer_near else (dist_prem, dist_px)
+        candidates.append((key, leg))
 
     if candidates:
         candidates.sort(key=lambda x: x[0])
         return candidates[0][1]
 
-    # fallback: أرخص strike في النطاق (حتى ITM) ثم ATM
+    # fallback: أي strike في النطاق (حتى ITM) ثم ATM
     loose = []
     for _, row in chain_df.iterrows():
         leg = _leg_from_atm(row)
@@ -1609,7 +1730,10 @@ def _pick_best_strike(chain_df, stock_price, is_call, ticker):
         if not _within_dist(leg["strike"]):
             continue
         if prem_min <= prem <= prem_max and sp <= max_sp:
-            loose.append((abs(prem - target), leg))
+            dist_px = _dist_pct(leg["strike"])
+            dist_prem = abs(prem - target)
+            key = (dist_px, dist_prem) if prefer_near else (dist_prem, dist_px)
+            loose.append((key, leg))
     if loose:
         loose.sort(key=lambda x: x[0])
         return loose[0][1]
@@ -1878,8 +2002,20 @@ def score_stock(row):
 
     try:
         gap_f = float(str(row.get("gap_pct", 0)).replace("%", ""))
-        if abs(gap_f) > 4:   score += 2; notes.append(f"Gap{gap_f:+.1f}% +2")
-        elif abs(gap_f) > 2: score += 1; notes.append(f"Gap{gap_f:+.1f}% +1")
+        dir_u = str(row.get("direction") or "").upper()
+        # فجوة مع اتجاه العقد فقط (هابطة تقوي PUT وتضعف CALL والعكس)
+        if "PUT" in dir_u:
+            if gap_f < -4:   score += 2; notes.append(f"Gap↓{gap_f:+.1f}% PUT +2")
+            elif gap_f < -2: score += 1; notes.append(f"Gap↓{gap_f:+.1f}% PUT +1")
+            elif gap_f >= 4: score -= 2; notes.append(f"Gap↑{gap_f:+.1f}% ضد PUT -2")
+            elif gap_f >= 2: score -= 1; notes.append(f"Gap↑{gap_f:+.1f}% ضد PUT -1")
+        elif "CALL" in dir_u:
+            if gap_f > 4:    score += 2; notes.append(f"Gap↑{gap_f:+.1f}% CALL +2")
+            elif gap_f > 2:  score += 1; notes.append(f"Gap↑{gap_f:+.1f}% CALL +1")
+            elif gap_f <= -4: score -= 2; notes.append(f"Gap↓{gap_f:+.1f}% ضد CALL -2")
+            elif gap_f <= -2: score -= 1; notes.append(f"Gap↓{gap_f:+.1f}% ضد CALL -1")
+        else:
+            if abs(gap_f) > 4:   score += 1; notes.append(f"Gap{gap_f:+.1f}% +1")
     except Exception:
         pass
 
@@ -2073,13 +2209,37 @@ def compute_trade_plan(r, tech):
     # إذا كان هناك Earnings قبل الانتهاء → AVOID دائماً
     earn_risk = r.get("earn_before_expiry", False)
 
-    # Entry تحقق = قرب Entry فقط (ليس مطاردة بعد تجاوزه)
+    # كسر Entry تحقق = السعر تجاوز مستوى الكسر (ليس مطاردة بعد امتداد زائد)
     entry_s = float(plan.get("entry_stock") or 0)
     chased = entry_is_chased(price, entry_s, is_call)
     plan["entry_chased"] = chased
     entry_hit_now = False
     if entry_s > 0 and not chased:
         entry_hit_now = (is_call and price >= entry_s) or (not is_call and price <= entry_s)
+    plan["break_confirmed"] = bool(entry_hit_now)
+
+    # لا BUY إذا TP1 اتلمس مسبقاً في الجلسة
+    session_h = tech.get("session_high") or r.get("session_high")
+    session_l = tech.get("session_low") or r.get("session_low")
+    tp1_done = tp1_already_reached(session_h, session_l, plan.get("tp1_stock"), is_call)
+    plan["tp1_already_hit"] = tp1_done
+
+    # مطاردة العلاوة: قفزة حادة من إغلاق/قاع العقد
+    prem_chased = premium_is_chased(
+        premium,
+        prem_prev=r.get("prem_prev"),
+        prem_day_low=r.get("prem_day_low"),
+        change_pct=r.get("opt_change_pct"),
+    )
+    plan["premium_chased"] = prem_chased
+    plan["premium_chase_pct"] = round(
+        premium_chase_pct(premium, r.get("prem_prev"), r.get("prem_day_low")), 1
+    )
+
+    # فجوة معاكسة لاتجاه العقد
+    gap_conflict = gap_direction_conflict(r.get("gap_pct", 0), is_call)
+    plan["gap_conflict"] = gap_conflict
+    plan["trend"] = trend
 
     # سيولة كافية قبل أي BUY
     min_oi = profile_limit(ticker, "min_oi", MIN_OI)
@@ -2113,6 +2273,10 @@ def compute_trade_plan(r, tech):
         and premium_quality_ok
         and align_ok
         and not chased
+        and not prem_chased
+        and not tp1_done
+        and not gap_conflict
+        and entry_hit_now  # لا BUY بلا كسر وتثبيت
         and dte > 0
         and not r.get("is_0dte")
         and not inverse_blocks_buy
@@ -2135,11 +2299,29 @@ def compute_trade_plan(r, tech):
         # عكسي محايد أو «محاذي» — مراقبة فقط، لا مسار BUY
         plan["recommendation"] = "WAIT"
         plan["rec_note"]       = inv_note
+    elif tp1_done:
+        plan["recommendation"] = "WAIT"
+        side = "أعلى" if is_call else "أدنى"
+        plan["rec_note"] = (
+            f"TP1 اتلمس مسبقاً ({side} الجلسة) — لا BUY بعد تحقق الهدف"
+        )
+    elif prem_chased:
+        plan["recommendation"] = "WAIT"
+        plan["rec_note"] = (
+            f"مطاردة علاوة >{MAX_PREMIUM_CHASE_PCT*100:.0f}% "
+            f"({plan['premium_chase_pct']:.0f}%) — انتظر تراجع العقد"
+        )
+    elif gap_conflict:
+        plan["recommendation"] = "WAIT"
+        gap_s = r.get("gap_pct", 0)
+        plan["rec_note"] = (
+            f"فجوة معاكسة لاتجاه العقد ({gap_s}%) — مراقبة فقط"
+        )
     elif chased:
         plan["recommendation"] = "WAIT"
         plan["rec_note"]       = (
             f"مطاردة >0.8% — السعر تجاوز Entry (${entry_s:.2f}) "
-            f"وR:R الحي 1:{live_rr:.1f} — ادخل عند رجوع Entry"
+            f"وR:R الحي 1:{live_rr:.1f} — ادخل عند رجوع قرب الكسر"
         )
     elif not prem_ok:
         plan["recommendation"] = "WAIT"
@@ -2163,6 +2345,27 @@ def compute_trade_plan(r, tech):
             f"(ليس تنفيذ تلقائي اليوم)"
         )
         plan["next_friday_expiry"] = nf.isoformat()
+    elif (
+        conf >= MIN_CONF_TO_BUY
+        and live_rr >= MIN_RR_TO_BUY
+        and liquid_ok
+        and prem_ok
+        and premium_quality_ok
+        and align_ok
+        and not chased
+        and not prem_chased
+        and not tp1_done
+        and not gap_conflict
+        and not entry_hit_now
+        and dte > 0
+        and not r.get("is_0dte")
+        and not inverse_blocks_buy
+    ):
+        # شروط شبه مكتملة لكن بلا كسر — لا ترقية BUY
+        plan["recommendation"] = "WAIT"
+        plan["rec_note"] = (
+            f"انتظر كسر Entry (${entry_s:.2f}) وتثبيت — لا ترقية بلا كسر"
+        )
     elif almost_buy and not exec_ok:
         plan["recommendation"] = "WAIT"
         plan["rec_note"] = exec_block_rec_note()
@@ -2172,22 +2375,18 @@ def compute_trade_plan(r, tech):
             plan["rec_note"] = flip_note
         else:
             plan["recommendation"] = "BUY"
-            if entry_hit_now:
-                plan["rec_note"] = (
-                    "Entry تحقق + الاتجاه والزخم مناسبان"
-                    if trend_ok else "Entry تحقق + اختراق قوي رغم الاتجاه المختلط"
-                )
-            else:
-                plan["rec_note"] = (
-                    "الاتجاه والزخم والسيولة مناسبة"
-                    if trend_ok else "اختراق قوي رغم الاتجاه المختلط"
-                )
+            base = (
+                "كسر Entry تحقق + الاتجاه والزخم مناسبان"
+                if trend_ok else "كسر Entry تحقق + اختراق قوي رغم الاتجاه المختلط"
+            )
+            plan["rec_note"] = (
+                f"{base} · جني عند TP1 أو +{EXIT_PREMIUM_PCT*100:.0f}% على العلاوة"
+            )
     elif buy_ready and not (trend_ok or mixed_ok):
-        # لا BUY بمجرد لمس Entry بدون اتجاه — راقب تأكيد الزخم
+        # لا BUY بمجرد الكسر بدون اتجاه — راقب تأكيد الزخم
         plan["recommendation"] = "WAIT"
         plan["rec_note"] = (
-            "شروط التنفيذ شبه مكتملة لكن الاتجاه غير مؤكد — انتظر تأكيد الزخم"
-            + (" · السعر عند/فوق Entry" if entry_hit_now else "")
+            "كسر Entry لكن الاتجاه غير مؤكد — انتظر تأكيد الزخم"
         )
     elif conf >= MIN_CONF_TO_BUY and (live_rr >= MIN_RR_TO_BUY or tp1_rr >= MIN_RR_TO_BUY):
         plan["recommendation"] = "WAIT"
@@ -2450,7 +2649,10 @@ SAVE_COLS = [
     "tp1_rr_live", "tp2_rr_live", "entry_chased", "chase_pct", "exec_window_ok",
     "setup_pct", "wait_tier", "wait_edge_note", "next_friday_expiry",
     "entry_note", "fh_gap_pct", "fh_pm_bullish", "fh_pm_strong", "fh_pm_note",
-    "spy_regime", "rec_note", "gemini_note",
+    "spy_regime", "trend", "session_high", "session_low",
+    "tp1_already_hit", "premium_chased", "premium_chase_pct", "gap_conflict",
+    "break_confirmed", "prem_prev", "opt_change_pct",
+    "rec_note", "gemini_note",
     "Score", "recommendation", "confidence", "Notes", "scanned_at",
     "reject_reason", "card_lane", "first_seen",
 ]
@@ -2671,6 +2873,8 @@ def process_candidates(candidates_df, show_progress=True):
             "opt_ask":      opts.get("opt_ask"),
             "opt_last":     opts.get("opt_last"),
             "synthetic_quote": bool(opts.get("synthetic_quote")),
+            "prem_prev":    opts.get("prem_prev"),
+            "opt_change_pct": opts.get("opt_change_pct"),
             "expiry":       opts["expiry"],
             "has_weekly":   opts["has_weekly"],
             "direction":    opts["direction"],
@@ -2695,6 +2899,9 @@ def process_candidates(candidates_df, show_progress=True):
         }
 
         tech = compute_technicals(hist, price_num)
+        row["session_high"] = tech.get("session_high")
+        row["session_low"] = tech.get("session_low")
+        row["trend"] = tech.get("trend", "UNKNOWN")
         is_call = resolve_is_call(row, tech)
         trend = str(tech.get("trend") or "")
         strong_bear = "BEARISH" in trend and "BULLISH" not in trend
@@ -2737,6 +2944,12 @@ def process_candidates(candidates_df, show_progress=True):
         row["entry_note"]     = plan.get("entry_note", "")
         row["rec_note"]       = plan.get("rec_note", "")
         row["spy_regime"]     = plan.get("spy_regime", row_regime)
+        row["trend"]          = plan.get("trend", row.get("trend"))
+        row["tp1_already_hit"] = bool(plan.get("tp1_already_hit", False))
+        row["premium_chased"] = bool(plan.get("premium_chased", False))
+        row["premium_chase_pct"] = plan.get("premium_chase_pct")
+        row["gap_conflict"]   = bool(plan.get("gap_conflict", False))
+        row["break_confirmed"] = bool(plan.get("break_confirmed", False))
         row["premium_quality"] = plan.get("premium_quality", "estimate")
         row["premium_quality_note"] = plan.get("premium_quality_note", "")
         row["bs_fair_price"] = plan.get("bs_fair_price")

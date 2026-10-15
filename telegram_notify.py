@@ -222,7 +222,42 @@ def row_allows_telegram(row) -> bool:
 MIN_RR_TO_SEND = 1.3
 
 
-def telegram_skip_reason(row) -> str:
+def wait_hot_direction_conflict(row) -> bool:
+    """
+    تعارض اتجاه لـ WAIT_HOT:
+    CALL + فجوة ≤ −3% أو ترند BEARISH قوي → تعارض
+    PUT  + فجوة ≥ +3% أو ترند BULLISH قوي → تعارض
+    """
+    direction = normalize_direction(row.get("direction"))
+    try:
+        gap = float(str(row.get("gap_pct", 0) or 0).replace("%", ""))
+    except (TypeError, ValueError):
+        gap = 0.0
+    trend = str(row.get("trend") or row.get("Notes") or "").upper()
+    strong_bear = "STRONG BEARISH" in trend or (
+        "BEARISH" in trend and "BULLISH" not in trend and "STRONG" in trend
+    )
+    # ترند هابط واضح (حتى بدون STRONG) يكفي مع الفجوة
+    bearish = "BEARISH" in trend and "BULLISH" not in trend
+    bullish = "BULLISH" in trend
+    strong_bull = "STRONG BULLISH" in trend
+
+    if direction == "CALL":
+        if gap <= -3.0:
+            return True
+        if strong_bear or (bearish and gap <= -1.5):
+            return True
+        return False
+    if direction == "PUT":
+        if gap >= 3.0:
+            return True
+        if strong_bull or (bullish and gap >= 1.5):
+            return True
+        return False
+    return False
+
+
+def telegram_skip_reason(row, kind="BUY") -> str:
     """سبب منع الإرسال. فارغ = مسموح."""
     if not row_allows_telegram(row):
         return "window"
@@ -233,6 +268,9 @@ def telegram_skip_reason(row) -> str:
         return "align"
     if "انقلاب ممنوع" in note:
         return "flip"
+    kind_u = str(kind or "BUY").upper()
+    if kind_u in ("WAIT_HOT", "HOT", "FIRE") and wait_hot_direction_conflict(row):
+        return "gap_trend"
     raw = row.get("tp1_rr_live", None)
     if raw is None or (isinstance(raw, float) and pd.isna(raw)):
         return ""
@@ -283,7 +321,7 @@ def select_buy_rows(df: pd.DataFrame, sent_keys=None, force=False, day=None):
     batch_keys = set()
     for _, row in buys.iterrows():
         key = alert_key(row, day=day, kind="BUY")
-        reason = telegram_skip_reason(row)
+        reason = telegram_skip_reason(row, kind="BUY")
         if reason:
             skipped_window.append(key)
             continue
@@ -321,7 +359,7 @@ def select_hot_wait_rows(df: pd.DataFrame, sent_keys=None, force=False, day=None
         if not is_hot_wait_row(row):
             continue
         key = alert_key(row, day=day, kind="WAIT_HOT")
-        reason = telegram_skip_reason(row)
+        reason = telegram_skip_reason(row, kind="WAIT_HOT")
         if reason:
             skipped_window.append(key)
             continue
@@ -406,7 +444,11 @@ def create_card(row, kind="BUY") -> bytes:
     y = HDR_H + 14
 
     if is_watch:
-        banner = f"WAIT {tier} — دخول يدوي عند Entry"
+        conflict = wait_hot_direction_conflict(row)
+        banner = (
+            f"WAIT {tier} — مراقبة فقط"
+            if conflict else f"WAIT {tier} — دخول يدوي عند Entry"
+        )
         draw.rounded_rectangle([PAD, y, W - PAD, y + 36], radius=8, fill=(48, 36, 10))
         draw.text((W // 2, y + 18), banner, font=F["sub"], fill=GOLD, anchor="mm")
         y += 48
@@ -483,6 +525,7 @@ def build_caption(row, kind="BUY") -> str:
 
     if is_watch:
         tier = wait_tier_of(row) or "HOT"
+        conflict = wait_hot_direction_conflict(row)
         try:
             setup = f"{float(row.get('setup_pct')):.0f}%"
         except (TypeError, ValueError):
@@ -496,12 +539,19 @@ def build_caption(row, kind="BUY") -> str:
         except (TypeError, ValueError):
             chase = "—"
         edge = str(row.get("wait_edge_note") or "").strip()
-        active = (
-            "نعم — منطقة دخول يدوي (مطاردة ≤1% + TP2 ≥1.2)"
-            if is_active_watch(row) else "انتظر لمس/رجوع Entry"
-        )
+        if conflict:
+            headline = f"🟡 <b>WAIT {tier}</b> — مراقبة فقط (تعارض اتجاه/فجوة)"
+            active = "لا — مراقبة فقط حتى يزول التعارض"
+            footer = "⚠️ <i>مراقبة فقط — ليست إشارة دخول · تعليمي فقط</i>"
+        else:
+            headline = f"🟡 <b>WAIT {tier}</b> — جاهز لدخول يدوي عند Entry"
+            active = (
+                "نعم — منطقة دخول يدوي (مطاردة ≤1% + TP2 ≥1.2)"
+                if is_active_watch(row) else "انتظر كسر Entry وتثبيت"
+            )
+            footer = "⚠️ <i>ليست BUY تلقائي — ادخل يدوياً عند كسر Entry · تعليمي فقط</i>"
         return (
-            f"🟡 <b>WAIT {tier}</b> — جاهز لدخول يدوي عند Entry\n"
+            f"{headline}\n"
             f"<code>{symbol}</code>\n"
             f"━━━━━━━━━━━━━━━━━━\n"
             f"✅ اكتمال الشروط: <b>{setup}</b>\n"
@@ -515,7 +565,7 @@ def build_caption(row, kind="BUY") -> str:
             f"💰 Premium: <b>{fmt(premium)}</b>  |  OI: <b>{fmt_oi(oi)}</b>\n"
             + (f"\n📝 {edge}\n" if edge else "\n")
             + f"{gemini_block}"
-            f"⚠️ <i>ليست BUY تلقائي — ادخل يدوياً عند Entry/تراجع · تعليمي فقط</i>"
+            f"{footer}"
         )
 
     return (

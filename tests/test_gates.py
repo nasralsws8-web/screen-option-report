@@ -16,17 +16,22 @@ if ROOT not in sys.path:
 
 from cheap_options_screener_v3 import (  # noqa: E402
     assess_option_price_quality,
+    compute_entry_level,
     entry_is_chased,
     exec_block_rec_note,
     find_nearest_expiry,
+    gap_direction_conflict,
     grade_wait_setup,
     inverse_recommendation_ceiling,
     is_exec_window,
     is_regular_session_over,
     next_friday_date,
+    premium_is_chased,
     previous_trading_day,
     row_passes_save_filters,
+    score_stock,
     spy_flip_blocked,
+    tp1_already_reached,
     _pick_best_strike,
 )
 from data_quality import classify_data_quality  # noqa: E402
@@ -53,6 +58,7 @@ from telegram_notify import (  # noqa: E402
     select_hot_wait_rows,
     spy_direction_already_sent,
     telegram_skip_reason,
+    wait_hot_direction_conflict,
 )
 
 ET = ZoneInfo("America/New_York")
@@ -866,12 +872,13 @@ def _opt_chain(pairs):
 
 
 class TestSpyStrikeDistance(unittest.TestCase):
-    def test_rejects_strike_farther_than_one_percent(self):
+    def test_prefers_near_atm_within_half_percent(self):
+        # 756 ≈ 0.26% · 752 ≈ 0.79% (>0.5%) · 740 بعيد
         chain = _opt_chain([(740, 2.4), (752, 2.5), (756, 2.6)])
         leg = _pick_best_strike(chain, 758.0, False, "SPY")
         self.assertIsNotNone(leg)
-        self.assertNotEqual(leg["strike"], 740.0)
-        self.assertLessEqual(abs(leg["strike"] - 758.0) / 758.0, 0.01)
+        self.assertEqual(leg["strike"], 756.0)
+        self.assertLessEqual(abs(leg["strike"] - 758.0) / 758.0, 0.005)
 
     def test_save_filter_drops_far_spy_strike(self):
         row = {
@@ -1001,6 +1008,138 @@ class TestSpyFlipBlock(unittest.TestCase):
         blocked, note = spy_flip_blocked(True, "NVDA", today="2026-09-11", outcomes_path="missing.csv")
         self.assertFalse(blocked)
         self.assertEqual(note, "")
+
+
+class TestBreakEntry(unittest.TestCase):
+    def test_call_entry_at_resistance_above(self):
+        tech = {
+            "resist1": 105.0, "resist2": 108.0,
+            "support1": 98.0, "vwap": 101.0, "ema20": 100.5,
+            "session_high": 103.0, "session_low": 99.0,
+        }
+        entry, note = compute_entry_level(
+            100.0, True, pm_high=102.0, pm_low=99.0,
+            yest_h=104.0, yest_l=97.0, atr=2.0, tech=tech,
+        )
+        self.assertGreater(entry, 100.0)
+        self.assertIn("كسر", note)
+
+    def test_put_entry_at_support_below(self):
+        tech = {
+            "resist1": 105.0, "support1": 97.0, "support2": 94.0,
+            "vwap": 101.0, "ema20": 100.5,
+            "session_high": 103.0, "session_low": 98.0,
+        }
+        entry, note = compute_entry_level(
+            100.0, False, pm_high=102.0, pm_low=98.5,
+            yest_h=104.0, yest_l=96.0, atr=2.0, tech=tech,
+        )
+        self.assertLess(entry, 100.0)
+        self.assertIn("كسر", note)
+
+
+class TestTp1AlreadyHit(unittest.TestCase):
+    def test_call_session_high_touches_tp1(self):
+        self.assertTrue(tp1_already_reached(110.0, 100.0, 109.5, True))
+        self.assertFalse(tp1_already_reached(108.0, 100.0, 109.5, True))
+
+    def test_put_session_low_touches_tp1(self):
+        self.assertTrue(tp1_already_reached(110.0, 95.0, 96.0, False))
+        self.assertFalse(tp1_already_reached(110.0, 97.0, 96.0, False))
+
+    def test_buy_blocked_when_tp1_already_hit(self):
+        os.environ["IGNORE_EXEC_WINDOW"] = "1"
+        from cheap_options_screener_v3 import compute_trade_plan
+
+        # PUT بعد كسر: السعر تحت Entry والكسر متحقّق، لكن أدنى الجلسة لمس TP1
+        r = {
+            "Ticker": "DRAM",
+            "price_num": 45.1,
+            "strike": 45.0,
+            "iv": 0.55,
+            "premium": 1.40,
+            "oi": 2000,
+            "opt_vol": 800,
+            "spread_pct": 0.05,
+            "dte_num": 3,
+            "direction": "PUT",
+            "Score": 22,
+            "spy_regime": "BEAR",
+            "RVOL": 2.0,
+            "atr_pct": 4.0,
+            "is_0dte": False,
+            "opt_bid": 1.35,
+            "opt_ask": 1.45,
+            "synthetic_quote": False,
+            "gap_pct": -2.0,
+        }
+        tech = {
+            "atr14": 2.0,
+            "trend": "BEARISH 🔴",
+            "above_ema20": False,
+            "above_ema50": False,
+            "above_vwap": False,
+            "rsi": 35,
+            "resist1": 48.0,
+            "support1": 45.5,  # كُسر للتو — السعر يثبت تحته
+            "support2": 43.0,
+            "support3": 41.5,
+            "yesterday_high": 49.0,
+            "yesterday_low": 46.0,
+            "session_high": 48.5,
+            "session_low": 41.0,  # لمس TP1 مسبقاً
+        }
+        plan = compute_trade_plan(r, tech)
+        self.assertTrue(plan.get("tp1_already_hit"), plan)
+        self.assertNotEqual(plan["recommendation"], "BUY")
+        self.assertIn("TP1", plan.get("rec_note") or "")
+
+
+class TestPremiumChase(unittest.TestCase):
+    def test_spike_from_prev_is_chased(self):
+        # 1.01 من 0.62 ≈ +63%
+        self.assertTrue(premium_is_chased(1.01, prem_prev=0.62))
+        self.assertFalse(premium_is_chased(0.80, prem_prev=0.70))
+
+    def test_change_pct_flag(self):
+        self.assertTrue(premium_is_chased(2.0, change_pct=55.0))
+        self.assertFalse(premium_is_chased(2.0, change_pct=20.0, prem_prev=1.9))
+
+
+class TestGapDirectionScore(unittest.TestCase):
+    def test_down_gap_helps_put_hurts_call(self):
+        put_row = {"direction": "PUT", "gap_pct": -9.0, "today_vol": 0, "avg_vol": 0}
+        call_row = {"direction": "CALL", "gap_pct": -9.0, "today_vol": 0, "avg_vol": 0}
+        put_score, put_notes = score_stock(put_row)
+        call_score, call_notes = score_stock(call_row)
+        self.assertGreater(put_score, call_score)
+        self.assertTrue(any("PUT" in n for n in put_notes))
+        self.assertTrue(any("ضد CALL" in n for n in call_notes))
+
+    def test_gap_conflict_helper(self):
+        self.assertTrue(gap_direction_conflict(-3.5, True))
+        self.assertFalse(gap_direction_conflict(-1.0, True))
+        self.assertTrue(gap_direction_conflict(3.5, False))
+        self.assertFalse(gap_direction_conflict(1.0, False))
+
+
+class TestTelegramGapFilter(unittest.TestCase):
+    def test_call_with_down_gap_is_conflict(self):
+        row = {"direction": "CALL", "gap_pct": -9.0, "trend": "BEARISH 🔴"}
+        self.assertTrue(wait_hot_direction_conflict(row))
+        self.assertEqual(telegram_skip_reason(row, kind="WAIT_HOT"), "gap_trend")
+
+    def test_put_with_up_gap_is_conflict(self):
+        row = {"direction": "PUT", "gap_pct": 4.0, "trend": "BULLISH 🟢"}
+        self.assertTrue(wait_hot_direction_conflict(row))
+
+    def test_aligned_hot_not_skipped_for_gap(self):
+        row = {
+            "direction": "PUT", "gap_pct": -2.0, "trend": "BEARISH 🔴",
+            "tp1_rr_live": 1.5, "rec_note": "راقب",
+        }
+        self.assertFalse(wait_hot_direction_conflict(row))
+        self.assertEqual(telegram_skip_reason(row, kind="WAIT_HOT"), "")
 
 
 if __name__ == "__main__":
