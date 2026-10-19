@@ -24,12 +24,15 @@ from cheap_options_screener_v3 import (  # noqa: E402
     grade_wait_setup,
     inverse_recommendation_ceiling,
     is_exec_window,
+    is_mega_cap_ticker,
     is_regular_session_over,
     next_friday_date,
+    pin_priority_tickers,
     premium_is_chased,
     previous_trading_day,
     row_passes_save_filters,
     score_stock,
+    spy_alignment_ok,
     spy_flip_blocked,
     tp1_already_reached,
     _pick_best_strike,
@@ -203,6 +206,73 @@ class TestInverseGate(unittest.TestCase):
         ceiling, note = inverse_recommendation_ceiling(True, "BULL", "NVDA")
         self.assertEqual(ceiling, "BUY")
         self.assertEqual(note, "")
+
+
+class TestMegaCapFinalOrder(unittest.TestCase):
+    """أمر أخير: فك SPY عن الكبار + OTM رخيص ≤$3."""
+
+    def test_mega_cap_call_ok_when_spy_bear(self):
+        ok, note = spy_alignment_ok(True, "BEAR", "AMZN")
+        self.assertTrue(ok)
+        self.assertEqual(note, "")
+        self.assertTrue(is_mega_cap_ticker("TSLA"))
+
+    def test_non_mega_call_still_blocked_when_spy_bear(self):
+        ok, note = spy_alignment_ok(True, "BEAR", "SMCI")
+        self.assertFalse(ok)
+        self.assertIn("SPY هابط", note)
+
+    def test_mega_put_ok_when_spy_bull(self):
+        ok, _ = spy_alignment_ok(False, "BULL", "AAPL")
+        self.assertTrue(ok)
+
+    def test_amzn_picks_cheap_otm_not_expensive_atm(self):
+        # ATM ~$4.2 خارج/غالي · OTM ~$1.55 قرب الهدف
+        chain = _opt_chain([
+            (260.0, 4.20),
+            (262.5, 3.40),
+            (265.0, 2.10),
+            (268.0, 1.55),
+            (272.0, 1.05),
+            (280.0, 0.40),  # تحت $1 — يُستبعد
+        ])
+        leg = _pick_best_strike(chain, 262.66, True, "AMZN")
+        self.assertIsNotNone(leg)
+        self.assertLessEqual(leg["premium"], 3.0)
+        self.assertGreaterEqual(leg["premium"], 1.0)
+        self.assertGreater(leg["strike"], 262.66)  # OTM CALL
+        # يفضّل قرب $1.50
+        self.assertLessEqual(abs(leg["premium"] - 1.50), 0.70)
+
+    def test_msft_not_rejected_for_stock_price_alone(self):
+        row = {
+            "Ticker": "MSFT",
+            "price_num": 533.50,
+            "premium": 1.60,
+            "spread_pct": 0.05,
+            "oi": 2000,
+            "opt_vol": 800,
+            "strike": 540.0,
+            "dte_num": 5,
+            "tp1_stock": 545.0,
+            "tp2_stock": 550.0,
+            "tp3_stock": 555.0,
+            "stop_stock": 528.0,
+            "entry_stock": 535.0,
+        }
+        self.assertTrue(row_passes_save_filters(row))
+
+    def test_priority_pins_mega_caps(self):
+        df = pd.DataFrame([
+            {"Ticker": "ZZZ", "_FastScore": 99},
+            {"Ticker": "AMZN", "_FastScore": 1},
+            {"Ticker": "SPY", "_FastScore": 2},
+            {"Ticker": "AAA", "_FastScore": 98},
+        ])
+        pinned = pin_priority_tickers(df)
+        tickers = pinned["Ticker"].astype(str).str.upper().tolist()
+        self.assertEqual(tickers[0], "SPY")
+        self.assertIn("AMZN", tickers[:5])
 
 
 class TestWaitGrade(unittest.TestCase):

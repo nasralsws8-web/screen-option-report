@@ -110,9 +110,31 @@ FINVIZ_FILTERS = {
 }
 
 SPY_TICKER = "SPY"
-PRIORITY_TICKERS = (SPY_TICKER,)
+# كبار — فك ربط SPY + سترايك OTM رخيص (علاوة ~$1–$2.5، سقف $3)
+MEGA_CAP_TICKERS = frozenset({
+    "AAPL", "AMZN", "TSLA", "NVDA", "MSFT", "GOOGL", "GOOG", "META", "AMD",
+})
+PRIORITY_TICKERS = (SPY_TICKER,) + tuple(sorted(MEGA_CAP_TICKERS))
 
-# بروفايلات tickers خاصة — premium أعلى وحدود مختلفة
+# بروفايل مشترك للكبار: علاوة رخيصة بأسلوب الفرص تحت ~$2 (مو توسيع فوق $3)
+_MEGA_CAP_PROFILE = {
+    "prem_min":        1.0,
+    "prem_max":        3.0,      # سقف ثابت — ممنوع فوق $3
+    "target_prem":     1.50,     # هدف ≈$1.50 (نمط الفرص المصوّرة)
+    "use_otm_strike":  True,     # OTM رخيص بدل ATM الغالي
+    "prefer_near_atm": False,    # أولوية قرب هدف العلاوة لا ATM
+    "prefer_cheap_otm": True,
+    "max_strike_dist": 0.04,     # حتى ~4% OTM لإيجاد علاوة $1–$2.5
+    "max_stock_price": 700.0,    # يسمح بـ MSFT/TSLA الغالية
+    "max_spread_pct":  0.12,
+    "min_oi":          500,
+    "max_dte":         10,
+    "prefer_0dte":     False,
+    "prefer_friday":   True,
+    "spy_align_exempt": True,    # لا يُرفض فقط لتعارض SPY
+}
+
+# بروفايلات tickers خاصة
 TICKER_PROFILES = {
     SPY_TICKER: {
         "label":           "SPY — S&P 500 ETF",
@@ -130,6 +152,11 @@ TICKER_PROFILES = {
         "prefer_friday":   True,
     },
 }
+for _t in MEGA_CAP_TICKERS:
+    TICKER_PROFILES[_t] = {
+        **_MEGA_CAP_PROFILE,
+        "label": f"{_t} — mega-cap (cheap OTM · SPY-exempt)",
+    }
 
 
 def ticker_profile(ticker):
@@ -142,6 +169,10 @@ def profile_limit(ticker, key, default):
 
 def is_spy_ticker(ticker):
     return str(ticker or "").upper() == SPY_TICKER
+
+
+def is_mega_cap_ticker(ticker):
+    return str(ticker or "").upper().strip() in MEGA_CAP_TICKERS
 
 
 def classify_spy_regime(tech, price):
@@ -234,8 +265,12 @@ def spy_flip_blocked(is_call, ticker, today=None, outcomes_path="outcomes.csv"):
 
 def spy_alignment_ok(is_call, spy_regime, ticker=None):
     """لا نعكس السوق: PUT مرفوض إذا SPY صاعد، CALL مرفوض إذا SPY هابط.
-    الصناديق العكسية تُعامل باتجاه معكوس (CALL على SQQQ = رهان هبوط)."""
+    الصناديق العكسية تُعامل باتجاه معكوس (CALL على SQQQ = رهان هبوط).
+    الكبار (MEGA_CAP): معفيون من ربط SPY — يتحركون بزخمهم (أمر أخير)."""
     if not REQUIRE_SPY_ALIGNMENT:
+        return True, ""
+    # كبار: لا رفض لمجرّد تعارض بوصلة SPY
+    if is_mega_cap_ticker(ticker) and not is_inverse_ticker(ticker):
         return True, ""
     regime = str(spy_regime or "NEUTRAL").upper()
     inv = is_inverse_ticker(ticker)
@@ -1655,8 +1690,10 @@ def _apply_leg_fields(target, leg):
 
 def _pick_best_strike(chain_df, stock_price, is_call, ticker):
     """
-    اختيار strike — SPY: أقرب ATM ضمن ~0.5% وعلاوة $1–$5.
-    الباقي: ATM كالسابق.
+    اختيار strike:
+    - SPY: أقرب ATM ضمن ~0.5% وعلاوة ضمن البروفايل
+    - كبار: OTM رخيص قرب هدف ~$1.50 (سقف $3)
+    - الباقي: ATM كالسابق
     """
     if chain_df is None or chain_df.empty:
         return None
@@ -1664,6 +1701,7 @@ def _pick_best_strike(chain_df, stock_price, is_call, ticker):
     prof = ticker_profile(ticker)
     use_otm = prof.get("use_otm_strike", False)
     prefer_near = bool(prof.get("prefer_near_atm", False))
+    prefer_cheap = bool(prof.get("prefer_cheap_otm", False))
     prem_min = profile_limit(ticker, "prem_min", TARGET_PREM_MIN)
     prem_max = profile_limit(ticker, "prem_max", TARGET_PREM_MAX)
     target   = prof.get("target_prem", (prem_min + prem_max) / 2)
@@ -1702,8 +1740,8 @@ def _pick_best_strike(chain_df, stock_price, is_call, ticker):
             continue
         if not _within_dist(strike):
             continue
-        # قريب ATM: نسمح بـ ITM طفيف ضمن الحد؛ وإلا OTM فقط
-        if not prefer_near:
+        # قريب ATM: نسمح بـ ITM طفيف ضمن الحد؛ وإلا / رخيص OTM: خارج النقد فقط
+        if not prefer_near or prefer_cheap:
             if is_call and strike <= stock_price * 1.001:
                 continue
             if not is_call and strike >= stock_price * 0.999:
@@ -1711,8 +1749,13 @@ def _pick_best_strike(chain_df, stock_price, is_call, ticker):
 
         dist_prem = abs(prem - target)
         dist_px = _dist_pct(strike)
-        # أولوية: أقرب للسعر ثم أقرب لهدف العلاوة
-        key = (dist_px, dist_prem) if prefer_near else (dist_prem, dist_px)
+        # رخيص/كبار: قرب هدف العلاوة أولاً؛ SPY القريب: المسافة عن السعر أولاً
+        if prefer_cheap:
+            key = (dist_prem, dist_px)
+        elif prefer_near:
+            key = (dist_px, dist_prem)
+        else:
+            key = (dist_prem, dist_px)
         candidates.append((key, leg))
 
     if candidates:
@@ -1732,7 +1775,12 @@ def _pick_best_strike(chain_df, stock_price, is_call, ticker):
         if prem_min <= prem <= prem_max and sp <= max_sp:
             dist_px = _dist_pct(leg["strike"])
             dist_prem = abs(prem - target)
-            key = (dist_px, dist_prem) if prefer_near else (dist_prem, dist_px)
+            if prefer_cheap:
+                key = (dist_prem, dist_px)
+            elif prefer_near:
+                key = (dist_px, dist_prem)
+            else:
+                key = (dist_prem, dist_px)
             loose.append((key, leg))
     if loose:
         loose.sort(key=lambda x: x[0])
@@ -2787,7 +2835,7 @@ def fetch_candidates(source=None):
 
 
 def pin_priority_tickers(df, priority=PRIORITY_TICKERS):
-    """تثبيت tickers مهمة (SPY) حتى لو خرجت من top N."""
+    """تثبيت SPY + الكبار حتى لو خرجوا من top N / Finviz."""
     if df is None or df.empty:
         return df
     pinned_parts = []
