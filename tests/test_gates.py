@@ -1167,13 +1167,63 @@ class TestTp1AlreadyHit(unittest.TestCase):
 
 class TestPremiumChase(unittest.TestCase):
     def test_spike_from_prev_is_chased(self):
-        # 1.01 من 0.62 ≈ +63%
+        # 1.01 من 0.62 ≈ +63% — القياس يبقى؛ لا يسدّ BUY بعد الإلغاء
         self.assertTrue(premium_is_chased(1.01, prem_prev=0.62))
         self.assertFalse(premium_is_chased(0.80, prem_prev=0.70))
 
     def test_change_pct_flag(self):
         self.assertTrue(premium_is_chased(2.0, change_pct=55.0))
         self.assertFalse(premium_is_chased(2.0, change_pct=20.0, prem_prev=1.9))
+
+    def test_premium_chase_no_longer_blocks_buy(self):
+        """بعد إلغاء الشرط: مطاردة علاوة لا تمنع BUY إن باقي البوابات اكتملت."""
+        import cheap_options_screener_v3 as s
+        self.assertFalse(s.PREMIUM_CHASE_BLOCKS_BUY)
+        os.environ["IGNORE_EXEC_WINDOW"] = "1"
+        r = {
+            "Ticker": "AMZN",
+            "price_num": 249.50,
+            "strike": 247.5,
+            "iv": 0.45,
+            "premium": 1.20,
+            "oi": 5000,
+            "opt_vol": 2000,
+            "spread_pct": 0.04,
+            "dte_num": 3,
+            "direction": "PUT",
+            "Score": 24,
+            "spy_regime": "BEAR",
+            "RVOL": 2.0,
+            "atr_pct": 3.0,
+            "is_0dte": False,
+            "opt_bid": 1.15,
+            "opt_ask": 1.25,
+            "synthetic_quote": False,
+            "gap_pct": -2.0,
+            "opt_change_pct": 200.0,  # كان يسدّ BUY سابقاً
+            "prem_prev": 0.35,
+        }
+        tech = {
+            "atr14": 2.0,
+            "trend": "BEARISH 🔴",
+            "above_ema20": False,
+            "above_ema50": False,
+            "above_vwap": False,
+            "rsi": 35,
+            "support1": 250.0,
+            "support2": 245.0,
+            "resist1": 255.0,
+            "yesterday_high": 256.0,
+            "yesterday_low": 248.0,
+            "session_high": 255.0,
+            "session_low": 249.0,
+        }
+        plan = s.compute_trade_plan(r, tech)
+        self.assertTrue(plan.get("premium_chased"))
+        self.assertNotIn("مطاردة علاوة", plan.get("rec_note") or "")
+        # إن اكتمل الكسر وباقي الشروط: لا يُرفض بسبب العلاوة
+        if plan.get("break_confirmed") and plan.get("recommendation") != "BUY":
+            self.assertNotIn("مطاردة علاوة", plan.get("rec_note") or "")
 
 
 class TestGapDirectionScore(unittest.TestCase):

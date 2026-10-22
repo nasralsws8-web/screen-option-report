@@ -87,7 +87,8 @@ RISK_FREE_RATE   = 0.053   # معدل الفائدة لـ Black-Scholes
 MIN_RR_TO_BUY    = 1.3     # أقل R:R لإعطاء BUY (من السعر الحي)
 MIN_CONF_TO_BUY  = 55      # أقل Confidence% لإعطاء BUY
 MAX_ENTRY_CHASE_PCT = 0.008  # إذا تجاوز السعر Entry بأكثر من 0.8% → مطاردة (لا BUY)
-MAX_PREMIUM_CHASE_PCT = 0.45  # إذا قفزت العلاوة >45% من إغلاق/قاع العقد → مطاردة (لا BUY)
+MAX_PREMIUM_CHASE_PCT = 0.45  # للقياس فقط في CSV — لا يسدّ BUY
+PREMIUM_CHASE_BLOCKS_BUY = False  # أُلغي 2026-10-22: نسب Yahoo مضلّلة صفّرت BUY لأسبوع
 EXIT_PREMIUM_PCT = 0.20       # هدف تشغيلي: جني عند +20% على العلاوة أو لمس TP1
 GAP_ALIGN_PENALTY = 3.0       # فجوة معاكسة ≥3% تضعف الاتجاه / تمنع WAIT_HOT
 
@@ -2272,7 +2273,7 @@ def compute_trade_plan(r, tech):
     tp1_done = tp1_already_reached(session_h, session_l, plan.get("tp1_stock"), is_call)
     plan["tp1_already_hit"] = tp1_done
 
-    # مطاردة العلاوة: قفزة حادة من إغلاق/قاع العقد
+    # مطاردة العلاوة: تُحسب للعرض فقط — لا تسدّ BUY إن PREMIUM_CHASE_BLOCKS_BUY=False
     prem_chased = premium_is_chased(
         premium,
         prem_prev=r.get("prem_prev"),
@@ -2283,6 +2284,7 @@ def compute_trade_plan(r, tech):
     plan["premium_chase_pct"] = round(
         premium_chase_pct(premium, r.get("prem_prev"), r.get("prem_day_low")), 1
     )
+    prem_chase_blocks = bool(PREMIUM_CHASE_BLOCKS_BUY and prem_chased)
 
     # فجوة معاكسة لاتجاه العقد
     gap_conflict = gap_direction_conflict(r.get("gap_pct", 0), is_call)
@@ -2321,7 +2323,7 @@ def compute_trade_plan(r, tech):
         and premium_quality_ok
         and align_ok
         and not chased
-        and not prem_chased
+        and not prem_chase_blocks
         and not tp1_done
         and not gap_conflict
         and entry_hit_now  # لا BUY بلا كسر وتثبيت
@@ -2353,7 +2355,7 @@ def compute_trade_plan(r, tech):
         plan["rec_note"] = (
             f"TP1 اتلمس مسبقاً ({side} الجلسة) — لا BUY بعد تحقق الهدف"
         )
-    elif prem_chased:
+    elif prem_chase_blocks:
         plan["recommendation"] = "WAIT"
         plan["rec_note"] = (
             f"مطاردة علاوة >{MAX_PREMIUM_CHASE_PCT*100:.0f}% "
@@ -2401,7 +2403,7 @@ def compute_trade_plan(r, tech):
         and premium_quality_ok
         and align_ok
         and not chased
-        and not prem_chased
+        and not prem_chase_blocks
         and not tp1_done
         and not gap_conflict
         and not entry_hit_now
