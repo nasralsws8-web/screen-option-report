@@ -2299,9 +2299,13 @@ def compute_trade_plan(r, tech):
     spread_ok = sp <= max_sp
     liquid_ok = oi_ok and spread_ok
 
-    # قواعد التشغيل: برايميوم ≥ $1 + فلتر اتجاه SPY (+ صناديق عكسية)
+    # قواعد التشغيل: علاوة داخل سقف البروفايل + فلتر اتجاه SPY (+ صناديق عكسية)
+    # prem_max شرط BUY أيضاً — لا يكفي فلتر الحفظ (تسريب SPY $6.89 فوق سقف $5)
     prem_min = profile_limit(ticker, "prem_min", TARGET_PREM_MIN)
-    prem_ok = premium >= prem_min
+    prem_max = profile_limit(ticker, "prem_max", TARGET_PREM_MAX)
+    prem_ok = prem_min <= premium <= prem_max
+    plan["prem_min"] = prem_min
+    plan["prem_max"] = prem_max
     spy_regime = r.get("spy_regime") or "NEUTRAL"
     align_ok, align_note = spy_alignment_ok(is_call, spy_regime, ticker)
     inv_ceiling, inv_note = inverse_recommendation_ceiling(is_call, spy_regime, ticker)
@@ -2375,7 +2379,16 @@ def compute_trade_plan(r, tech):
         )
     elif not prem_ok:
         plan["recommendation"] = "WAIT"
-        plan["rec_note"]       = f"Premium ${premium:.2f} تحت الحد ${prem_min:.2f} — الوضع الأساسي ≥$1"
+        if premium > prem_max:
+            plan["rec_note"] = (
+                f"Premium ${premium:.2f} فوق السقف ${prem_max:.2f} "
+                f"— ممنوع BUY (نطاق ${prem_min:.0f}–${prem_max:.0f})"
+            )
+        else:
+            plan["rec_note"] = (
+                f"Premium ${premium:.2f} تحت الحد ${prem_min:.2f} "
+                f"— الوضع الأساسي ≥${prem_min:.2f}"
+            )
     elif not premium_quality_ok:
         plan["recommendation"] = "WAIT"
         qnote = plan.get("premium_quality_note") or "سعر عقد غير موثوق من Yahoo"

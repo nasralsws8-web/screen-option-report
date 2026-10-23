@@ -1226,6 +1226,102 @@ class TestPremiumChase(unittest.TestCase):
             self.assertNotIn("مطاردة علاوة", plan.get("rec_note") or "")
 
 
+class TestPremMaxBlocksBuy(unittest.TestCase):
+    """سقف العلاوة شرط BUY — لا تسريب مثل SPY $6.89 فوق $5."""
+
+    def tearDown(self):
+        os.environ.pop("IGNORE_EXEC_WINDOW", None)
+
+    def test_spy_premium_above_ceiling_no_buy(self):
+        import cheap_options_screener_v3 as s
+        os.environ["IGNORE_EXEC_WINDOW"] = "1"
+        # يطابق حالة تيليجرام 2026-10-23: SPY PUT 760 · prem 6.89 · كسر تحت Entry
+        r = {
+            "Ticker": "SPY",
+            "price_num": 760.35,
+            "strike": 760.0,
+            "iv": 0.16,
+            "premium": 6.89,
+            "oi": 78081,
+            "opt_vol": 5000,
+            "spread_pct": 0.0058,
+            "dte_num": 7,
+            "direction": "PUT",
+            "Score": 16,
+            "spy_regime": "BEAR",
+            "RVOL": 1.8,
+            "atr_pct": 1.0,
+            "is_0dte": False,
+            "opt_bid": 6.87,
+            "opt_ask": 6.91,
+            "synthetic_quote": False,
+            "gap_pct": -0.4,
+        }
+        tech = {
+            "atr14": 7.0,
+            "trend": "BEARISH 🔴",
+            "above_ema20": False,
+            "above_ema50": False,
+            "above_vwap": False,
+            "rsi": 40,
+            "support1": 761.17,
+            "support2": 755.0,
+            "resist1": 768.0,
+            "yesterday_high": 770.0,
+            "yesterday_low": 758.0,
+            "session_high": 765.0,
+            "session_low": 759.5,
+        }
+        plan = s.compute_trade_plan(r, tech)
+        self.assertEqual(s.profile_limit("SPY", "prem_max", s.TARGET_PREM_MAX), 5.0)
+        self.assertNotEqual(plan["recommendation"], "BUY", plan.get("rec_note"))
+        self.assertIn("فوق السقف", plan.get("rec_note") or "")
+
+    def test_mega_premium_above_3_no_buy(self):
+        import cheap_options_screener_v3 as s
+        os.environ["IGNORE_EXEC_WINDOW"] = "1"
+        r = {
+            "Ticker": "AMZN",
+            "price_num": 249.50,
+            "strike": 247.5,
+            "iv": 0.45,
+            "premium": 4.50,  # فوق سقف الكبار $3
+            "oi": 5000,
+            "opt_vol": 2000,
+            "spread_pct": 0.04,
+            "dte_num": 3,
+            "direction": "PUT",
+            "Score": 24,
+            "spy_regime": "BEAR",
+            "RVOL": 2.0,
+            "atr_pct": 3.0,
+            "is_0dte": False,
+            "opt_bid": 4.40,
+            "opt_ask": 4.60,
+            "synthetic_quote": False,
+            "gap_pct": -2.0,
+        }
+        tech = {
+            "atr14": 2.0,
+            "trend": "BEARISH 🔴",
+            "above_ema20": False,
+            "above_ema50": False,
+            "above_vwap": False,
+            "rsi": 35,
+            "support1": 250.0,
+            "support2": 245.0,
+            "resist1": 255.0,
+            "yesterday_high": 256.0,
+            "yesterday_low": 248.0,
+            "session_high": 255.0,
+            "session_low": 249.0,
+        }
+        plan = s.compute_trade_plan(r, tech)
+        self.assertEqual(s.profile_limit("AMZN", "prem_max", s.TARGET_PREM_MAX), 3.0)
+        self.assertNotEqual(plan["recommendation"], "BUY")
+        self.assertIn("فوق السقف", plan.get("rec_note") or "")
+
+
 class TestGapDirectionScore(unittest.TestCase):
     def test_down_gap_helps_put_hurts_call(self):
         put_row = {"direction": "PUT", "gap_pct": -9.0, "today_vol": 0, "avg_vol": 0}
